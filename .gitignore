@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.pins.json
+*.pins-frames/
+.scormplayer/
+.DS_Store
