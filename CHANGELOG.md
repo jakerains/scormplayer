@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.0] - October 1, 2026
+## [0.8.1] - October 1, 2026
+
+The first published release with the 0.8.0 changes below; 0.8.0 itself never reached npm.
+
+### Fixed
+- Unzipping on Windows no longer leaves scormplayer's cache bookkeeping files in the new folder.
+- The release workflow builds the player UI before running the tests.
+- The agent-mode test reports the CLI's own error right away, and no longer expects a
+  `stopped` event on Windows, where a killed process can't send one.
+
+## [0.8.0] - October 1, 2026 (not published)
 
 ### Added
 - Agent mode: `--json` on every command prints only JSON on stdout, with no colours, prompts,
