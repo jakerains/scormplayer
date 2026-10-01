@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseManifestXml, resolveCourse, UserError } from "../server/course.mjs";
 import { createPinStore } from "../server/pins.mjs";
@@ -133,6 +133,126 @@ test("the CLI prints help, version and a pins hand-off", () => {
   execFileSync(process.execPath, [BIN, "pins", zipPath, "--resolve", "1", "--note", "Fixed"], { encoding: "utf8", env, stdio: "pipe" });
   assert.equal(store.list({ status: "open" }).length, 0);
   assert.throws(() => execFileSync(process.execPath, [BIN, path.join(dir, "nope.zip")], { encoding: "utf8", env, stdio: "pipe" }), /Nothing found/);
+});
+
+test("agent mode: --json prints parseable results, errors and player events", async () => {
+  const dir = tempDir();
+  const zipPath = path.join(dir, "demo.zip");
+  fs.writeFileSync(zipPath, scorm12Zip());
+  const env = { ...process.env, XDG_CACHE_HOME: path.join(dir, "cache") };
+  const run = (args) => JSON.parse(execFileSync(process.execPath, [BIN, ...args, "--json"], { encoding: "utf8", env }));
+  const fail = (args) => {
+    try { execFileSync(process.execPath, [BIN, ...args, "--json"], { encoding: "utf8", env, stdio: "pipe" }); }
+    catch (error) { assert.equal(error.status, 1); return JSON.parse(error.stdout); }
+    assert.fail("expected a non-zero exit");
+  };
+
+  const store = createPinStore(path.join(dir, "demo.pins.json"), { title: "Demo 1.2 course", source: zipPath, kind: "package", scormVersion: "1.2" });
+  store.create({ note: "Check this", target: { name: "Heading" } });
+  const report = run(["pins", zipPath]);
+  assert.equal(report.ok, true);
+  assert.equal(report.course.title, "Demo 1.2 course");
+  assert.deepEqual(report.counts, { open: 1, resolved: 0 });
+  assert.equal(report.pins[0].note, "Check this");
+  const resolved = run(["pins", zipPath, "--resolve", "1", "--note", "Fixed"]);
+  assert.equal(resolved.resolved[0].resolution, "Fixed");
+  assert.deepEqual(resolved.counts, { open: 0, resolved: 1 });
+  assert.equal(run(["pins", zipPath]).pins.length, 0);
+  assert.equal(run(["pins", zipPath, "--all"]).pins.length, 1);
+  assert.equal(typeof run(["cache"]).bytes, "number");
+
+  assert.deepEqual(fail(["pins", zipPath, "--resolve", "9"]), { ok: false, error: "No pin 9.", code: "user_error" });
+  assert.equal(fail([path.join(dir, "nope.zip")]).code, "user_error");
+  assert.equal(fail([]).code, "user_error");
+
+  // The player: a "ready" line first, then one event per line, "stopped" on exit.
+  const child = spawn(process.execPath, [BIN, zipPath, "--json", "--no-open", "--port", "0"], { env });
+  const lines = [];
+  let buffer = "";
+  const next = (event) => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`No ${event} event`)), 10_000);
+    const check = () => {
+      const found = lines.find((line) => line.event === event);
+      if (found) { clearTimeout(timeout); child.stdout.off("data", check); resolve(found); }
+    };
+    child.stdout.on("data", check);
+    check();
+  });
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    const parts = buffer.split("\n");
+    buffer = parts.pop();
+    lines.push(...parts.map((line) => JSON.parse(line)));
+  });
+  const ready = await next("ready");
+  assert.match(ready.url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
+  assert.equal(ready.pinsFile, path.join(dir, "demo.pins.json"));
+  assert.equal(lines[0].event, "ready");
+  await fetch(`${ready.url}api/pins`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ note: "New one" }) });
+  const pin = await next("pin");
+  assert.equal(pin.change, "created");
+  assert.equal(pin.pin.note, "New one");
+  child.kill("SIGTERM");
+  const stopped = await next("stopped");
+  assert.deepEqual(stopped.counts, { open: 1, resolved: 1 });
+});
+
+test("unzip: a zip becomes an editable folder beside it, and its pins move along", async () => {
+  const dir = tempDir();
+  const zipPath = path.join(dir, "my-course.zip");
+  fs.writeFileSync(zipPath, scorm12Zip());
+  const cacheDir = path.join(dir, "cache");
+  const clientDir = path.join(dir, "client");
+  fs.mkdirSync(clientDir);
+  fs.writeFileSync(path.join(clientDir, "index.html"), "<!doctype html><title>player</title>");
+  const player = await startPlayer({ input: zipPath, cacheDir, port: 0, clientDir });
+  try {
+    player.pins.create({ note: "Fix the heading" });
+    player.pins.saveFrame(1, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]));
+    const course = await (await fetch(`${player.url}api/course`)).json();
+    assert.equal(course.editable, false);
+    assert.deepEqual(course.unzip, { folder: path.join(dir, "my-course"), existing: null });
+    assert.match(player.pins.brief(), /This is a zip, so it can't be edited in place[\s\S]*scormplayer unzip /);
+
+    const response = await fetch(`${player.url}api/unzip`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const result = await response.json();
+    assert.equal(result.folder, path.join(dir, "my-course"));
+    assert.equal(result.reused, false);
+    assert.ok(fs.existsSync(path.join(dir, "my-course", "imsmanifest.xml")));
+    assert.ok(!fs.existsSync(path.join(dir, "my-course", ".extracted")), "no cache bookkeeping in the folder");
+    assert.equal(player.course.kind, "folder");
+    assert.equal(player.pins.list({ status: "open" })[0].note, "Fix the heading");
+    assert.equal((await (await fetch(`${player.url}api/course`)).json()).editable, true);
+
+    // Elsewhere: the pins and their screenshots move beside the new folder.
+    await player.open(zipPath);
+    const elsewhere = path.join(dir, "edits", "reviewed");
+    const moved = await player.unzip(elsewhere);
+    assert.equal(moved.movedPins, 1);
+    assert.equal(moved.pinsFile, path.join(dir, "edits", "reviewed.pins.json"));
+    assert.ok(!fs.existsSync(path.join(dir, "my-course.pins.json")));
+    assert.ok(fs.existsSync(player.pins.frameFile(1)), "the screenshot moved with its pin");
+
+    // Reopening the zip remembers the earlier folder; a folder with other files is refused.
+    await player.open(zipPath);
+    assert.equal((await (await fetch(`${player.url}api/course`)).json()).unzip.existing, path.join(dir, "my-course"));
+    fs.mkdirSync(path.join(dir, "busy"));
+    fs.writeFileSync(path.join(dir, "busy", "notes.txt"), "mine");
+    const refused = await fetch(`${player.url}api/unzip`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ folder: path.join(dir, "busy") }) });
+    assert.equal(refused.status, 400);
+    assert.match((await refused.json()).error, /already exists and has other files/);
+    assert.equal((await player.unzip()).reused, true);
+  } finally {
+    await player.close();
+  }
+
+  // The CLI does the same for agents.
+  const zip2 = path.join(dir, "second.zip");
+  fs.writeFileSync(zip2, scorm12Zip());
+  const env = { ...process.env, XDG_CACHE_HOME: cacheDir };
+  const result = JSON.parse(execFileSync(process.execPath, [BIN, "unzip", zip2, "--json"], { encoding: "utf8", env }));
+  assert.equal(result.folder, path.join(dir, "second"));
+  assert.ok(fs.existsSync(path.join(dir, "second", "index.html")));
 });
 
 test("skill commands hand off to the skills CLI with the user's choices", async () => {

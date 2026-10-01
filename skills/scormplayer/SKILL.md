@@ -12,13 +12,21 @@ make exactly those changes, and resolve each pin.
 
 Run it as `scormplayer` if installed, otherwise `npx @jakerains/scormplayer@latest`.
 
+**Add `--json` to every command.** It's the agent mode: JSON on stdout and nothing else (no
+colours, prompts, tips or update notices). Errors print `{"ok":false,"error":"…","code":"…"}`
+and exit 1. Without `--json` you get the human output: Markdown hand-offs and a terminal dashboard.
+
 ## Read the pins
 
 ```sh
-scormplayer pins <course>          # open pins as Markdown (what to change, where, evidence)
-scormplayer pins <course> --json   # full records
-scormplayer pins <course> --all    # include resolved pins
+scormplayer pins <course> --json         # open pins
+scormplayer pins <course> --json --all   # include resolved pins
 ```
+
+This prints `{ ok, course, pinsFile, counts: { open, resolved }, pins: [...] }`. Each pin has
+`number`, `note` (the request), `page`, `target` (`name`, `selector`, `text`), `source`
+(`[{ file, line, preview }]`) and `screenshot` (an absolute PNG path) when there is one.
+Without `--json` the same pins print as a Markdown hand-off.
 
 `<course>` is what the reviewer opened: a `.zip`, an unzipped SCORM folder, or a Vite project
 folder. The reviewer may also paste the same Markdown ("# Pinned notes: …") to you directly.
@@ -40,17 +48,29 @@ Pins are stored as plain JSON. You can read the files without the CLI:
      is the right occurrence before editing.
    - No source line: search the project for the quoted **Text**, or use the **Target**
      selector and the page to find the component.
-   - A pin on a `.zip` points at a built package. Edit the course's authoring source, never
-     the extracted copy in scormplayer's cache (`~/.cache/scormplayer/`). If you can't find
-     the source, say so.
+   - A pin on a `.zip` points at a read-only package (scormplayer plays it from a copy in its
+     cache, `~/.cache/scormplayer/`, which you must never edit). If the course's authoring
+     source is in the project, edit that. Otherwise unzip it to a folder and edit the folder:
+
+     ```sh
+     scormplayer unzip <course.zip> --json   # {ok, folder, pinsFile, reused, movedPins}
+     ```
+
+     It copies the package beside the zip (or `--to <folder>`), keeping its layout, so the
+     pins' `source` paths are relative to the new folder. Its pins move with it: from then on
+     use the folder as `<course>` (`scormplayer pins <folder> --resolve …`). If the folder
+     already exists from an earlier unzip it is reused, not overwritten. Tell the reviewer the
+     course is now in that folder; their open player offers to switch to it.
 3. Look at the screenshot when the note is about how something looks.
 4. Change only what the pin asks for. Leave other content, layout and SCORM behaviour alone.
 5. Check the change (build, tests, or the player).
 6. Resolve the pin with a short note on what changed:
 
 ```sh
-scormplayer pins <course> --resolve <number> --note "Shortened the heading in pages.json"
+scormplayer pins <course> --resolve <number> --note "Shortened the heading in pages.json" --json
 ```
+
+Repeat `--resolve` to resolve several pins at once. It prints `{ ok, resolved: [...], counts }`.
 
 Resolve only pins you actually finished. If a pin is unclear or you couldn't do it, leave it
 open and tell the reviewer why. A player that's already open picks up the change within a few
@@ -60,23 +80,31 @@ seconds.
 
 - **Vite project:** the reviewer opened it in Live mode, so your source edits show up in the
   player as you save. There's no rebuild to run for the preview.
-- **Zip or folder:** the player shows that package. Rebuild or re-export the course, then the
-  reviewer reopens the new package.
+- **Folder:** the player serves its files as they are; reload the course (**More → Reload
+  course**) to see your edits.
+- **Zip:** the player shows that package, read-only. Either unzip it and edit the folder, or
+  rebuild the zip from its source, and the reviewer reopens it.
 
 To open the player yourself, run it in the background, because it keeps serving until stopped:
 
 ```sh
-scormplayer <course> --no-open --port 4620
+scormplayer <course> --json --no-open --port 0
 ```
 
-It prints the URL and the pins file path. Don't start it unless you need it; the reviewer
-usually has it open already.
+It prints one JSON event per line. The first is
+`{"event":"ready","url":"http://127.0.0.1:…/","pid":…,"course":{…},"pinsFile":"…","counts":{…}}`;
+read the URL from it. After that come `pin` (`change`: created, edited, resolved, reopened or
+deleted), `progress` (the course's SCORM status), `source` (a file changed in Live mode),
+`browser`, `course` (another zip was opened in the page) and `log`, then `stopped` when it exits.
+Stop it with `kill <pid>`. Drop `--no-open` if the reviewer should see it in their browser.
+Don't start it unless you need it; the reviewer usually has it open already.
 
 ## In the browser
 
 If you can drive a browser and it supports WebMCP, the player page offers tools
 (`scormplayer_status`, `scormplayer_go_to_page`, `scormplayer_add_pin`, `scormplayer_list_pins`,
-`scormplayer_resolve_pin`, `scormplayer_get_handoff`, `scormplayer_scorm_data`, and more). Use
+`scormplayer_resolve_pin`, `scormplayer_get_handoff`, `scormplayer_scorm_data`,
+`scormplayer_unzip`, and more). Use
 them rather than clicking: they move pages, skip narration, and pin or resolve notes exactly as
 the buttons do. **More → SCORM inspector** (or `I`) shows the SCORM data and every API call when a
 course won't complete, score or resume.
@@ -87,7 +115,8 @@ Reviewers may ask you to get a course working in scormplayer. Diagnose first, th
 smallest change, explain it, and ask before editing someone's course. Never change what learners
 experience in an LMS; review-only code must do nothing unless a review host is present.
 
-1. **Run it and read the message:** `scormplayer <course> --plain --no-open`.
+1. **Run it and read the message:** `scormplayer <course> --json --no-open`. The `error` field
+   (or the `ready` line, if it opens) tells you what scormplayer found.
    - *No imsmanifest.xml*: the zip may hold several packages or nest the manifest two folders deep.
      The manifest must sit at the root or inside one wrapper folder.
    - *The manifest launches X, but that file is not in the package*: fix the resource `href`

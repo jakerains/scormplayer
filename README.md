@@ -4,9 +4,40 @@ Open any SCORM course in your browser, click through it the way an LMS would, an
 on anything you want changed. Copy all your pins in one go as a tidy hand-off for a teammate or
 an AI coding agent.
 
+## Install
+
+Click the copy button on a box, paste it into your terminal, and press Enter.
+
+**1. Install scormplayer**
+
+```sh
+npm install -g @jakerains/scormplayer@latest
+```
+
+**2. Open a course**
+
+```sh
+scormplayer ./my-course.zip
+```
+
+Or run `scormplayer` on its own in a folder of courses to pick one, or to get a page where you
+can drop a zip.
+
+**3. Optional: let your AI coding agent work through your pins**
+
+```sh
+scormplayer skill install
+```
+
+**Just trying it out?** Run it once without installing anything:
+
 ```sh
 npx @jakerains/scormplayer@latest ./my-course.zip
 ```
+
+Needs [Node.js](https://nodejs.org) 20 or newer. Works on macOS, Windows and Linux.
+
+## What it does
 
 - **Plays SCORM 1.2 and SCORM 2004** zips or unzipped folders. Progress is saved in your
   browser, so a reload picks up where you left off.
@@ -35,6 +66,7 @@ saved and resolved, files edited, the course completing).
 | <kbd>o</kbd> | Open the player in your browser |
 | <kbd>c</kbd> | Copy the open pins as a hand-off for an agent |
 | <kbd>p</kbd> | Show the hand-off in the terminal (<kbd>↑</kbd>/<kbd>↓</kbd> to scroll, <kbd>esc</kbd> to go back) |
+| <kbd>u</kbd> | Unzip a zipped course to a folder you can edit (shown only for a zip) |
 | <kbd>q</kbd> | Quit, with a summary of what's still open |
 
 Without a real terminal (an agent, CI, a pipe), or with `--plain`, it prints plain timestamped
@@ -47,23 +79,6 @@ in a folder with no courses) and the browser opens a drop zone: drag a SCORM zip
 **Choose a SCORM zip**. While a course is playing you can drop another zip anywhere on the
 player, or use **More → Open another course…**, to switch. Pins for a dropped zip are saved
 next to where you started scormplayer, named after the zip.
-
-## Install
-
-Run it once without installing:
-
-```sh
-npx @jakerains/scormplayer@latest ./my-course.zip
-```
-
-Or install the `scormplayer` command:
-
-```sh
-npm install -g @jakerains/scormplayer@latest
-scormplayer ./my-course.zip
-```
-
-Needs Node.js 20 or newer. Works on macOS, Windows and Linux (tested on all three in CI).
 
 ## Use
 
@@ -146,17 +161,50 @@ registers tools an agent can call instead of clicking around: `scormplayer_statu
 
 Use `--pins <file>` to keep them somewhere else.
 
+### Editing a zipped course
+
+A zip is read-only: scormplayer plays it from a copy in its cache, so neither you nor an agent
+can edit it there. When you open one, the player says so and offers **Unzip to edit…**: it
+copies the course into a folder (beside the zip by default, named after it; you can choose
+another), reopens the player on that folder, and moves your pins along. The zip itself isn't
+changed. Open the same zip later and the player offers to switch to that folder instead.
+
+The same from the terminal: press <kbd>u</kbd> in the dashboard, or run
+
+```sh
+scormplayer unzip ./my-course.zip                  # → ./my-course/, pins move to my-course.pins.json
+scormplayer unzip ./my-course.zip --to ~/edits/my-course
+```
+
+The folder keeps the zip's layout exactly, so the file and line each pin points at stay right.
+
 ### Hand pins to an agent
 
 ```sh
 scormplayer pins ./course.zip            # open pins as Markdown
-scormplayer pins ./course.zip --json     # the raw records
 scormplayer pins ./course.zip --all      # include resolved pins
 scormplayer pins ./course.zip --resolve 3 --note "Shortened the heading"
 ```
 
 An agent can read the hand-off, make the changes, and resolve each pin with the last command.
 The player picks up the change within a few seconds.
+
+### Agent mode (`--json`)
+
+Every command has two outputs: the one above for people, and `--json` for agents and scripts.
+With `--json` scormplayer prints only JSON on stdout: no colours, prompts, tips or update
+notices. Errors print `{"ok": false, "error": "…", "code": "…"}` and exit 1.
+
+| Command | Prints |
+| --- | --- |
+| `scormplayer pins <course> --json` | `{ ok, course, pinsFile, counts, pins }`; each pin includes its screenshot's full path |
+| `scormplayer pins <course> --resolve 3 --note "…" --json` | `{ ok, resolved, counts }` |
+| `scormplayer unzip <zip> --json` | `{ ok, folder, pinsFile, reused, movedPins }` |
+| `scormplayer <course> --json --no-open` | One event per line: `ready` (with `url`, `pid`, `pinsFile`, and `course.editable`, which is false for a zip), then `pin`, `progress`, `source`, `browser`, `course`, `unzipped`, `log`, and `stopped` on exit |
+| `scormplayer cache --json`, `scormplayer skill status --json` | `{ ok, … }` |
+
+An agent can start the player in the background with `--port 0`, read the URL from the first
+line, and watch pins arrive as the reviewer leaves them.
 
 ### Project settings
 

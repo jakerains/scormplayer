@@ -8,6 +8,7 @@ import { createNavigator, type NavState } from "./nav";
 import { activeMedia, skipMedia, tourState, watchMedia } from "./media";
 import { DropHome, UploadStatus, ZipInput, useZipOpener } from "./DropHome";
 import { Inspector } from "./Inspector";
+import { UnzipDialog, UnzipNotice, useUnzipNotice } from "./Unzip";
 import { registerWebMcpTools, type PlayerActions } from "./webmcp";
 import type { ScormCall } from "./scorm-api";
 
@@ -49,6 +50,8 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [toast, setToast] = useState("");
+  const [unzipOpen, setUnzipOpen] = useState(false);
+  const unzipNotice = useUnzipNotice(course);
   const [nav, setNav] = useState<NavState>(null);
   const [pagesOpen, setPagesOpen] = useState(false);
   const [navBusy, setNavBusy] = useState(false);
@@ -549,7 +552,7 @@ export function App() {
   const actionsRef = useRef<PlayerActions | null>(null);
   actionsRef.current = {
     status: () => ({
-      course: course ? { title: course.title, scormVersion: course.scormVersion, kind: course.kind, source: course.source } : null,
+      course: course ? { title: course.title, scormVersion: course.scormVersion, kind: course.kind, source: course.source, editable: course.editable, ...(course.unzip ? { unzipTo: course.unzip.existing ?? course.unzip.folder } : {}) } : null,
       module: sco ? { number: scoIndex + 1, of: course?.scos?.length, title: sco.title } : null,
       page: nav ? { number: nav.index + 1, of: nav.pages.length, title: nav.pages[nav.index]?.title, pages: nav.pages.map((item) => item.title) } : null,
       tour,
@@ -618,6 +621,12 @@ export function App() {
       return `Pin ${number} resolved.`;
     },
     handOff: () => api.brief("open"),
+    unzip: async (folder) => {
+      if (course?.kind !== "package") throw new Error("This course is already a folder; there's nothing to unzip.");
+      const result = await api.unzip(folder ?? course.unzip?.existing ?? course.unzip?.folder ?? "");
+      window.setTimeout(() => window.location.reload(), 300);
+      return `${result.reused ? "Reopened the folder it was unzipped to before" : "Unzipped"}: ${result.folder}. Pins are in ${result.pinsFile}. The player is reopening it now.`;
+    },
     setScreen: (size) => { setViewport(size); return `Showing the course at ${size} size.`; },
     scormData: (includeCalls) => ({ data: scormData, ...(includeCalls ? { calls: calls.slice(-100) } : {}) }),
   };
@@ -723,6 +732,8 @@ export function App() {
           {zip.upload ? <div className="sp-dropzone is-busy"><UploadStatus upload={zip.upload} /></div> : null}
           <ZipInput inputRef={zipInputRef} onFile={(file) => void zip.open(file)} />
 
+          {course && unzipNotice.show && !pinMode ? <UnzipNotice course={course} onUnzip={() => setUnzipOpen(true)} onDismiss={unzipNotice.dismiss} /> : null}
+          {course && unzipOpen ? <UnzipDialog course={course} onClose={() => setUnzipOpen(false)} /> : null}
           {toast ? <div className="sp-toast" role="status">{toast}</div> : null}
         </div>
 
@@ -832,6 +843,11 @@ export function App() {
                   <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setPanelOpen(false); setInspectorOpen(true); }}>
                     <Icon name="code" size={16} /> SCORM inspector <kbd>I</kbd>
                   </button>
+                  {course?.kind === "package" ? (
+                    <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setUnzipOpen(true); }}>
+                      <Icon name="folder" size={16} /> Unzip to edit…
+                    </button>
+                  ) : null}
                   <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); zipInputRef.current?.click(); }}>
                     <Icon name="file" size={16} /> Open another course…
                   </button>
@@ -1004,5 +1020,5 @@ function describeKind(course: Course, lastChangeAt: string | null, now: number) 
     const ago = seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.round(seconds / 60)}m` : `${Math.round(seconds / 3600)}h`;
     return `Live source · ${version} · updated ${ago} ago`;
   }
-  return `${version} · ${course.kind === "package" ? "zip" : "folder"}`;
+  return `${version} · ${course.kind === "package" ? "zip · read-only" : "folder"}`;
 }

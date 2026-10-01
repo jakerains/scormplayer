@@ -124,6 +124,9 @@ export function formatBrief(course, pins, pinsDir) {
     "",
     `Course: ${course.source} (${describeKind(course)})`,
   ];
+  if (course.kind === "package") {
+    lines.push(`This is a zip, so it can't be edited in place. Edit the course's source, or unzip it to a folder first: scormplayer unzip ${quoteArg(course.source)}`);
+  }
   if (!pins.length) {
     lines.push("", "No pins to hand off.");
     return `${lines.join("\n")}\n`;
@@ -171,4 +174,8 @@ function clean(value) {
   const json = JSON.stringify(value);
   if (json.length > 20_000) throw Object.assign(new Error("Pin details are too large."), { statusCode: 413 });
   return JSON.parse(json);
+}
+
+function quoteArg(value) {
+  return /^[\w./~:-]+$/.test(value) ? value : JSON.stringify(value);
 }

@@ -110,7 +110,7 @@ kbd {
 .sp-icon-button:hover { background: var(--surface-2); color: var(--ink); }
 
 .sp-toast {
-  position: absolute; z-index: 5; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: calc(100% - 32px);
+  position: absolute; z-index: 7; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: calc(100% - 32px);
   padding: 10px 16px; border-radius: 10px; background: var(--bar); color: var(--bar-text); font-size: 13px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3); animation: sp-rise 160ms ease-out;
 }
@@ -326,3 +326,43 @@ kbd {
 .sp-calls__method.is-write { color: var(--pin); }
 .sp-calls__args { color: var(--ink); overflow-wrap: anywhere; }
 .sp-calls__result { grid-column: 2 / -1; color: var(--ink-muted); overflow-wrap: anywhere; }
+
+/* A zip is read-only: the notice offering to unzip it, and the dialog that asks where. */
+.sp-notice {
+  position: absolute; z-index: 6; bottom: 14px; left: 50%; transform: translateX(-50%); width: min(660px, calc(100% - 24px));
+  display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 14px; border-radius: var(--radius);
+  background: var(--bar); color: var(--bar-text); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3); animation: sp-drop 180ms ease-out;
+}
+@keyframes sp-drop { from { opacity: 0; transform: translate(-50%, 6px); } }
+.sp-notice > svg { flex: none; color: var(--live); }
+.sp-notice__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; line-height: 1.35; }
+.sp-notice__text strong { font-size: 13.5px; }
+.sp-notice__text span { color: var(--bar-muted); font-size: 12.5px; }
+/* One line, cut from the start so the folder's own name stays visible. */
+.sp-notice__text code { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; font: 12px var(--mono); color: var(--bar-text); }
+.sp-notice__actions { flex: none; display: flex; align-items: center; gap: 6px; }
+.sp-notice .sp-button:not(.sp-button--primary) { background: var(--bar-raised); border-color: var(--bar-line); color: var(--bar-text); }
+.sp-notice .sp-icon-button { color: var(--bar-muted); }
+.sp-notice .sp-icon-button:hover { background: rgba(255, 255, 255, 0.08); color: var(--bar-text); }
+@media (max-width: 640px) {
+  .sp-notice { flex-wrap: wrap; }
+  .sp-notice__actions { width: 100%; justify-content: flex-end; }
+}
+
+.sp-modal { position: absolute; inset: 0; z-index: 9; display: grid; place-items: center; padding: 16px; background: rgba(13, 15, 19, 0.55); backdrop-filter: blur(2px); }
+.sp-dialog {
+  width: min(520px, 100%); padding: 20px; border-radius: var(--radius); background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line); box-shadow: var(--shadow); animation: sp-rise-in 160ms ease-out;
+}
+@keyframes sp-rise-in { from { opacity: 0; transform: translateY(6px); } }
+.sp-dialog h2 { margin: 0 0 6px; font-size: 16px; }
+.sp-dialog p { margin: 0 0 16px; color: var(--ink-muted); font-size: 13px; line-height: 1.5; }
+.sp-dialog label { display: block; margin-bottom: 6px; font-size: 12.5px; font-weight: 650; }
+.sp-dialog input {
+  width: 100%; height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--surface-2); color: var(--ink); font: 13px var(--mono);
+}
+.sp-dialog input:focus { outline: 2px solid var(--pin); outline-offset: 1px; }
+.sp-dialog small { display: block; margin-top: 6px; color: var(--ink-muted); font-size: 12px; }
+.sp-dialog .sp-dialog__error { margin: 12px 0 0; color: var(--bad); }
+.sp-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }

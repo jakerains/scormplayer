@@ -15,6 +15,7 @@ export type PlayerActions = {
   addPin: (input: { note: string; selector?: string; text?: string }) => Promise<unknown>;
   resolvePin: (number: number, note?: string) => Promise<unknown>;
   handOff: () => Promise<string>;
+  unzip: (folder?: string) => Promise<string>;
   setScreen: (size: "desktop" | "tablet" | "phone") => unknown;
   scormData: (includeCalls: boolean) => unknown;
 };
@@ -101,6 +102,12 @@ export function registerWebMcpTools(actions: () => PlayerActions): () => void {
       description: "Mark a pin resolved after its change is made, with a short note on what changed.",
       inputSchema: { type: "object", properties: { number: { type: "integer" }, note: { type: "string" } }, required: ["number"] },
       execute: ({ number, note }) => actions().resolvePin(number, note),
+    }),
+    tool({
+      name: "scormplayer_unzip",
+      description: "A zip is read-only: it plays from a copy in scormplayer's cache. This copies it to a folder (beside the zip unless you give one), moves its pins along, and reopens the player on the folder, so the course's files can be edited.",
+      inputSchema: { type: "object", properties: { folder: { type: "string", description: "Full path of the folder to unzip to. Optional; defaults to a folder beside the zip, named after it." } } },
+      execute: ({ folder }) => actions().unzip(folder),
     }),
     tool({
       name: "scormplayer_get_handoff",

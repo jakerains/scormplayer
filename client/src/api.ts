@@ -10,6 +10,10 @@ export type Course = {
   launchUrl: string;
   courseKey: string;
   pinsFile: string;
+  /** False for a zip: it plays from a copy in the cache until it is unzipped to a folder. */
+  editable: boolean;
+  /** For a zip: where it unzips to by default, and a folder it was unzipped to before. */
+  unzip?: { folder: string; existing: string | null };
   /** Packages with several SCOs. */
   scos?: { id: string; title: string; launchUrl: string }[];
 };
@@ -51,6 +55,7 @@ export const api = {
   updatePin: (id: string, changes: Partial<Pick<Pin, "note" | "status">> & { resolution?: string }) => request<Pin>(`/api/pins/${id}`, json("PATCH", changes)),
   deletePin: (id: string) => request<Pin>(`/api/pins/${id}`, { method: "DELETE" }),
   saveFrame: (id: string, png: Blob) => request<Pin>(`/api/pins/${id}/frame`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: png }),
+  unzip: (folder: string) => request<{ ok: true; folder: string; pinsFile: string; reused: boolean; movedPins: number }>("/api/unzip", json("POST", { folder })),
   brief: (status: "open" | "all" = "open") => request<string>(`/api/brief?status=${status}`),
   reportProgress: (progress: { completion: string; success: string; score: string; location: string; progressMeasure: string }) =>
     fetch("/api/progress", json("POST", progress)).catch(() => {}),

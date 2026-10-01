@@ -79,7 +79,7 @@ export function resolveCourse(input, { cacheDir, live = false, pinsFile = null }
 export class UserError extends Error {}
 
 /** `course.zip` → `course.pins.json`; `course/` → `course.pins.json` beside it. */
-function siblingPinsFile(target) {
+export function siblingPinsFile(target) {
   const parsed = path.parse(target);
   const name = parsed.ext.toLowerCase() === ".zip" ? parsed.name : parsed.base;
   return path.join(parsed.dir, `${name}.pins.json`);

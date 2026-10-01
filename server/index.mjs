@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
@@ -10,12 +11,14 @@ import { createPinStore } from "./pins.mjs";
 import { findSourceText } from "./source-match.mjs";
 import { startLiveCourse, LIVE_BASE } from "./live.mjs";
 import { pruneCache } from "./cache.mjs";
+import { defaultUnzipFolder, existingUnzip, unzipCourse } from "./unzip.mjs";
 
 export { resolveCourse, UserError } from "./course.mjs";
 export { createPinStore } from "./pins.mjs";
 export { createDashboard, openBrowser, copyToClipboard } from "./tui.mjs";
 export { cacheEntries, clearCache, pruneCache } from "./cache.mjs";
 export { checkForUpdate } from "./update.mjs";
+export { defaultUnzipFolder, unzipCourse } from "./unzip.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = path.resolve(HERE, "../dist/client");
@@ -46,7 +49,8 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       ? await startLiveCourse({ root: course.root, viteConfig: course.viteConfig, httpServer, onChange: (change) => events.emit("source", change) })
       : null;
     const previous = current;
-    current = { course, pins, liveCourse };
+    // Pins kept somewhere chosen on purpose (--pins, a project config) stay there after unzipping.
+    current = { course, pins, liveCourse, keepPinsFile: Boolean(options.keepPinsFile) };
     progress = null;
     await previous?.liveCourse?.close();
     if (started) events.emit("course", course);
@@ -54,7 +58,16 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
   }
 
   let started = false;
-  if (input) await open(input, { live, pinsFile });
+  if (input) await open(input, { live, pinsFile, keepPinsFile: Boolean(pinsFile) });
+
+  /** Unzip the open zip to a folder (beside it by default) and reopen the player on that folder. */
+  async function unzip(folder) {
+    const { course, keepPinsFile } = requireCourse();
+    const result = unzipCourse(course, { folder: folder || defaultUnzipFolder(course), keepPinsFile });
+    await open(result.folder, { pinsFile: result.pinsFile, keepPinsFile });
+    events.emit("unzipped", result);
+    return result;
+  }
   started = true;
 
   const requireCourse = () => {
@@ -77,6 +90,9 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       launchUrl: course.kind === "live" ? LIVE_BASE : `/course/${encodePath(course.launch)}`,
       courseKey: course.sha256 ?? course.source,
       pinsFile: course.pinsFile,
+      // A zip plays from a copy in the cache, so it can't be edited until it is unzipped.
+      editable: course.kind !== "package",
+      ...(course.kind === "package" ? { unzip: { folder: defaultUnzipFolder(course), existing: existingUnzip(course) } } : {}),
       // Packages with several SCOs: each one, in manifest order, to switch between.
       ...(course.scos?.length > 1 ? { scos: course.scos.map((sco) => ({ id: sco.id, title: sco.title, launchUrl: `/course/${encodePath(sco.launch)}` })) } : {}),
     });
@@ -95,6 +111,11 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     fs.writeFileSync(file, req.body);
     const course = await open(file, { pinsFile: path.join(pinsDir, name.replace(/\.zip$/i, ".pins.json")), displayName: name });
     res.json({ ok: true, title: course.title });
+  }));
+
+  app.post("/api/unzip", handle(async (req, res) => {
+    const folder = typeof req.body?.folder === "string" && req.body.folder.trim() ? path.resolve(req.body.folder.trim().replace(/^~(?=$|[\\/])/, os.homedir())) : null;
+    res.json({ ok: true, ...(await unzip(folder)) });
   }));
 
   app.get("/api/status", (_req, res) => res.json(current?.liveCourse?.status() ?? { lastChangeAt: null }));
@@ -184,6 +205,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     get pins() { return current?.pins ?? null; },
     events,
     open,
+    unzip,
     progress: () => progress,
     liveStatus: () => current?.liveCourse?.status() ?? null,
     async close() {

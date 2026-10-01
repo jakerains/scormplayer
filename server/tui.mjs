@@ -69,6 +69,9 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       }
     });
     events.on("pin", () => pollPins(entry));
+    events.on("unzipped", ({ folder, reused, movedPins }) => {
+      log("◉", `${reused ? "Opened the folder it was unzipped to before" : "Unzipped"}: ${displayPath(folder)}${movedPins ? ` · ${movedPins} ${movedPins === 1 ? "pin" : "pins"} moved` : ""}`, entry);
+    });
     events.on("course", (course) => {
       entry.pins = safeList(entry.player);
       entry.progress = null;
@@ -119,6 +122,16 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     briefScroll = 0;
     view = "brief";
     render();
+  }
+
+  function canUnzip() {
+    return state.length === 1 && state[0].player.course?.kind === "package" && Boolean(state[0].player.unzip);
+  }
+
+  async function unzip(entry) {
+    say("Unzipping…");
+    try { await entry.player.unzip(); }
+    catch (error) { say(error.message); }
   }
 
   function say(message) {
@@ -191,6 +204,9 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       lines.push(boxLine(`${p.dim("Progress".padEnd(10))}${progressGraphic(entry.progress, inner - 12)}`, width));
       if (course.kind === "live") lines.push(boxLine(`${p.dim("Source".padEnd(10))}${sourceLine(entry, inner - 12)}`, width));
       lines.push(boxLine(`${p.dim("Pins".padEnd(10))}${pinCounts(entry.pins)}`, width));
+      if (course.kind === "package" && entry.player.unzip) {
+        lines.push(boxLine(`${p.dim("Edit".padEnd(10))}${p.amber("Read-only zip.")} ${p.dim("Press u to unzip it to a folder you and agents can edit")}`, width));
+      }
     } else {
       state.forEach((entry, index) => {
         const { url } = entry.player;
@@ -249,6 +265,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       ...(entries.length > 1 ? [[`1–${Math.min(9, entries.length)}`, "open one"]] : []),
       ["c", "copy pins"],
       ["p", "show pins"],
+      ...(canUnzip() ? [["u", "unzip to edit"]] : []),
       ["q", "quit"],
     ];
     lines.push(`  ${keys.map(([key, label]) => `${p.key(` ${key} `)} ${p.dim(label)}`).join("   ")}`);
@@ -377,6 +394,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       else if (/^[1-9]$/.test(key) && state[Number(key) - 1]) openUrl(state[Number(key) - 1]);
       else if (key === "c") copyPins();
       else if (key === "p") showPins();
+      else if (key === "u" && canUnzip()) void unzip(state[0]);
     });
     stdout.on("resize", render);
     timers.push(setInterval(render, 1000));
@@ -390,6 +408,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
         continue;
       }
       stdout.write(`\n  ${p.bold(course.title)}${entries.length > 1 ? p.dim(`  (${entry.id})`) : ""}\n  ${kindLine(course)}\n\n  Player  ${url}\n  Pins    ${course.pinsFile}\n`);
+      if (course.kind === "package") stdout.write(`\n  This zip is read-only. To edit it, unzip it in the browser, or run: scormplayer unzip ${JSON.stringify(course.source)}\n`);
     }
     stdout.write("\n  Press Ctrl+C to stop.\n\n");
   }
@@ -421,7 +440,7 @@ export function progressLabel(progress) {
 }
 
 export function kindLine(course) {
-  const kind = { package: "SCORM zip", folder: "SCORM folder", live: "Live source · hot reload" }[course.kind] ?? course.kind;
+  const kind = { package: "SCORM zip (read-only)", folder: "SCORM folder", live: "Live source · hot reload" }[course.kind] ?? course.kind;
   return `${kind}${course.scormVersion && course.scormVersion !== "both" ? ` · SCORM ${course.scormVersion}` : ""}`;
 }
 
