@@ -23,7 +23,7 @@
   "bugs": "https://github.com/jakerains/scormplayer/issues",
   "type": "module",
   "bin": {
-    "scormplayer": "./bin/scormplayer.mjs"
+    "scormplayer": "bin/scormplayer.mjs"
   },
   "exports": {
     ".": "./server/index.mjs"
