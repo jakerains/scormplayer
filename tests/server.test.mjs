@@ -145,3 +145,35 @@ test("skill commands hand off to the skills CLI with the user's choices", async 
   );
   assert.deepEqual(skillsArgs("remove", { global: true }), ["--yes", "skills@latest", "remove", "scormplayer", "--global"]);
 });
+
+test("dashboard: plain output without a terminal, and text fits the screen", async () => {
+  const { createDashboard, truncate, visible, progressLabel } = await import("../server/tui.mjs");
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  assert.equal(visible("\x1b[1mbold\x1b[22m 名前"), 9);
+  assert.equal(truncate("A long pin note about the heading", 12), "A long pin …");
+  assert.equal(visible(truncate("日本語のテキストです", 9)), 9);
+  assert.deepEqual(progressLabel({ completion: "completed", success: "passed", score: "90%" }), { text: "Passed · 90%", tone: "good" });
+  assert.equal(progressLabel(null).tone, "muted");
+
+  const dir = tempDir();
+  const course = { title: "Demo", kind: "package", scormVersion: "1.2", source: path.join(dir, "demo.zip"), pinsFile: path.join(dir, "demo.pins.json") };
+  const pins = createPinStore(course.pinsFile, course);
+  const events = new EventEmitter();
+  const player = { url: "http://127.0.0.1:4620/", course, pins, events };
+  const out = new PassThrough();
+  let text = "";
+  out.on("data", (chunk) => { text += chunk; });
+  const dashboard = createDashboard({ version: "9.9.9", entries: [{ id: "demo", player }], stdout: out, stdin: new PassThrough(), onQuit: () => {} });
+  events.emit("browser");
+  events.emit("progress", { completion: "completed", success: "", score: "" }, null);
+  pins.create({ note: "Fix the typo", target: { name: "Heading" } });
+  events.emit("pin");
+  await dashboard.quit();
+  assert.match(text, /Demo[\s\S]*Player {2}http:\/\/127\.0\.0\.1:4620\//);
+  assert.match(text, /Player opened in the browser/);
+  assert.match(text, /Completed/);
+  assert.match(text, /Pin 1 saved: Fix the typo/);
+  assert.match(text, /scormplayer stopped · 1 open pin/);
+  assert.doesNotMatch(text, /\x1b\[/, "no escape codes when not writing to a terminal");
+});

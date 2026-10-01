@@ -22,6 +22,24 @@ npx @jakerains/scormplayer@latest ./my-course.zip
 - **Leaves your course alone.** Nothing is injected into or written inside the course. Pins
   live in a JSON file next to it.
 
+## The terminal dashboard
+
+Running `scormplayer` opens a live dashboard in your terminal: the course, its address, how far
+the course says you've got, the pins as you add them, and a feed of what just happened (pins
+saved and resolved, files edited, the course completing).
+
+![The scormplayer terminal dashboard](https://raw.githubusercontent.com/jakerains/scormplayer/main/docs/dashboard.png)
+
+| Key | Does |
+| --- | --- |
+| <kbd>o</kbd> | Open the player in your browser |
+| <kbd>c</kbd> | Copy the open pins as a hand-off for an agent |
+| <kbd>p</kbd> | Show the hand-off in the terminal (<kbd>↑</kbd>/<kbd>↓</kbd> to scroll, <kbd>esc</kbd> to go back) |
+| <kbd>q</kbd> | Quit, with a summary of what's still open |
+
+Without a real terminal (an agent, CI, a pipe), or with `--plain`, it prints plain timestamped
+lines instead. `NO_COLOR` is respected.
+
 ## Install
 
 Run it once without installing:
@@ -46,6 +64,7 @@ scormplayer ./course.zip           # a SCORM zip
 scormplayer ./course-folder        # an unzipped SCORM package (imsmanifest.xml inside)
 scormplayer ./my-vite-course       # a Vite project: live source with hot reload
 scormplayer ./course.zip --port 5000 --no-open
+scormplayer ./course.zip --plain   # log lines instead of the dashboard
 ```
 
 In the player:
@@ -123,6 +142,17 @@ player page from the same origin. The player installs `window.API` (SCORM 1.2) a
 `window.API_1484_11` (SCORM 2004) for the course to find, as an LMS would. The API is forgiving:
 it records what the course sends rather than enforcing the full specification. It's a review
 tool, not a conformance test.
+
+### Use it from your own scripts
+
+```js
+import { startPlayer, createDashboard } from "@jakerains/scormplayer";
+
+const player = await startPlayer({ input: "./course.zip", cacheDir: "/tmp/scormplayer" });
+createDashboard({ version: "1.0.0", entries: [{ id: "course", player }], onQuit: () => player.close() });
+```
+
+Pass several players to `createDashboard` to watch several courses in one screen.
 
 ## Develop
 

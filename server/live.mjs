@@ -10,7 +10,7 @@ export const LIVE_BASE = "/course/";
  * Vite, plugins and config. The project's hot-reload socket shares the player's HTTP server on
  * the /course/ path, so the course stays same-origin with the player (pins can read the page).
  */
-export async function startLiveCourse({ root, viteConfig, httpServer }) {
+export async function startLiveCourse({ root, viteConfig, httpServer, onChange = () => {} }) {
   let vitePackagePath;
   try {
     vitePackagePath = createRequire(path.join(root, "package.json")).resolve("vite/package.json");
@@ -44,7 +44,13 @@ export async function startLiveCourse({ root, viteConfig, httpServer }) {
   });
 
   let lastChangeAt = null;
-  const noteChange = () => { lastChangeAt = Date.now(); };
+  const noteChange = (file) => {
+    const relative = path.relative(root, file).split(path.sep).join("/");
+    // The player's own pin files are not course edits.
+    if (/(^|\/)\.scormplayer\/|\.pins\.json$|\.pins-frames\//.test(relative)) return;
+    lastChangeAt = Date.now();
+    onChange({ file: relative, at: new Date(lastChangeAt).toISOString() });
+  };
   vite.watcher.on("change", noteChange);
   vite.watcher.on("add", noteChange);
   vite.watcher.on("unlink", noteChange);

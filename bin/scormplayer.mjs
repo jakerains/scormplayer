@@ -4,7 +4,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
-import { startPlayer, resolveCourse, createPinStore, UserError } from "../server/index.mjs";
+import { startPlayer, resolveCourse, createPinStore, createDashboard, openBrowser, UserError } from "../server/index.mjs";
 import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere } from "../server/skill.mjs";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -26,6 +26,7 @@ Options
   --pins <file>     Where to keep pins (default: <course>.pins.json beside a zip or folder,
                     .scormplayer/pins.json inside a live project)
   --no-open         Don't open the browser
+  --plain           Plain log lines instead of the dashboard (automatic without a terminal)
   -v, --version     Print the version
   -h, --help        Show this help
 
@@ -58,6 +59,7 @@ async function main(argv) {
       host: { type: "string", default: "127.0.0.1" },
       pins: { type: "string" },
       "no-open": { type: "boolean", default: false },
+      plain: { type: "boolean", default: false },
       all: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       resolve: { type: "string", multiple: true },
@@ -103,24 +105,22 @@ async function main(argv) {
     live: values.live,
     pinsFile: values.pins ?? null,
   });
-  const { course } = player;
-  const kind = { package: "SCORM zip", folder: "SCORM folder", live: "live source, hot reload on" }[course.kind];
-  console.log(`\n  ${course.title}`);
-  console.log(`  ${kind}${course.scormVersion && course.scormVersion !== "both" ? ` · SCORM ${course.scormVersion}` : ""}`);
-  console.log(`\n  Player  ${player.url}`);
-  console.log(`  Pins    ${course.pinsFile}\n`);
-  console.log("  Press Ctrl+C to stop.\n");
-  if (!skillInstalledAnywhere()) {
-    console.log("  Tip: run `scormplayer skill install` so your coding agents know how to act on pins.\n");
-  }
+  const dashboard = createDashboard({
+    version: VERSION,
+    entries: [{ id: path.basename(player.course.source), player }],
+    plain: values.plain,
+    pinsHint: () => `scormplayer pins ${quote(positionals[0])}`,
+    onQuit: async () => {
+      await player.close();
+      process.exit(0);
+    },
+  });
+  if (!skillInstalledAnywhere()) dashboard.log("Tip: run `scormplayer skill install` so coding agents can act on your pins");
   if (!values["no-open"]) openBrowser(player.url);
+}
 
-  const stop = async () => {
-    await player.close();
-    process.exit(0);
-  };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+function quote(value) {
+  return /^[\w./~:-]+$/.test(value) ? value : JSON.stringify(value);
 }
 
 async function runSkill(action, values) {
@@ -143,18 +143,6 @@ async function runSkill(action, values) {
   throw new UserError(`Unknown skill command "${action}". Use install, remove or print.`);
 }
 
-function openBrowser(url) {
-  const [command, args] = process.platform === "darwin"
-    ? ["open", [url]]
-    : process.platform === "win32"
-      ? ["cmd", ["/c", "start", "", url]]
-      : ["xdg-open", [url]];
-  try {
-    spawn(command, args, { stdio: "ignore", detached: true }).on("error", () => {}).unref();
-  } catch {
-    // Opening the browser is a convenience; the URL is printed above.
-  }
-}
 
 main(process.argv.slice(2)).catch((error) => {
   console.error(`scormplayer: ${error instanceof UserError ? error.message : error?.stack ?? error}`);

@@ -55,6 +55,13 @@ export function App() {
     return () => { unsubscribe(); installed.uninstall(); };
   }, [course]);
 
+  // Tell the terminal how the course is doing (completion, success, score, location).
+  useEffect(() => {
+    if (!course) return;
+    const timer = window.setTimeout(() => void api.reportProgress(progressOf(scormData)), 400);
+    return () => window.clearTimeout(timer);
+  }, [course, scormData]);
+
   const refreshPins = useCallback(() => api.pins().then(setPins).catch(() => {}), []);
   useEffect(() => {
     void refreshPins();

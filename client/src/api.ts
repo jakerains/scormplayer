@@ -48,6 +48,8 @@ export const api = {
   deletePin: (id: string) => request<Pin>(`/api/pins/${id}`, { method: "DELETE" }),
   saveFrame: (id: string, png: Blob) => request<Pin>(`/api/pins/${id}/frame`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: png }),
   brief: (status: "open" | "all" = "open") => request<string>(`/api/brief?status=${status}`),
+  reportProgress: (progress: { completion: string; success: string; score: string; location: string; progressMeasure: string }) =>
+    fetch("/api/progress", json("POST", progress)).catch(() => {}),
 };
 
 export async function copyText(text: string) {

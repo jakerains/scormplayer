@@ -7,7 +7,7 @@
  */
 
 export type ScormData = Record<string, string>;
-export type ScormProgress = { completion: string; success: string; score: string; location: string };
+export type ScormProgress = { completion: string; success: string; score: string; location: string; progressMeasure: string };
 type Listener = (data: ScormData) => void;
 
 const DEFAULTS_12: ScormData = {
@@ -158,7 +158,13 @@ export function progressOf(data: ScormData): ScormProgress {
   const scaled = data["cmi.score.scaled"];
   const raw = data["cmi.score.raw"] || data["cmi.core.score.raw"];
   const score = scaled ? `${Math.round(Number(scaled) * 100)}%` : raw ? raw : "";
-  return { completion, success, score, location: data["cmi.location"] || data["cmi.core.lesson_location"] || "" };
+  return {
+    completion,
+    success,
+    score,
+    location: data["cmi.location"] || data["cmi.core.lesson_location"] || "",
+    progressMeasure: data["cmi.progress_measure"] || "",
+  };
 }
 
 function countOf(data: ScormData, prefix: string) {

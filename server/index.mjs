@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createServer } from "node:http";
+import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { resolveCourse, isInside, UserError } from "./course.mjs";
@@ -10,6 +11,7 @@ import { startLiveCourse, LIVE_BASE } from "./live.mjs";
 
 export { resolveCourse, UserError } from "./course.mjs";
 export { createPinStore } from "./pins.mjs";
+export { createDashboard, openBrowser, copyToClipboard } from "./tui.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = path.resolve(HERE, "../dist/client");
@@ -23,16 +25,20 @@ const CLIENT_DIR = path.resolve(HERE, "../dist/client");
 export async function startPlayer({ input, cacheDir, host = "127.0.0.1", port = 4620, live = false, pinsFile = null, clientDir = CLIENT_DIR }) {
   const course = resolveCourse(input, { cacheDir, live, pinsFile });
   const pins = createPinStore(course.pinsFile, course);
+  // What the terminal dashboard shows: pins, source changes, SCORM progress, browser visits.
+  const events = new EventEmitter();
+  let progress = null;
   const app = express();
   const httpServer = createServer(app);
   const liveCourse = course.kind === "live"
-    ? await startLiveCourse({ root: course.root, viteConfig: course.viteConfig, httpServer })
+    ? await startLiveCourse({ root: course.root, viteConfig: course.viteConfig, httpServer, onChange: (change) => events.emit("source", change) })
     : null;
 
   app.use(express.json({ limit: "1mb" }));
   app.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
   app.get("/api/course", (_req, res) => {
+    events.emit("browser");
     res.json({
       title: course.title,
       kind: course.kind,
@@ -46,6 +52,24 @@ export async function startPlayer({ input, cacheDir, host = "127.0.0.1", port = 
 
   app.get("/api/status", (_req, res) => res.json(liveCourse?.status() ?? { lastChangeAt: null }));
 
+  // The player page reports the course's SCORM status so the terminal can show it.
+  app.post("/api/progress", (req, res) => {
+    const body = req.body ?? {};
+    const next = {
+      completion: String(body.completion ?? "").slice(0, 40),
+      success: String(body.success ?? "").slice(0, 40),
+      score: String(body.score ?? "").slice(0, 20),
+      location: String(body.location ?? "").slice(0, 200),
+      progressMeasure: String(body.progressMeasure ?? "").slice(0, 20),
+    };
+    if (JSON.stringify(next) !== JSON.stringify(progress)) {
+      const previous = progress;
+      progress = next;
+      events.emit("progress", next, previous);
+    }
+    res.status(204).end();
+  });
+
   app.get("/api/pins", (req, res) => res.json({ pins: pins.list({ status: String(req.query.status ?? "all") }) }));
 
   app.post("/api/pins", handle(async (req, res) => {
@@ -53,11 +77,21 @@ export async function startPlayer({ input, cacheDir, host = "127.0.0.1", port = 
     // Point the pin at its source text where the course files contain it. Read-only search.
     const text = input.target?.text || input.target?.name;
     const source = text ? findSourceText(course.root, String(text)) : [];
-    res.status(201).json(pins.create({ ...input, source }));
+    const pin = pins.create({ ...input, source });
+    events.emit("pin", { type: "created", pin });
+    res.status(201).json(pin);
   }));
 
-  app.patch("/api/pins/:id", handle(async (req, res) => res.json(pins.update(req.params.id, req.body ?? {}))));
-  app.delete("/api/pins/:id", handle(async (req, res) => res.json(pins.remove(req.params.id))));
+  app.patch("/api/pins/:id", handle(async (req, res) => {
+    const pin = pins.update(req.params.id, req.body ?? {});
+    events.emit("pin", { type: req.body?.status ? (pin.status === "resolved" ? "resolved" : "reopened") : "edited", pin });
+    res.json(pin);
+  }));
+  app.delete("/api/pins/:id", handle(async (req, res) => {
+    const pin = pins.remove(req.params.id);
+    events.emit("pin", { type: "deleted", pin });
+    res.json(pin);
+  }));
 
   app.put("/api/pins/:id/frame", express.raw({ type: "image/png", limit: "15mb" }), handle(async (req, res) => {
     res.json(pins.saveFrame(req.params.id, req.body));
@@ -99,6 +133,9 @@ export async function startPlayer({ input, cacheDir, host = "127.0.0.1", port = 
     url,
     course,
     pins,
+    events,
+    progress: () => progress,
+    liveStatus: () => liveCourse?.status() ?? null,
     async close() {
       await liveCourse?.close();
       httpServer.closeAllConnections?.();
