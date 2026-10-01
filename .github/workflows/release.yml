@@ -13,6 +13,11 @@ permissions:
   contents: read
   id-token: write
 
+# One release per tag at a time; a duplicate trigger waits and then finds the version published.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -34,4 +39,11 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: npm publish --access public
+      - name: Publish (skipped when this version is already on npm)
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if npm view "@jakerains/scormplayer@$version" version >/dev/null 2>&1; then
+            echo "@jakerains/scormplayer@$version is already published; nothing to do."
+          else
+            npm publish --access public
+          fi
