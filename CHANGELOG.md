@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - October 1, 2026
+
+### Changed
+- A word that isn't a command or a file, such as a command from a newer version, now says so
+  and suggests `scormplayer update`, instead of "Nothing found at …/word".
+
 ## [0.8.2] - October 1, 2026
 
 ### Added

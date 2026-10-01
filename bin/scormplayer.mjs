@@ -164,6 +164,15 @@ async function main(argv) {
     return void process.stdout.write(store.brief({ status }));
   }
 
+  // A bare word that isn't a file or folder here is a mistyped command, or one this version
+  // doesn't have yet (it was added later): say so, rather than "Nothing found at …/word".
+  const word = positionals[0];
+  if (word && /^[a-z][a-z-]*$/i.test(word) && !fs.existsSync(path.resolve(word))) {
+    throw new UserError(`"${word}" isn't a command in scormplayer ${VERSION}, or a course in this folder. `
+      + `The commands are pins, unzip, update, skill and cache (scormplayer --help). `
+      + `If "${word}" is newer than this version, update first: scormplayer update`);
+  }
+
   const port = values.port === undefined ? 4620 : Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UserError("--port must be a number from 0 to 65535.");
   const input = positionals[0] ? path.resolve(positionals[0]) : null;

@@ -133,6 +133,8 @@ test("the CLI prints help, version and a pins hand-off", () => {
   execFileSync(process.execPath, [BIN, "pins", zipPath, "--resolve", "1", "--note", "Fixed"], { encoding: "utf8", env, stdio: "pipe" });
   assert.equal(store.list({ status: "open" }).length, 0);
   assert.throws(() => execFileSync(process.execPath, [BIN, path.join(dir, "nope.zip")], { encoding: "utf8", env, stdio: "pipe" }), /Nothing found/);
+  // A bare word that isn't a file: an unknown (perhaps newer) command, not a missing course.
+  assert.throws(() => execFileSync(process.execPath, [BIN, "frobnicate"], { encoding: "utf8", env, stdio: "pipe", cwd: dir }), /"frobnicate" isn't a command in scormplayer [\d.]+[\s\S]*scormplayer update/);
 });
 
 test("agent mode: --json prints parseable results, errors and player events", async () => {
