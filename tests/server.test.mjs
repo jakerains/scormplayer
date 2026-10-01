@@ -172,6 +172,8 @@ test("agent mode: --json prints parseable results, errors and player events", as
   const next = (event) => new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(`No ${event} event`)), 10_000);
     const check = () => {
+      const failed = lines.find((line) => line.ok === false);
+      if (failed) { clearTimeout(timeout); child.stdout.off("data", check); return reject(new Error(failed.error)); }
       const found = lines.find((line) => line.event === event);
       if (found) { clearTimeout(timeout); child.stdout.off("data", check); resolve(found); }
     };
@@ -193,8 +195,8 @@ test("agent mode: --json prints parseable results, errors and player events", as
   assert.equal(pin.change, "created");
   assert.equal(pin.pin.note, "New one");
   child.kill("SIGTERM");
-  const stopped = await next("stopped");
-  assert.deepEqual(stopped.counts, { open: 1, resolved: 1 });
+  // Windows ends a killed process outright, so it has no chance to report "stopped".
+  if (process.platform !== "win32") assert.deepEqual((await next("stopped")).counts, { open: 1, resolved: 1 });
 });
 
 test("unzip: a zip becomes an editable folder beside it, and its pins move along", async () => {

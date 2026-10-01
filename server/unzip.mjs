@@ -38,9 +38,10 @@ export function unzipCourse(course, { folder = defaultUnzipFolder(course), keepP
   }
   if (!reused) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    // Everything but the cache's own bookkeeping files at the top.
-    const skip = new Set([".extracted", ".last-used"].map((name) => path.join(course.root, name)));
-    fs.cpSync(course.root, target, { recursive: true, filter: (file) => !skip.has(file) });
+    fs.cpSync(course.root, target, { recursive: true });
+    // Drop the cache's own bookkeeping files. Removed after copying rather than filtered, since
+    // Windows can name the same cache folder two ways (short and long) and a path match misses.
+    for (const name of [".extracted", ".last-used"]) fs.rmSync(path.join(target, name), { force: true });
   }
 
   const pinsFile = keepPinsFile ? course.pinsFile : siblingPinsFile(target);
