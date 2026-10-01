@@ -79,7 +79,27 @@ In the player:
 | Save a pin | <kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>Enter</kbd> |
 | See, resolve or delete pins | **Pins** |
 | Copy open pins for an agent | **Copy** |
+| Move between pages | ‹ › in the bar, the page menu, or <kbd>[</kbd> <kbd>]</kbd> |
+| Skip narration or a video | **Skip** in the bar, or <kbd>.</kbd> |
 | Start the course over | **More → Reset progress** |
+
+### Page navigation and narration
+
+The bottom bar shows the course's pages (‹ 3 / 7 · Page title ›, with a menu of every page;
+<kbd>[</kbd> and <kbd>]</kbd> step through them) whenever the course offers a page list. It uses,
+best first:
+
+1. a same-origin `window.__ACADEMY_SCORM_REVIEW__` bridge (`getScenes`, `getCurrentIndex`,
+   `goToScene`);
+2. the **scorm-review handshake**: the player posts `{ type: "scorm-review:host", version: 1 }` to
+   the course frame; the course replies with `{ type: "scorm-review:nav", version: 1, pages:
+   [{ id, title }], index }` after every move, and jumps when it receives
+   `{ type: "scorm-review:goto", version: 1, index }`;
+3. the course's own page menu, found by `aria-current="step"` or `"page"`.
+
+While audio or video is playing, **Skip** (or <kbd>.</kbd>) jumps it to the end, so the course
+runs its own "finished" logic: a narrated driver.js tour unlocks Next exactly as if you had
+waited. While a tour is open the bar also shows its step and Back/Next.
 
 ### Where pins are kept
 

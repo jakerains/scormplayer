@@ -10,7 +10,7 @@ export type Course = {
   pinsFile: string;
 };
 
-export type PinPage = { url: string; title: string; location?: string };
+export type PinPage = { url: string; title: string; location?: string; navId?: string; navIndex?: number };
 
 export type Pin = {
   id: string;

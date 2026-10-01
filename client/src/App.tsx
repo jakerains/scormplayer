@@ -4,6 +4,8 @@ import { captureElement } from "./capture";
 import { Icon } from "./icons";
 import { chooseTarget, describeElement, describeTextSelection, locateTarget, visibleText, elementFor, widenTarget, type PinTarget, type Rect } from "./picker";
 import { installScormApis, progressOf, type ScormData } from "./scorm-api";
+import { createNavigator, type NavState } from "./nav";
+import { activeMedia, skipMedia, tourState, watchMedia } from "./media";
 
 type Selection = { element: Element; target: PinTarget };
 type Marker = { id: string; number: number; rect: Rect };
@@ -30,6 +32,12 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [toast, setToast] = useState("");
+  const [nav, setNav] = useState<NavState>(null);
+  const [pagesOpen, setPagesOpen] = useState(false);
+  const [navBusy, setNavBusy] = useState(false);
+  const [tour, setTour] = useState<{ title: string; progress: string; canNext: boolean; canPrev: boolean } | null>(null);
+  const [mediaPlaying, setMediaPlaying] = useState(false);
+  const navigatorRef = useRef<ReturnType<typeof createNavigator> | null>(null);
   const [lastChangeAt, setLastChangeAt] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -88,12 +96,39 @@ export function App() {
     if (!doc) return { url: "", title: "", location };
     const heading = Array.from(doc.querySelectorAll("h1, h2"))
       .find((element) => (element as HTMLElement).offsetParent !== null && visibleText(element));
+    const navPage = nav?.pages[nav.index];
     return {
       url: `${doc.location.pathname.replace(/^\/course\//, "")}${doc.location.search}${doc.location.hash}`,
-      title: (heading ? visibleText(heading) : doc.title).slice(0, 120),
+      title: (navPage?.title || (heading ? visibleText(heading) : doc.title)).slice(0, 120),
       location,
+      ...(navPage ? { navId: navPage.id, navIndex: nav!.index } : {}),
     };
-  }, [scormData]);
+  }, [scormData, nav]);
+
+  // Page navigation and the tour/narration shortcuts follow the course frame.
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame || !scorm) return;
+    const navigator = createNavigator(frame, setNav);
+    navigatorRef.current = navigator;
+    return () => { navigator.dispose(); navigatorRef.current = null; setNav(null); };
+  }, [scorm, frameKey]);
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (frame) watchMedia(frame);
+  }, [frameLoads]);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const frame = frameRef.current;
+      if (!frame) return;
+      const next = tourState(frame);
+      const summary = next ? { title: next.title, progress: next.progress, canNext: next.canNext, canPrev: next.canPrev } : null;
+      setTour((previous) => (JSON.stringify(previous) === JSON.stringify(summary) ? previous : summary));
+      const playing = Boolean(activeMedia(frame));
+      setMediaPlaying((previous) => (previous === playing ? previous : playing));
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const openComposer = useCallback((element: Element, target: PinTarget) => {
     setSelection({ element, target });
@@ -180,7 +215,8 @@ export function App() {
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (selection) closeComposer();
+        if (pagesOpen) setPagesOpen(false);
+        else if (selection) closeComposer();
         else if (menuOpen) setMenuOpen(false);
         else if (panelOpen) setPanelOpen(false);
         else if (pinMode) setPinMode(false);
@@ -193,12 +229,18 @@ export function App() {
       } else if (event.key.toLowerCase() === "p" && !selection) {
         event.preventDefault();
         setPinMode((value) => !value);
+      } else if (event.key === "[" || event.key === "]") {
+        event.preventDefault();
+        void stepPage(event.key === "]" ? 1 : -1);
+      } else if (event.key === ".") {
+        event.preventDefault();
+        skipAhead();
       }
     };
     const onKeyUp = (event: KeyboardEvent) => { if (event.code === "Space") setPassthrough(false); };
     docs.forEach((doc) => { doc.addEventListener("keydown", onKeyDown, true); doc.addEventListener("keyup", onKeyUp, true); });
     return () => docs.forEach((doc) => { doc.removeEventListener("keydown", onKeyDown, true); doc.removeEventListener("keyup", onKeyUp, true); });
-  }, [pinMode, selection, menuOpen, panelOpen, frameLoads, closeComposer]);
+  }, [pinMode, selection, menuOpen, panelOpen, pagesOpen, frameLoads, closeComposer, nav, navBusy]);
 
   // Keep pin markers and the selection box on their elements as the course scrolls and changes.
   useEffect(() => {
@@ -209,6 +251,8 @@ export function App() {
       const next: Marker[] = [];
       for (const pin of pins) {
         if (pin.status !== "open" || !pin.target || (pin.page?.url && pin.page.url !== page.url)) continue;
+        const pinNav = (pin.page as { navId?: string } | undefined)?.navId;
+        if (pinNav && page.navId && pinNav !== page.navId) continue;
         const rect = locateTarget(doc, pin.target);
         if (!rect || !sameText(doc, pin.target)) continue;
         next.push({ id: pin.id, number: pin.number, rect });
@@ -264,17 +308,65 @@ export function App() {
     say(`Pin ${pin.number} deleted`);
   }
 
-  function goToPin(pin: Pin) {
-    const doc = frameDoc();
-    const element = doc && pin.target ? elementFor(doc, pin.target) : null;
-    const onPage = markers.some((marker) => marker.id === pin.id);
-    if (element && onPage) {
+  async function goToPage(index: number) {
+    const navigator = navigatorRef.current;
+    if (!navigator || navBusy) return false;
+    setNavBusy(true);
+    setPagesOpen(false);
+    try {
+      const reached = await navigator.goTo(index);
+      if (!reached) say("The course didn't move to that page");
+      return reached;
+    } finally {
+      setNavBusy(false);
+    }
+  }
+
+  async function stepPage(delta: number) {
+    if (!nav) return;
+    const target = nav.index + delta;
+    if (target >= 0 && target < nav.pages.length) await goToPage(target);
+  }
+
+  function skipAhead() {
+    const frame = frameRef.current;
+    if (!frame) return;
+    if (skipMedia(frame)) { say("Skipped to the end of the narration"); return; }
+    const current = tourState(frame);
+    if (current?.canNext) current.next();
+  }
+
+  function tourStep(direction: "next" | "prev") {
+    const frame = frameRef.current;
+    const current = frame ? tourState(frame) : null;
+    if (!current) return;
+    if (direction === "next") {
+      if (current.canNext) current.next();
+      else if (frame && skipMedia(frame)) say("Skipped the narration; Next is unlocking");
+    } else if (current.canPrev) current.prev();
+  }
+
+  async function goToPin(pin: Pin) {
+    const scrollTo = () => {
+      const doc = frameDoc();
+      const element = doc && pin.target ? elementFor(doc, pin.target) : null;
+      if (!element) return false;
       element.scrollIntoView({ block: "center", behavior: "smooth" });
       setActivePin(pin.id);
       window.setTimeout(() => setActivePin((current) => (current === pin.id ? null : current)), 2400);
-    } else {
-      say(pin.page?.title ? `Pin ${pin.number} is on “${pin.page.title}”` : `Pin ${pin.number} isn't on this page`);
+      return true;
+    };
+    if (markers.some((marker) => marker.id === pin.id) && scrollTo()) return;
+    const page = pin.page as (PinPage & { navId?: string; navIndex?: number }) | undefined;
+    if (nav && page) {
+      const index = nav.pages.findIndex((item) => item.id === page.navId);
+      const target = index >= 0 ? index : nav.pages.findIndex((item) => item.title === page.title);
+      if (target >= 0 && target !== nav.index && await goToPage(target)) {
+        window.setTimeout(scrollTo, 350);
+        return;
+      }
     }
+    say(page?.title ? `Pin ${pin.number} is on “${page.title}”` : `Pin ${pin.number} isn't on this page`);
   }
 
   function widen() {
@@ -382,6 +474,47 @@ export function App() {
               <span>{kindLabel}</span>
             </div>
           </div>
+
+          {nav ? (
+            <div className="sp-nav" aria-label="Pages">
+              <button type="button" className="sp-nav__step" disabled={navBusy || nav.index === 0} onClick={() => void stepPage(-1)} title="Previous page ( [ )" aria-label="Previous page">
+                <Icon name="chevronLeft" />
+              </button>
+              <div className="sp-menu-anchor">
+                <button type="button" className="sp-nav__page" aria-expanded={pagesOpen} onClick={() => { setPagesOpen((value) => !value); setMenuOpen(false); }} title="Jump to a page">
+                  <b>{nav.index + 1}</b><span className="sp-nav__of">/ {nav.pages.length}</span>
+                  <span className="sp-nav__title">{nav.pages[nav.index]?.title}</span>
+                  <Icon name="chevronUp" size={14} />
+                </button>
+                {pagesOpen ? (
+                  <div className="sp-menu sp-pages" role="menu">
+                    {nav.pages.map((page, index) => (
+                      <button key={`${page.id}-${index}`} type="button" role="menuitem" aria-current={index === nav.index ? "page" : undefined} onClick={() => void goToPage(index)}>
+                        <span className="sp-pages__number">{index + 1}</span>
+                        <span className="sp-pages__title">{page.title}</span>
+                        {pins.some((pin) => pin.status === "open" && (pin.page as { navId?: string } | undefined)?.navId === page.id) ? <span className="sp-pages__pin" title="Has open pins" /> : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <button type="button" className="sp-nav__step" disabled={navBusy || nav.index >= nav.pages.length - 1} onClick={() => void stepPage(1)} title="Next page ( ] )" aria-label="Next page">
+                <Icon name="chevronRight" />
+              </button>
+            </div>
+          ) : null}
+
+          {tour ? (
+            <div className="sp-tour" aria-label="Guided tour">
+              <span className="sp-tour__label" title={tour.title}>Tour{tour.progress ? ` · ${tour.progress}` : ""}</span>
+              <button type="button" className="sp-nav__step" disabled={!tour.canPrev} onClick={() => tourStep("prev")} title="Previous tour step" aria-label="Previous tour step"><Icon name="chevronLeft" /></button>
+              <button type="button" className="sp-skip" disabled={!mediaPlaying && !tour.canNext} onClick={() => tourStep("next")} title={mediaPlaying && !tour.canNext ? "Skip the narration (.)" : "Next tour step (.)"}>
+                {mediaPlaying && !tour.canNext ? <><Icon name="skip" size={16} /> Skip</> : <>Next <Icon name="chevronRight" size={16} /></>}
+              </button>
+            </div>
+          ) : mediaPlaying ? (
+            <button type="button" className="sp-skip" onClick={skipAhead} title="Skip to the end of the playing audio or video (.)"><Icon name="skip" size={16} /> Skip media</button>
+          ) : null}
 
           <span className={`sp-progress sp-progress--${progressLabel.tone}`} title={progress.location ? `SCORM location: ${progress.location}` : undefined}>
             {progressLabel.text}

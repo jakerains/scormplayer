@@ -72,6 +72,51 @@ scormplayer <course> --no-open --port 4620
 It prints the URL and the pins file path. Don't start it unless you need it; the reviewer
 usually has it open already.
 
+## When a course doesn't play well
+
+Reviewers may ask you to get a course working in scormplayer. Diagnose first, then propose the
+smallest change, explain it, and ask before editing someone's course. Never change what learners
+experience in an LMS; review-only code must do nothing unless a review host is present.
+
+1. **Run it and read the message:** `scormplayer <course> --plain --no-open`.
+   - *No imsmanifest.xml*: the zip may hold several packages or nest the manifest two folders deep.
+     The manifest must sit at the root or inside one wrapper folder.
+   - *The manifest launches X, but that file is not in the package*: fix the resource `href`
+     (case and path must match the file exactly).
+   - Not a SCORM package at all: a Vite project opens with `--live`; anything else needs packaging.
+2. **It opens but is blank, or assets 404** (check the browser console): asset URLs starting with
+   `/` break under a path prefix, in an LMS too. Make them relative (Vite: `base: "./"`).
+3. **The course says it can't find the LMS**: scormplayer provides `window.API` (SCORM 1.2) and
+   `window.API_1484_11` (2004) on the parent frame, which the standard lookup (walk up
+   `window.parent`, then `window.opener`) finds. A course that only checks `window.top`, or opens
+   itself in a pop-up without `opener`, needs the standard lookup.
+4. **No page navigation in the bottom bar**: the player reads, in order, a same-origin
+   `window.__ACADEMY_SCORM_REVIEW__` bridge, the scorm-review message handshake, or the course's
+   own page menu (a `nav`/list with `aria-current="step"` or `"page"` on the current item). The
+   lightest fix is `aria-current` on the course's menu. For full support, add the handshake;
+   it is inert when no review host announces itself:
+
+   ```js
+   // pages: [{ id, title }], index: the current page, goTo(i): show page i without scoring.
+   const send = () => parent.postMessage({ type: "scorm-review:nav", version: 1, pages, index }, "*");
+   addEventListener("message", (event) => {
+     const data = event.data || {};
+     if (event.source !== parent || data.version !== 1) return;
+     if (data.type === "scorm-review:host") send();
+     if (data.type === "scorm-review:goto" && Number.isInteger(data.index)) goTo(data.index);
+   });
+   // Call send() again after every page change once the host has announced itself.
+   ```
+5. **Skip doesn't appear while narration plays**: the player can skip `<audio>`, `<video>` and
+   `new Audio()` playback. Sound made with the Web Audio API (`AudioContext`) can't be skipped;
+   playing narration through an audio element fixes that. Tour controls follow driver.js's
+   `.driver-popover` buttons; a step that requires a learner action can't be skipped.
+6. **Live mode won't start**: install the project's dependencies (the player uses the project's
+   own Vite, version 5 or newer) and make sure the folder has `index.html` and a `vite.config.*`.
+
+Add a `scormplayer.config.json` (see the README) when a project needs pins kept outside the
+course folders or generated files rebuilt while reviewing, rather than changing the course.
+
 ## Don'ts
 
 - Don't edit files inside `~/.cache/scormplayer/` or a pins file by hand. Use `--resolve`.
