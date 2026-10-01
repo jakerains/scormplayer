@@ -7,9 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - October 1, 2026
+
+### Added
+- `scormplayer update` installs the latest version with whatever installed scormplayer (npm,
+  pnpm, yarn or bun), then refreshes the agent skill wherever it's installed. `--check` only
+  reports; `--json` for agents.
+- Falls back to npm if the tool that installed scormplayer is gone. Runs the install with
+  `sudo` (asking for the password) when npm's global folder needs admin rights, as with Node
+  from the nodejs.org Mac installer. Explains what to do under npx, in a project, or in a
+  source checkout.
+- If npm knows about a new version but can't install it by name yet, which happens for a while
+  after a release, `update` installs the package file directly.
+- The player's More menu shows when a newer scormplayer is available.
+
+### Changed
+- The update notice says `scormplayer update` instead of the raw npm command.
+- A saved update check older than the running version is ignored, so a hand upgrade sees the
+  next release right away.
+- README: how to get Node on a Mac, and `scormplayer update` in the Install section.
+
+### Fixed
+- Changelog: 0.8.0 was published after all (same code as 0.8.1).
+
 ## [0.8.1] - October 1, 2026
 
-The first published release with the 0.8.0 changes below; 0.8.0 itself never reached npm.
+Fixes for the 0.8.0 release run. 0.8.0 went out from the same code, so the two match apart
+from the version number.
 
 ### Fixed
 - Unzipping on Windows no longer leaves scormplayer's cache bookkeeping files in the new folder.
@@ -17,7 +41,7 @@ The first published release with the 0.8.0 changes below; 0.8.0 itself never rea
 - The agent-mode test reports the CLI's own error right away, and no longer expects a
   `stopped` event on Windows, where a killed process can't send one.
 
-## [0.8.0] - October 1, 2026 (not published)
+## [0.8.0] - October 1, 2026
 
 ### Added
 - Agent mode: `--json` on every command prints only JSON on stdout, with no colours, prompts,

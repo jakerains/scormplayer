@@ -24,30 +24,35 @@ export function skillsArgs(action, { local = false, global = false, agents = [],
     ...(yes ? ["--yes"] : []),
   ];
   if (action === "remove") return ["--yes", "skills@latest", "remove", "scormplayer", ...flags];
+  // Refresh just this skill in one scope, leaving the person's other skills alone.
+  if (action === "update") return ["--yes", "skills@latest", "update", "scormplayer", global ? "--global" : "--project", "--yes"];
   // From GitHub by default, so `npx skills update` keeps it current; --local uses the copy in
   // this package (offline, or pinned to the installed version).
   const source = local ? PACKAGE_ROOT : SKILL_REPO;
   return ["--yes", "skills@latest", "add", source, "--skill", "scormplayer", ...flags, ...(copy ? ["--copy"] : [])];
 }
 
-export function runSkills(args, { env = process.env } = {}) {
+export function runSkills(args, { env = process.env, stdout = "inherit" } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, { stdio: "inherit", env, shell: process.platform === "win32" });
+    const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, { stdio: ["inherit", stdout, "inherit"], env, shell: process.platform === "win32" });
     child.on("error", (error) => reject(new Error(`Could not run npx: ${error.message}. Install the skill with: npx skills add ${SKILL_REPO}`)));
     child.on("exit", (code) => resolve(code ?? 1));
   });
 }
 
-/** Common places agents keep skills. Used only to decide whether to show the one-line tip. */
-export function skillInstalledAnywhere({ home = os.homedir(), cwd = process.cwd() } = {}) {
-  const dirs = [
-    path.join(home, ".claude", "skills"),
-    path.join(home, ".agents", "skills"),
-    path.join(home, ".codex", "skills"),
-    path.join(home, ".cursor", "skills"),
-    path.join(home, ".config", "agents", "skills"),
-    path.join(cwd, ".claude", "skills"),
-    path.join(cwd, ".agents", "skills"),
-  ];
-  return dirs.some((dir) => fs.existsSync(path.join(dir, "scormplayer", "SKILL.md")));
+/**
+ * Where the skill is installed, among the common places agents keep skills: for all projects
+ * (global) and in this project. Used for the one-line tip and to refresh it on update.
+ */
+export function skillScopes({ home = os.homedir(), cwd = process.cwd() } = {}) {
+  const has = (dirs) => dirs.some((dir) => fs.existsSync(path.join(dir, "scormplayer", "SKILL.md")));
+  return {
+    global: has([".claude", ".agents", ".codex", ".cursor", path.join(".config", "agents")].map((dir) => path.join(home, dir, "skills"))),
+    project: path.resolve(cwd) !== path.resolve(home) && has([".claude", ".agents"].map((dir) => path.join(cwd, dir, "skills"))),
+  };
+}
+
+export function skillInstalledAnywhere(options) {
+  const scopes = skillScopes(options);
+  return scopes.global || scopes.project;
 }

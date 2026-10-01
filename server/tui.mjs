@@ -1,6 +1,5 @@
 import os from "node:os";
 import path from "node:path";
-import { UPDATE_COMMAND } from "./update.mjs";
 import { spawn, spawnSync } from "node:child_process";
 
 /**
@@ -34,6 +33,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
   let flashTimer = null;
   let closed = false;
   let update = null;
+  let updateCommand = "scormplayer update";
   const timers = [];
 
   const log = (icon, text, entry = null) => {
@@ -290,7 +290,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     const p = createPaint(stdout);
     const open = state.reduce((sum, entry) => sum + entry.pins.filter((pin) => pin.status === "open").length, 0);
     const lines = ["", `  ${p.pin("◉")} ${p.bold("scormplayer stopped")}${open ? ` ${p.dim("·")} ${p.pin(`${open} open ${open === 1 ? "pin" : "pins"}`)}` : ""}`];
-    if (update) lines.push(`    ${p.pin("↑")} scormplayer ${update} is available: ${p.bold(UPDATE_COMMAND)}`);
+    if (update) lines.push(`    ${p.pin("↑")} scormplayer ${update} is available: ${p.bold(updateCommand)}`);
     for (const entry of state) {
       const count = entry.pins.filter((pin) => pin.status === "open").length;
       if (!count) continue;
@@ -418,9 +418,10 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
   return {
     log: (text, id) => log("•", text, state.find((entry) => entry.id === id) ?? null),
     /** Show that a newer version is published. */
-    updateAvailable(version) {
+    updateAvailable(version, command = updateCommand) {
       update = version;
-      log("↑", `scormplayer ${version} is available: ${UPDATE_COMMAND}`);
+      updateCommand = command;
+      log("↑", `scormplayer ${version} is available: ${command}`);
     },
     quit,
     render,

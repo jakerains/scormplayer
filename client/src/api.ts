@@ -55,6 +55,7 @@ export const api = {
   updatePin: (id: string, changes: Partial<Pick<Pin, "note" | "status">> & { resolution?: string }) => request<Pin>(`/api/pins/${id}`, json("PATCH", changes)),
   deletePin: (id: string) => request<Pin>(`/api/pins/${id}`, { method: "DELETE" }),
   saveFrame: (id: string, png: Blob) => request<Pin>(`/api/pins/${id}/frame`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: png }),
+  update: () => request<{ update: { latest: string; command: string } | null }>("/api/update").then((body) => body.update),
   unzip: (folder: string) => request<{ ok: true; folder: string; pinsFile: string; reused: boolean; movedPins: number }>("/api/unzip", json("POST", { folder })),
   brief: (status: "open" | "all" = "open") => request<string>(`/api/brief?status=${status}`),
   reportProgress: (progress: { completion: string; success: string; score: string; location: string; progressMeasure: string }) =>

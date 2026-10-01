@@ -430,11 +430,63 @@ test("update check: newer versions only, asked at most once a day", async () => 
     assert.equal(await checkForUpdate({ current: "0.6.0", cacheDir, fetchImpl }), "9.0.0");
     assert.equal(calls, 1, "the second check uses the saved answer");
     assert.equal(await checkForUpdate({ current: "9.0.0", cacheDir, fetchImpl }), null);
+    // Upgraded by hand past the saved answer: that answer is stale, so it asks npm again.
+    assert.equal(await checkForUpdate({ current: "9.5.0", cacheDir, fetchImpl }), null);
+    assert.equal(calls, 2, "a saved answer older than the running version is asked again");
     process.env.SCORMPLAYER_NO_UPDATE_CHECK = "1";
     assert.equal(await checkForUpdate({ current: "0.1.0", cacheDir: tempDir(), fetchImpl }), null);
   } finally {
     if (saved.CI === undefined) delete process.env.CI; else process.env.CI = saved.CI;
     if (saved.OFF === undefined) delete process.env.SCORMPLAYER_NO_UPDATE_CHECK; else process.env.SCORMPLAYER_NO_UPDATE_CHECK = saved.OFF;
+  }
+});
+
+test("update: tells how scormplayer was installed, and how to update it", async () => {
+  const { installMethod, updateHint, fetchLatest } = await import("../server/update.mjs");
+  const { skillsArgs } = await import("../server/skill.mjs");
+  const base = tempDir();
+  const at = (rel, projectFile) => {
+    const dir = path.join(base, ...rel.split("/"));
+    fs.mkdirSync(dir, { recursive: true });
+    if (projectFile) fs.writeFileSync(path.join(base, ...projectFile.split("/")), "{}");
+    return dir;
+  };
+  const kind = (dir) => installMethod({ packageRoot: dir }).kind;
+  const globalNpm = at("usr/local/lib/node_modules/@jakerains/scormplayer");
+  assert.equal(kind(globalNpm), "npm");
+  assert.deepEqual(installMethod({ packageRoot: globalNpm }).command, ["npm", "install", "-g", "@jakerains/scormplayer@latest"]);
+  assert.equal(updateHint(globalNpm), "scormplayer update");
+  assert.equal(kind(at("proj/node_modules/@jakerains/scormplayer", "proj/package.json")), "project");
+  assert.equal(kind(at("home/.npm/_npx/1a2b/node_modules/@jakerains/scormplayer")), "npx");
+  assert.equal(updateHint(at("home/.npm/_npx/3c4d/node_modules/@jakerains/scormplayer")), "npx @jakerains/scormplayer@latest");
+  assert.equal(kind(at("home/Library/pnpm/global/5/node_modules/@jakerains/scormplayer")), "pnpm");
+  assert.equal(kind(at("home/.bun/install/global/node_modules/@jakerains/scormplayer")), "bun");
+  assert.equal(kind(at("home/.config/yarn/global/node_modules/@jakerains/scormplayer")), "yarn");
+  assert.equal(kind(at("src/scormplayer")), "source");
+  const { tarballInstall } = await import("../server/update.mjs");
+  assert.deepEqual(tarballInstall("1.2.3"), ["npm", "install", "-g", "https://registry.npmjs.org/@jakerains/scormplayer/-/scormplayer-1.2.3.tgz"]);
+
+  // The update asks npm fresh and remembers the answer for the daily check.
+  const cacheDir = tempDir();
+  assert.equal(await fetchLatest({ cacheDir, fetchImpl: async () => ({ ok: true, json: async () => ({ version: "1.2.3" }) }) }), "1.2.3");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(cacheDir, "update-check.json"), "utf8")).latest, "1.2.3");
+  await assert.rejects(fetchLatest({ cacheDir, fetchImpl: async () => ({ ok: false, status: 503 }) }), /503/);
+
+  // Only this skill is refreshed, in the scope it's installed in.
+  assert.deepEqual(skillsArgs("update", { global: true }), ["--yes", "skills@latest", "update", "scormplayer", "--global", "--yes"]);
+  assert.deepEqual(skillsArgs("update", { global: false }), ["--yes", "skills@latest", "update", "scormplayer", "--project", "--yes"]);
+
+  // The player page hears about a newer version from the CLI.
+  const clientDir = path.join(base, "client");
+  fs.mkdirSync(clientDir);
+  fs.writeFileSync(path.join(clientDir, "index.html"), "<!doctype html><title>player</title>");
+  const player = await startPlayer({ cacheDir: path.join(base, "cache"), port: 0, clientDir });
+  try {
+    assert.deepEqual(await (await fetch(`${player.url}api/update`)).json(), { update: null });
+    player.setUpdate({ latest: "9.0.0", command: "scormplayer update" });
+    assert.deepEqual(await (await fetch(`${player.url}api/update`)).json(), { update: { latest: "9.0.0", command: "scormplayer update" } });
+  } finally {
+    await player.close();
   }
 });
 

@@ -36,6 +36,8 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
   const events = new EventEmitter();
   let progress = null;
   let current = null;
+  // A newer published scormplayer, when the CLI finds one, for the page's More menu.
+  let update = null;
   const app = express();
   const httpServer = createServer(app);
 
@@ -117,6 +119,8 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     const folder = typeof req.body?.folder === "string" && req.body.folder.trim() ? path.resolve(req.body.folder.trim().replace(/^~(?=$|[\\/])/, os.homedir())) : null;
     res.json({ ok: true, ...(await unzip(folder)) });
   }));
+
+  app.get("/api/update", (_req, res) => res.json({ update }));
 
   app.get("/api/status", (_req, res) => res.json(current?.liveCourse?.status() ?? { lastChangeAt: null }));
 
@@ -206,6 +210,8 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     events,
     open,
     unzip,
+    /** @param {{ latest: string, command: string } | null} value */
+    setUpdate(value) { update = value; },
     progress: () => progress,
     liveStatus: () => current?.liveCourse?.status() ?? null,
     async close() {

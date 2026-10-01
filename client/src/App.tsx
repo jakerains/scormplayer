@@ -51,6 +51,9 @@ export function App() {
   const [confirmReset, setConfirmReset] = useState(false);
   const [toast, setToast] = useState("");
   const [unzipOpen, setUnzipOpen] = useState(false);
+  // A newer scormplayer, when the terminal found one; asked again each time More opens.
+  const [update, setUpdate] = useState<{ latest: string; command: string } | null>(null);
+  useEffect(() => { if (menuOpen) api.update().then(setUpdate, () => {}); }, [menuOpen]);
   const unzipNotice = useUnzipNotice(course);
   const [nav, setNav] = useState<NavState>(null);
   const [pagesOpen, setPagesOpen] = useState(false);
@@ -840,6 +843,12 @@ export function App() {
               </button>
               {menuOpen ? (
                 <div className="sp-menu" role="menu">
+                  {update ? (
+                    <button type="button" role="menuitem" className="sp-menu__update" title={`Copies: ${update.command}`}
+                      onClick={() => { void copyText(update.command).then(() => say(`Copied. Run ${update.command} in your terminal`), () => say(`Run ${update.command} in your terminal`)); setMenuOpen(false); }}>
+                      <Icon name="arrowUp" size={16} /> scormplayer {update.latest} is available
+                    </button>
+                  ) : null}
                   <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setPanelOpen(false); setInspectorOpen(true); }}>
                     <Icon name="code" size={16} /> SCORM inspector <kbd>I</kbd>
                   </button>

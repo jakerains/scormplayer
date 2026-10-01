@@ -159,6 +159,14 @@ experience in an LMS; review-only code must do nothing unless a review host is p
 Add a `scormplayer.config.json` (see the README) when a project needs pins kept outside the
 course folders or generated files rebuilt while reviewing, rather than changing the course.
 
+## Keep it current
+
+If a command or flag in this skill isn't recognized, the installed scormplayer is older than the
+skill. `scormplayer update --check --json` reports `{ current, latest, updateAvailable }`, and
+`scormplayer update` installs the latest version and refreshes this skill. It may need the
+person's password (npm asks for admin rights on some Macs), so suggest it rather than running
+it unprompted. Under `npx`, use `npx @jakerains/scormplayer@latest` instead.
+
 ## Don'ts
 
 - Don't edit files inside `~/.cache/scormplayer/` or a pins file by hand. Use `--resolve`.

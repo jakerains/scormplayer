@@ -35,7 +35,15 @@ scormplayer skill install
 npx @jakerains/scormplayer@latest ./my-course.zip
 ```
 
-Needs [Node.js](https://nodejs.org) 20 or newer. Works on macOS, Windows and Linux.
+**Keep it current:**
+
+```sh
+scormplayer update
+```
+
+Needs [Node.js](https://nodejs.org) 20 or newer, which includes npm. No Node yet? On a Mac, the
+installer from [nodejs.org](https://nodejs.org) works, or `brew install node` with Homebrew.
+Works on macOS, Windows and Linux.
 
 ## What it does
 
@@ -201,6 +209,7 @@ notices. Errors print `{"ok": false, "error": "…", "code": "…"}` and exit 1.
 | `scormplayer pins <course> --resolve 3 --note "…" --json` | `{ ok, resolved, counts }` |
 | `scormplayer unzip <zip> --json` | `{ ok, folder, pinsFile, reused, movedPins }` |
 | `scormplayer <course> --json --no-open` | One event per line: `ready` (with `url`, `pid`, `pinsFile`, and `course.editable`, which is false for a zip), then `pin`, `progress`, `source`, `browser`, `course`, `unzipped`, `log`, and `stopped` on exit |
+| `scormplayer update --check --json` | `{ ok, current, latest, updateAvailable, method }` |
 | `scormplayer cache --json`, `scormplayer skill status --json` | `{ ok, … }` |
 
 An agent can start the player in the background with `--port 0`, read the URL from the first
@@ -284,8 +293,15 @@ Opened zips are unpacked into a cache (`~/.cache/scormplayer`, or `%LOCALAPPDATA
 Windows). It keeps itself small: the 20 most recently used courses, nothing unused for 14 days.
 `scormplayer cache` shows its size and `scormplayer cache clear` empties it.
 
-The dashboard tells you when a newer scormplayer is published (checked at most once a day). Set
-`SCORMPLAYER_NO_UPDATE_CHECK=1` to turn that off.
+The dashboard, and **More** in the player, tell you when a newer scormplayer is published
+(checked at most once a day). `scormplayer update` installs it and refreshes the agent skill
+wherever it's installed; `scormplayer update --check` only says whether there is one.
+
+It updates with whatever installed scormplayer: npm, or pnpm, yarn or bun if you used one
+(falling back to npm if that tool has since gone). If your Node came from the nodejs.org
+installer on a Mac, npm needs admin rights for global packages, so the update runs with `sudo`
+and asks for your password. Running through `npx …@latest` always gets the newest version, so
+there's nothing to update. Set `SCORMPLAYER_NO_UPDATE_CHECK=1` to turn the check off.
 
 ## Develop
 

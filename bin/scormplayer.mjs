@@ -5,11 +5,11 @@ import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
 import { startPlayer, resolveCourse, createPinStore, createDashboard, openBrowser, unzipCourse, UserError } from "../server/index.mjs";
-import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere } from "../server/skill.mjs";
+import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere, skillScopes } from "../server/skill.mjs";
 import { findConfig, configuredPinsFile, startSync } from "../server/config.mjs";
 import { findCourses, isCourseFolder } from "../server/finder.mjs";
 import { cacheEntries, clearCache, formatBytes, MAX_AGE_DAYS, MAX_ENTRIES } from "../server/cache.mjs";
-import { checkForUpdate } from "../server/update.mjs";
+import { checkForUpdate, fetchLatest, hasTool, installMethod, installedVersion, isNewer, npmNeedsSudo, NPM_INSTALL, runInstall, tarballInstall, updateHint } from "../server/update.mjs";
 import { pickCourse, DROP_PAGE } from "../server/tui.mjs";
 import { pinsReport, createJsonReporter, jsonError } from "../server/agent.mjs";
 
@@ -28,6 +28,8 @@ Usage
                                   --to <folder>); its pins move with it
   scormplayer skill install       Teach your coding agents to act on pins (pick agents and scope)
   scormplayer cache [clear]       Show (or empty) the cache of unpacked zips
+  scormplayer update              Update scormplayer and its agent skill to the latest version
+                                  (--check only reports whether there is a newer one)
 
 Options
   --live            Serve a Vite project from source with hot reload (automatic when the
@@ -61,6 +63,7 @@ For agents (--json)
   scormplayer <course> --json --no-open         One JSON event per line: ready (url, pid,
                                                 pinsFile), then pin, progress, source, browser,
                                                 course, log; stopped on exit
+  scormplayer update --check --json             {ok, current, latest, updateAvailable, method}
   scormplayer cache --json, skill status --json
   Errors print {ok: false, error, code} and exit 1.
 
@@ -95,6 +98,7 @@ async function main(argv) {
       resolve: { type: "string", multiple: true },
       note: { type: "string" },
       to: { type: "string" },
+      check: { type: "boolean", default: false },
       global: { type: "boolean", short: "g", default: false },
       agent: { type: "string", short: "a", multiple: true },
       yes: { type: "boolean", short: "y", default: false },
@@ -124,6 +128,7 @@ async function main(argv) {
 
   if (positionals[0] === "skill") return runSkill(positionals[1] ?? "status", values);
   if (positionals[0] === "cache") return runCache(positionals[1] ?? "status", defaultCacheDir(), json);
+  if (positionals[0] === "update" || positionals[0] === "upgrade") return runUpdate({ cacheDir, check: values.check, json });
 
   if (positionals[0] === "unzip") {
     const input = positionals[1];
@@ -193,7 +198,11 @@ async function main(argv) {
     onQuit,
   });
   if (input) stopSync = startSync(config, input, (message) => dashboard.log(message));
-  void checkForUpdate({ current: VERSION, cacheDir }).then((latest) => { if (latest) dashboard.updateAvailable(latest); });
+  void checkForUpdate({ current: VERSION, cacheDir }).then((latest) => {
+    if (!latest) return;
+    dashboard.updateAvailable(latest, updateHint());
+    player.setUpdate({ latest, command: updateHint() });
+  });
   if (!skillInstalledAnywhere()) dashboard.log("Tip: run `scormplayer skill install` so coding agents can act on your pins");
   if (!values["no-open"]) openBrowser(player.url);
 }
@@ -221,6 +230,73 @@ function runCache(action, cacheDir, json) {
   if (json) return void console.log(JSON.stringify({ ok: true, cacheDir, entries: entries.length, bytes, maxEntries: MAX_ENTRIES, maxAgeDays: MAX_AGE_DAYS }));
   console.log(`${cacheDir}\n${entries.length} cached ${entries.length === 1 ? "course" : "courses"}, ${formatBytes(bytes)}.`);
   console.log(`Kept automatically: the ${MAX_ENTRIES} most recent, nothing unused for ${MAX_AGE_DAYS} days. Empty it with: scormplayer cache clear`);
+}
+
+/**
+ * Update scormplayer with whatever installed it, then refresh the agent skill wherever it is
+ * installed. With --check, only report. Under npx, in a project or in a source checkout there is
+ * nothing global to reinstall, so it says what to do instead.
+ */
+async function runUpdate({ cacheDir, check, json }) {
+  const say = (text) => { if (!json) console.log(text); };
+  let latest;
+  try { latest = await fetchLatest({ cacheDir }); }
+  catch (error) { throw new UserError(`Couldn't reach the npm registry to check for updates (${error.message}).`); }
+  const updateAvailable = isNewer(latest, VERSION);
+  const method = installMethod();
+  if (check || !updateAvailable) {
+    if (json) return void console.log(JSON.stringify({ ok: true, current: VERSION, latest, updateAvailable, method: method.kind }));
+    if (!updateAvailable) return say(`scormplayer ${VERSION} is the latest version.`);
+    return say(`scormplayer ${latest} is available (you have ${VERSION}). Update with: ${method.hint}`);
+  }
+  if (!method.command) {
+    if (method.kind === "npx") throw new UserError(`You're running scormplayer through npx, so there's nothing to install. Run it as: ${method.hint}`);
+    if (method.kind === "source") throw new UserError(`This scormplayer runs from a source checkout. Update it there: ${method.hint}`);
+    throw new UserError(`This scormplayer is a dependency of a project, not a global install. Update it in that project: ${method.hint}`);
+  }
+
+  // Installed with pnpm, yarn or bun that has since gone: npm comes with Node, so use it.
+  let command = method.command;
+  let tool = method.kind;
+  if (tool !== "npm" && !hasTool(tool)) {
+    say(`${tool} isn't installed any more, so updating with npm instead.`);
+    command = NPM_INSTALL;
+    tool = "npm";
+  }
+  // Node from the nodejs.org installer keeps global packages in /usr/local, which needs admin rights.
+  const sudo = tool === "npm" && npmNeedsSudo();
+  const interactive = process.stdin.isTTY && process.stdout.isTTY && !json;
+  if (sudo && !interactive) {
+    throw new UserError(`npm's global folder needs admin rights on this machine. Update with: sudo ${command.join(" ")}`);
+  }
+
+  say(`Updating scormplayer ${VERSION} → ${latest} with ${tool}…`);
+  if (sudo) say("npm needs admin rights to update global packages here, so this runs with sudo. Enter your Mac password if asked.");
+  // In agent mode the installer's output goes to stderr, keeping stdout to the one JSON answer.
+  const output = json ? process.stderr : "inherit";
+  let code = await runInstall(command, { stdout: output, sudo });
+  if (code !== 0 && tool === "npm") {
+    // Just after a release npm can know the new version before it can install it by name.
+    say(`npm couldn't install ${latest} by name (its servers can lag just after a release). Trying the package file directly…`);
+    command = tarballInstall(latest);
+    code = await runInstall(command, { stdout: output, sudo });
+  }
+  if (code !== 0) throw new UserError(`${sudo ? "sudo " : ""}${command.join(" ")} failed (exit ${code}). Its output above says why.`);
+  const now = installedVersion();
+
+  // Refresh the agent skill in each scope it's installed in, so it describes this version.
+  const scopes = skillScopes();
+  const skill = { global: scopes.global ? "updated" : "not installed", project: scopes.project ? "updated" : "not installed" };
+  for (const scope of ["global", "project"]) {
+    if (!scopes[scope]) continue;
+    say(`Updating the agent skill (${scope})…`);
+    const skillCode = await runSkills(skillsArgs("update", { global: scope === "global" }), { stdout: output }).catch(() => 1);
+    if (skillCode !== 0) skill[scope] = "failed";
+  }
+
+  if (json) return void console.log(JSON.stringify({ ok: true, from: VERSION, to: now, method: tool, skill }));
+  say(`scormplayer is now ${now}.`);
+  if (Object.values(skill).includes("failed")) say("The agent skill didn't update; run: npx skills update scormplayer");
 }
 
 async function runSkill(action, values) {

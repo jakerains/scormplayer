@@ -366,3 +366,4 @@ kbd {
 .sp-dialog small { display: block; margin-top: 6px; color: var(--ink-muted); font-size: 12px; }
 .sp-dialog .sp-dialog__error { margin: 12px 0 0; color: var(--bad); }
 .sp-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.sp-menu button.sp-menu__update { color: var(--pin); font-weight: 650; }
