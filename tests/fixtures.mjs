@@ -70,3 +70,18 @@ export function traversalZip() {
 }
 
 export { MANIFEST_12, MANIFEST_2004 };
+
+/** A SCORM 2004 package with three SCOs, each a page that records its own location. */
+export function multiScoZip({ title = "Three modules" } = {}) {
+  const zip = new AdmZip();
+  const items = [1, 2, 3].map((n) => `<item identifier="item-${n}" identifierref="res-${n}"><title>Module ${n}</title></item>`).join("");
+  const resources = [1, 2, 3].map((n) => `<resource identifier="res-${n}" type="webcontent" adlcp:scormType="sco" href="m${n}/index.html"/>`).join("");
+  zip.addFile("imsmanifest.xml", Buffer.from(`<?xml version="1.0"?><manifest identifier="multi" xmlns="http://www.imsglobal.org/xsd/imscp_v1p1" xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_v1p3"><metadata><schema>ADL SCORM</schema><schemaversion>2004 4th Edition</schemaversion></metadata><organizations default="o"><organization identifier="o"><title>${title}</title>${items}</organization></organizations><resources>${resources}</resources></manifest>`));
+  for (const n of [1, 2, 3]) {
+    zip.addFile(`m${n}/index.html`, Buffer.from(`<!doctype html><title>Module ${n}</title><h1>Module ${n}</h1><script>
+let w=window,api=null;while(w&&!api){api=w.API_1484_11;w=w===w.parent?null:w.parent;}
+if(api){api.Initialize("");api.SetValue("cmi.location","module-${n}");api.SetValue("cmi.completion_status","${n === 1 ? "completed" : "incomplete"}");api.Commit("");}
+</script>`));
+  }
+  return zip.toBuffer();
+}

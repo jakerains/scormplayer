@@ -10,9 +10,11 @@ export type Course = {
   launchUrl: string;
   courseKey: string;
   pinsFile: string;
+  /** Packages with several SCOs. */
+  scos?: { id: string; title: string; launchUrl: string }[];
 };
 
-export type PinPage = { url: string; title: string; location?: string; navId?: string; navIndex?: number };
+export type PinPage = { url: string; title: string; location?: string; navId?: string; navIndex?: number; scoId?: string; scoTitle?: string };
 
 export type Pin = {
   id: string;
@@ -46,7 +48,7 @@ export const api = {
   status: () => request<{ lastChangeAt: string | null }>("/api/status"),
   pins: () => request<{ pins: Pin[] }>("/api/pins").then((body) => body.pins),
   createPin: (input: { note: string; page: PinPage; target: PinTarget }) => request<Pin>("/api/pins", json("POST", input)),
-  updatePin: (id: string, changes: Partial<Pick<Pin, "note" | "status">>) => request<Pin>(`/api/pins/${id}`, json("PATCH", changes)),
+  updatePin: (id: string, changes: Partial<Pick<Pin, "note" | "status">> & { resolution?: string }) => request<Pin>(`/api/pins/${id}`, json("PATCH", changes)),
   deletePin: (id: string) => request<Pin>(`/api/pins/${id}`, { method: "DELETE" }),
   saveFrame: (id: string, png: Blob) => request<Pin>(`/api/pins/${id}/frame`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: png }),
   brief: (status: "open" | "all" = "open") => request<string>(`/api/brief?status=${status}`),

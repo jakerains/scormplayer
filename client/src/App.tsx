@@ -7,6 +7,9 @@ import { installScormApis, progressOf, type ScormData } from "./scorm-api";
 import { createNavigator, type NavState } from "./nav";
 import { activeMedia, skipMedia, tourState, watchMedia } from "./media";
 import { DropHome, UploadStatus, ZipInput, useZipOpener } from "./DropHome";
+import { Inspector } from "./Inspector";
+import { registerWebMcpTools, type PlayerActions } from "./webmcp";
+import type { ScormCall } from "./scorm-api";
 
 type Selection = { element: Element; target: PinTarget; elements?: Element[] };
 type Marker = { id: string; number: number; rect: Rect };
@@ -14,6 +17,11 @@ type Marker = { id: string; number: number; rect: Rect };
 export function App() {
   const [course, setCourse] = useState<Course | null>(null);
   const [empty, setEmpty] = useState(false);
+  const [scoIndex, setScoIndex] = useState(0);
+  const [scosOpen, setScosOpen] = useState(false);
+  const [calls, setCalls] = useState<ScormCall[]>([]);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const pendingPinRef = useRef<Pin | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const zipInputRef = useRef<HTMLInputElement | null>(null);
   const zip = useZipOpener();
@@ -77,18 +85,29 @@ export function App() {
   // Course, then the SCORM APIs, then the frame: a course looks for its API as it loads.
   useEffect(() => {
     api.course().then((result) => {
-      if ("empty" in result) setEmpty(true);
-      else setCourse(result);
+      if ("empty" in result) { setEmpty(true); return; }
+      if (result.scos?.length) {
+        try {
+          const saved = Number(localStorage.getItem(`scormplayer:sco:${result.courseKey}`));
+          if (Number.isInteger(saved) && saved > 0 && saved < result.scos.length) setScoIndex(saved);
+        } catch { /* storage blocked */ }
+      }
+      setCourse(result);
     }, (error) => setLoadError(error.message));
   }, []);
+  // Each SCO keeps its own SCORM data, as it would in an LMS.
+  const sco = course?.scos?.[scoIndex] ?? null;
+  const launchUrl = sco?.launchUrl ?? course?.launchUrl ?? "";
   useEffect(() => {
     if (!course) return;
-    const installed = installScormApis(window, `scormplayer:${course.courseKey}`);
+    const installed = installScormApis(window, `scormplayer:${course.courseKey}${sco ? `:${sco.id}` : ""}`);
     setScorm(installed);
     const unsubscribe = installed.subscribe(setScormData);
+    const unsubscribeCalls = installed.subscribeCalls(setCalls);
     document.title = `${course.title} · scormplayer`;
-    return () => { unsubscribe(); installed.uninstall(); };
-  }, [course]);
+    try { if (course.scos) localStorage.setItem(`scormplayer:sco:${course.courseKey}`, String(scoIndex)); } catch { /* storage blocked */ }
+    return () => { unsubscribe(); unsubscribeCalls(); installed.uninstall(); };
+  }, [course, scoIndex]);
 
   // Tell the terminal how the course is doing (completion, success, score, location).
   useEffect(() => {
@@ -129,8 +148,9 @@ export function App() {
       title: (navPage?.title || (heading ? visibleText(heading) : doc.title)).slice(0, 120),
       location,
       ...(navPage ? { navId: navPage.id, navIndex: nav!.index } : {}),
+      ...(sco ? { scoId: sco.id, scoTitle: sco.title } : {}),
     };
-  }, [scormData, nav]);
+  }, [scormData, nav, sco]);
 
   // Page navigation and the tour/narration shortcuts follow the course frame.
   useEffect(() => {
@@ -311,6 +331,9 @@ export function App() {
       } else if (event.key === ".") {
         event.preventDefault();
         skipAhead();
+      } else if (event.key.toLowerCase() === "i") {
+        event.preventDefault();
+        setInspectorOpen((open) => { if (!open) setPanelOpen(false); return !open; });
       }
     };
     const onKeyUp = (event: KeyboardEvent) => { if (event.code === "Space") setPassthrough(false); };
@@ -327,6 +350,7 @@ export function App() {
       const next: Marker[] = [];
       for (const pin of pins) {
         if (pin.status !== "open" || !pin.target || (pin.page?.url && pin.page.url !== page.url)) continue;
+        if (pin.page?.scoId && page.scoId && pin.page.scoId !== page.scoId) continue;
         const pinNav = (pin.page as { navId?: string } | undefined)?.navId;
         if (pinNav && page.navId && pinNav !== page.navId) continue;
         const rect = locateTarget(doc, pin.target);
@@ -435,7 +459,31 @@ export function App() {
     } else if (current.canPrev) current.prev();
   }
 
+  // After switching SCO for a pin, finish the jump once the new module has loaded.
+  useEffect(() => {
+    const pending = pendingPinRef.current;
+    if (!pending) return;
+    pendingPinRef.current = null;
+    const timer = window.setTimeout(() => void goToPin(pending), 700);
+    return () => window.clearTimeout(timer);
+  }, [frameLoads]);
+
+  function switchSco(index: number) {
+    if (!course?.scos || index === scoIndex || index < 0 || index >= course.scos.length) return;
+    setScosOpen(false);
+    setNav(null);
+    setScoIndex(index);
+  }
+
   async function goToPin(pin: Pin) {
+    if (course?.scos && pin.page?.scoId && pin.page.scoId !== sco?.id) {
+      const index = course.scos.findIndex((item) => item.id === pin.page?.scoId);
+      if (index >= 0) {
+        pendingPinRef.current = pin;
+        switchSco(index);
+        return;
+      }
+    }
     const scrollTo = () => {
       const doc = frameDoc();
       const element = doc && pin.target ? elementFor(doc, pin.target) : null;
@@ -496,22 +544,101 @@ export function App() {
 
   useEffect(() => { if (zip.error) say(zip.error); }, [zip.error, say]);
 
+  // WebMCP: the same actions as the buttons, for an AI agent in the browser. Read through a ref
+  // so the registered tools always see the current state.
+  const actionsRef = useRef<PlayerActions | null>(null);
+  actionsRef.current = {
+    status: () => ({
+      course: course ? { title: course.title, scormVersion: course.scormVersion, kind: course.kind, source: course.source } : null,
+      module: sco ? { number: scoIndex + 1, of: course?.scos?.length, title: sco.title } : null,
+      page: nav ? { number: nav.index + 1, of: nav.pages.length, title: nav.pages[nav.index]?.title, pages: nav.pages.map((item) => item.title) } : null,
+      tour,
+      narrationPlaying: mediaPlaying,
+      scorm: progressOf(scormData),
+      screen: viewport,
+      openPins: pins.filter((pin) => pin.status === "open").length,
+    }),
+    goToPage: async (page) => {
+      if (!nav) throw new Error("This course doesn't offer a page list.");
+      const index = typeof page === "number" ? page - 1 : nav.pages.findIndex((item) => item.title.toLowerCase().includes(String(page).toLowerCase()));
+      if (index < 0 || index >= nav.pages.length) throw new Error(`No page ${page}. Pages: ${nav.pages.map((item, i) => `${i + 1}. ${item.title}`).join("; ")}`);
+      const reached = await goToPage(index);
+      return reached ? `Showing page ${index + 1}: ${nav.pages[index].title}` : "The course didn't move to that page.";
+    },
+    switchModule: (module) => {
+      if (!course?.scos) throw new Error("This course has a single module.");
+      const index = typeof module === "number" ? module - 1 : course.scos.findIndex((item) => item.title.toLowerCase().includes(String(module).toLowerCase()));
+      if (index < 0 || index >= course.scos.length) throw new Error(`No module ${module}.`);
+      switchSco(index);
+      return `Opening module ${index + 1}: ${course.scos[index].title}`;
+    },
+    skip: () => {
+      const frame = frameRef.current;
+      return frame && skipMedia(frame) ? "Skipped to the end of the narration." : "Nothing is playing.";
+    },
+    tourStep: (direction) => {
+      const frame = frameRef.current;
+      const current = frame ? tourState(frame) : null;
+      if (!current) return "No guided tour is open.";
+      tourStep(direction === "back" ? "prev" : "next");
+      return direction === "back" ? "Moved back." : current.canNext ? "Moved to the next step." : "Skipped the narration; the tour can now continue.";
+    },
+    listPins: (status) => pins.filter((pin) => status === "all" || pin.status === status).map((pin) => ({
+      number: pin.number,
+      status: pin.status,
+      note: pin.note,
+      page: pin.page?.title,
+      module: pin.page?.scoTitle,
+      target: pin.target?.name,
+      source: pin.source?.[0] ? `${pin.source[0].file}:${pin.source[0].line}` : undefined,
+    })),
+    addPin: async ({ note, selector, text }) => {
+      const doc = frameDoc();
+      if (!doc) throw new Error("No course is showing.");
+      let element: Element | null = null;
+      if (selector) {
+        try { element = doc.querySelector(selector); } catch { throw new Error(`Not a valid CSS selector: ${selector}`); }
+      } else if (text) {
+        const wanted = text.replace(/\s+/g, " ").trim().toLowerCase();
+        const matches = Array.from(doc.body.querySelectorAll("*")).filter((candidate) => visibleText(candidate).toLowerCase().includes(wanted));
+        element = matches.sort((a, b) => visibleText(a).length - visibleText(b).length)[0] ?? null;
+      }
+      if (!element) throw new Error("Couldn't find that on the current page.");
+      const target = chooseTarget(element) ?? element;
+      const pin = await api.createPin({ note, page: currentPage(), target: describeElement(target) });
+      setPins((previous) => [...previous, pin]);
+      void captureElement(target).then((png) => (png ? api.saveFrame(pin.id, png).then(refreshPins) : undefined)).catch(() => {});
+      return { number: pin.number, target: pin.target?.name, source: pin.source?.[0] ? `${pin.source[0].file}:${pin.source[0].line}` : undefined };
+    },
+    resolvePin: async (number, note) => {
+      const pin = pins.find((item) => item.number === number);
+      if (!pin) throw new Error(`No pin ${number}.`);
+      const updated = await api.updatePin(pin.id, { status: "resolved", ...(note ? { resolution: note } : {}) } as Partial<Pin>);
+      setPins((previous) => previous.map((item) => (item.id === pin.id ? updated : item)));
+      return `Pin ${number} resolved.`;
+    },
+    handOff: () => api.brief("open"),
+    setScreen: (size) => { setViewport(size); return `Showing the course at ${size} size.`; },
+    scormData: (includeCalls) => ({ data: scormData, ...(includeCalls ? { calls: calls.slice(-100) } : {}) }),
+  };
+  useEffect(() => registerWebMcpTools(() => actionsRef.current!), []);
+
   if (empty) return <DropHome />;
 
   if (loadError) return <div className="sp-fatal"><strong>scormplayer could not load the course.</strong><p>{loadError}</p></div>;
 
   return (
-    <div className={`sp-app ${panelOpen ? "has-panel" : ""}`}>
+    <div className={`sp-app ${panelOpen || inspectorOpen ? "has-panel" : ""}`}>
       <div className="sp-main">
         <div className={`sp-stage ${pinMode && !passthrough ? "is-picking" : ""}`} ref={stageRef}>
           <div className={`sp-device sp-device--${viewport}`} ref={deviceRef} style={deviceStyle}>
           {course && scorm ? (
             <iframe
-              key={frameKey}
+              key={`${frameKey}-${scoIndex}`}
               ref={frameRef}
               className="sp-frame"
               title={course.title}
-              src={course.launchUrl}
+              src={launchUrl}
               allow="autoplay; fullscreen; microphone; camera; clipboard-write"
               onLoad={() => setFrameLoads((count) => count + 1)}
             />
@@ -608,6 +735,31 @@ export function App() {
             </div>
           </div>
 
+          {course?.scos && sco ? (
+            <div className="sp-nav sp-scos" aria-label="Modules">
+              <button type="button" className="sp-nav__step" disabled={scoIndex === 0} onClick={() => switchSco(scoIndex - 1)} aria-label="Previous module" title="Previous module"><Icon name="chevronLeft" /></button>
+              <div className="sp-menu-anchor">
+                <button type="button" className="sp-nav__page" aria-expanded={scosOpen} onClick={() => { setScosOpen((value) => !value); setPagesOpen(false); setMenuOpen(false); }} title="Switch module (SCO)">
+                  <span className="sp-scos__label">Module</span><b>{scoIndex + 1}</b><span className="sp-nav__of">/ {course.scos.length}</span>
+                  <span className="sp-nav__title">{sco.title}</span>
+                  <Icon name="chevronUp" size={14} />
+                </button>
+                {scosOpen ? (
+                  <div className="sp-menu sp-pages" role="menu">
+                    {course.scos.map((item, index) => (
+                      <button key={item.id} type="button" role="menuitem" aria-current={index === scoIndex ? "page" : undefined} onClick={() => switchSco(index)}>
+                        <span className="sp-pages__number">{index + 1}</span>
+                        <span className="sp-pages__title">{item.title}</span>
+                        {pins.some((pin) => pin.status === "open" && pin.page?.scoId === item.id) ? <span className="sp-pages__pin" title="Has open pins" /> : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <button type="button" className="sp-nav__step" disabled={scoIndex >= course.scos.length - 1} onClick={() => switchSco(scoIndex + 1)} aria-label="Next module" title="Next module"><Icon name="chevronRight" /></button>
+            </div>
+          ) : null}
+
           {nav ? (
             <div className="sp-nav" aria-label="Pages">
               <button type="button" className="sp-nav__step" disabled={nav.index === 0} onClick={() => void stepPage(-1)} title="Previous page ( [ )" aria-label="Previous page">
@@ -665,7 +817,7 @@ export function App() {
             <button type="button" className="sp-tab" aria-pressed={pinMode} onClick={() => { setPinMode((value) => !value); setMenuOpen(false); }} title="Pin mode (P)">
               <Icon name="pin" /><span>{pinMode ? "Pinning" : "Pin"}</span>
             </button>
-            <button type="button" className="sp-tab" aria-pressed={panelOpen} onClick={() => { setPanelOpen((value) => !value); setMenuOpen(false); }} title="Saved pins">
+            <button type="button" className="sp-tab" aria-pressed={panelOpen} onClick={() => { setPanelOpen((value) => !value); setInspectorOpen(false); setMenuOpen(false); }} title="Saved pins">
               <Icon name="list" /><span>Pins</span>{openPins.length ? <em>{openPins.length}</em> : null}
             </button>
             <button type="button" className="sp-tab" onClick={() => void copyPins()} disabled={!openPins.length} title="Copy all open pins as a hand-off for an agent">
@@ -677,6 +829,9 @@ export function App() {
               </button>
               {menuOpen ? (
                 <div className="sp-menu" role="menu">
+                  <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setPanelOpen(false); setInspectorOpen(true); }}>
+                    <Icon name="code" size={16} /> SCORM inspector <kbd>I</kbd>
+                  </button>
                   <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); zipInputRef.current?.click(); }}>
                     <Icon name="file" size={16} /> Open another course…
                   </button>
@@ -696,6 +851,11 @@ export function App() {
           </nav>
         </footer>
       </div>
+
+      {inspectorOpen ? (
+        <Inspector data={scormData} calls={calls} onClear={() => scorm?.clearCalls()} onClose={() => setInspectorOpen(false)}
+          onCopy={(text) => void copyText(text).then(() => say("SCORM data and calls copied"), () => say("Couldn't reach the clipboard"))} />
+      ) : null}
 
       {panelOpen ? (
         <aside className="sp-panel" aria-label="Pins">

@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright";
 import { startPlayer } from "../server/index.mjs";
-import { scorm12Zip } from "./fixtures.mjs";
+import { multiScoZip, scorm12Zip } from "./fixtures.mjs";
 
 let browser;
 before(async () => { browser = await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required"] }); });
@@ -173,6 +173,75 @@ test("an empty player opens a chosen zip and switches to another", async () => {
     await page.locator("input[type=file]").last().setInputFiles(second);
     await page.waitForFunction(() => document.querySelector(".sp-bar__titles strong")?.textContent === "Fire Drill", null, { timeout: 15000 });
     assert.equal(player.course.title, "Fire Drill");
+  } finally {
+    await page.close();
+    await player.close();
+  }
+});
+
+test("modules of a multi-SCO package keep their own SCORM data; the inspector shows it", async () => {
+  const dir = tempDir();
+  const zip = path.join(dir, "multi.zip");
+  fs.writeFileSync(zip, multiScoZip());
+  const { player, page } = await open({ input: zip });
+  try {
+    const label = page.locator(".sp-scos .sp-nav__page");
+    await label.waitFor();
+    assert.match(await label.innerText(), /1\s*\/ 3\s*Module 1/);
+    await page.waitForFunction(() => document.querySelector(".sp-progress")?.textContent?.includes("Completed"));
+    await page.locator(".sp-scos .sp-nav__step[aria-label='Next module']").click();
+    await page.waitForFunction(() => document.querySelector(".sp-scos .sp-nav__page")?.textContent?.includes("Module 2"));
+    assert.equal(await page.frameLocator("iframe.sp-frame").locator("h1").innerText(), "Module 2");
+    await page.waitForFunction(() => document.querySelector(".sp-progress")?.textContent?.includes("In progress"));
+
+    await page.keyboard.press("i");
+    const inspector = page.locator(".sp-inspector");
+    await inspector.waitFor();
+    assert.match(await inspector.locator("table").innerText(), /cmi\.location\s+module-2/);
+    await inspector.locator("[role=tab]", { hasText: "Calls" }).click();
+    assert.match(await inspector.locator(".sp-calls").innerText(), /SetValue[\s\S]*cmi\.completion_status, incomplete/);
+
+    await page.locator(".sp-scos .sp-nav__step[aria-label='Previous module']").click();
+    await page.waitForFunction(() => document.querySelector(".sp-progress")?.textContent?.includes("Completed"));
+  } finally {
+    await page.close();
+    await player.close();
+  }
+});
+
+test("WebMCP tools drive the player for a browser agent", async () => {
+  const dir = tempDir();
+  const { player } = await open({ input: navCourse() }).then(async (opened) => { await opened.page.close(); return opened; });
+  const page = await browser.newPage({ viewport: { width: 1400, height: 820 } });
+  // A stand-in for the browser's WebMCP API, recording what the page registers.
+  await page.addInitScript(() => {
+    window.__tools = {};
+    document.modelContext = { registerTool: (tool) => { window.__tools[tool.name] = tool; return { unregister() {} }; } };
+  });
+  try {
+    await page.goto(player.url);
+    await page.locator(".sp-nav__page").waitFor();
+    const names = await page.evaluate(() => Object.keys(window.__tools).sort());
+    assert.ok(names.includes("scormplayer_add_pin") && names.includes("scormplayer_go_to_page") && names.length >= 10);
+    const call = (name, input = {}) => page.evaluate(async ([tool, args]) => {
+      const result = await window.__tools[tool].execute(args);
+      return { error: Boolean(result.isError), text: result.content[0].text };
+    }, [name, input]);
+
+    const status = JSON.parse((await call("scormplayer_status")).text);
+    assert.equal(status.page.of, 3);
+    assert.match((await call("scormplayer_go_to_page", { page: "hazards" })).text, /page 2: Spot the hazards/);
+    assert.equal(await page.frameLocator("iframe.sp-frame").locator("#title").innerText(), "Spot the hazards");
+
+    const added = JSON.parse((await call("scormplayer_add_pin", { note: "Shorten this", text: "three most common hazards" })).text);
+    assert.equal(added.number, 1);
+    assert.equal(player.pins.list()[0].page.title, "Spot the hazards");
+    assert.match((await call("scormplayer_get_handoff")).text, /Shorten this/);
+    assert.match((await call("scormplayer_resolve_pin", { number: 1, note: "Shortened" })).text, /resolved/);
+    assert.equal(player.pins.list()[0].status, "resolved");
+    assert.equal((await call("scormplayer_add_pin", { note: "x", selector: "#missing" })).error, true);
+    assert.match((await call("scormplayer_set_screen_size", { size: "phone" })).text, /phone/);
+    assert.equal(await page.frames()[1].evaluate(() => window.innerWidth), 390);
   } finally {
     await page.close();
     await player.close();

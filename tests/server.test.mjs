@@ -9,7 +9,7 @@ import { parseManifestXml, resolveCourse, UserError } from "../server/course.mjs
 import { createPinStore } from "../server/pins.mjs";
 import { findSourceText } from "../server/source-match.mjs";
 import { startPlayer } from "../server/index.mjs";
-import { MANIFEST_12, MANIFEST_2004, scorm12Zip, scorm2004Zip, traversalZip } from "./fixtures.mjs";
+import { MANIFEST_12, MANIFEST_2004, multiScoZip, scorm12Zip, scorm2004Zip, traversalZip } from "./fixtures.mjs";
 
 const BIN = fileURLToPath(new URL("../bin/scormplayer.mjs", import.meta.url));
 
@@ -314,4 +314,15 @@ test("update check: newer versions only, asked at most once a day", async () => 
     if (saved.CI === undefined) delete process.env.CI; else process.env.CI = saved.CI;
     if (saved.OFF === undefined) delete process.env.SCORMPLAYER_NO_UPDATE_CHECK; else process.env.SCORMPLAYER_NO_UPDATE_CHECK = saved.OFF;
   }
+});
+
+test("multi-SCO packages list every module in manifest order", async () => {
+  const dir = tempDir();
+  const zip = path.join(dir, "multi.zip");
+  fs.writeFileSync(zip, multiScoZip());
+  const course = resolveCourse(zip, { cacheDir: path.join(dir, "cache") });
+  assert.deepEqual(course.scos.map((sco) => [sco.title, sco.launch]), [["Module 1", "m1/index.html"], ["Module 2", "m2/index.html"], ["Module 3", "m3/index.html"]]);
+  const single = path.join(dir, "single.zip");
+  fs.writeFileSync(single, scorm12Zip());
+  assert.equal(resolveCourse(single, { cacheDir: path.join(dir, "cache") }).scos.length, 1);
 });

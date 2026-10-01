@@ -7,6 +7,8 @@
  */
 
 export type ScormData = Record<string, string>;
+/** One call the course made to the LMS API. */
+export type ScormCall = { at: number; api: "1.2" | "2004"; method: string; args: string[]; result: string; error: string };
 export type ScormProgress = { completion: string; success: string; score: string; location: string; progressMeasure: string };
 type Listener = (data: ScormData) => void;
 
@@ -63,8 +65,19 @@ const ERRORS: Record<string, string> = {
   "301": "Not initialized",
 };
 
+const MAX_CALLS = 400;
+
 export function installScormApis(win: Window, storageKey: string) {
   const listeners = new Set<Listener>();
+  const callListeners = new Set<(calls: ScormCall[]) => void>();
+  let calls: ScormCall[] = [];
+  /** Wrap an API method so every call is kept for the inspector. */
+  const logged = <T extends (...args: any[]) => string>(api: ScormCall["api"], method: string, fn: T) => ((...args: unknown[]) => {
+    const result = fn(...(args as Parameters<T>));
+    calls = [...calls.slice(-(MAX_CALLS - 1)), { at: Date.now(), api, method, args: args.map((arg) => String(arg ?? "")), result: String(result), error: lastError }];
+    callListeners.forEach((listener) => listener(calls));
+    return result;
+  }) as T;
   let data: ScormData = { ...load(storageKey) };
   let lastError = "0";
 
@@ -105,32 +118,42 @@ export function installScormApis(win: Window, storageKey: string) {
   };
 
   const api12 = {
-    LMSInitialize: initialize(DEFAULTS_12, "cmi.core.entry", "cmi.core.lesson_location"),
-    LMSFinish: () => { save(); return "true"; },
-    LMSGetValue: getValue(DEFAULTS_12),
-    LMSSetValue: setValue,
-    LMSCommit: () => { save(); return "true"; },
-    LMSGetLastError: common.lastError,
-    LMSGetErrorString: common.errorString,
-    LMSGetDiagnostic: common.errorString,
+    LMSInitialize: logged("1.2", "LMSInitialize", initialize(DEFAULTS_12, "cmi.core.entry", "cmi.core.lesson_location")),
+    LMSFinish: logged("1.2", "LMSFinish", () => { save(); return "true"; }),
+    LMSGetValue: logged("1.2", "LMSGetValue", getValue(DEFAULTS_12)),
+    LMSSetValue: logged("1.2", "LMSSetValue", setValue),
+    LMSCommit: logged("1.2", "LMSCommit", () => { save(); return "true"; }),
+    LMSGetLastError: logged("1.2", "LMSGetLastError", common.lastError),
+    LMSGetErrorString: logged("1.2", "LMSGetErrorString", common.errorString),
+    LMSGetDiagnostic: logged("1.2", "LMSGetDiagnostic", common.errorString),
   };
 
   const api2004 = {
     version: "1.0",
-    Initialize: initialize(DEFAULTS_2004, "cmi.entry", "cmi.location"),
-    Terminate: () => { save(); return "true"; },
-    GetValue: getValue(DEFAULTS_2004),
-    SetValue: setValue,
-    Commit: () => { save(); return "true"; },
-    GetLastError: common.lastError,
-    GetErrorString: common.errorString,
-    GetDiagnostic: common.errorString,
+    Initialize: logged("2004", "Initialize", initialize(DEFAULTS_2004, "cmi.entry", "cmi.location")),
+    Terminate: logged("2004", "Terminate", () => { save(); return "true"; }),
+    GetValue: logged("2004", "GetValue", getValue(DEFAULTS_2004)),
+    SetValue: logged("2004", "SetValue", setValue),
+    Commit: logged("2004", "Commit", () => { save(); return "true"; }),
+    GetLastError: logged("2004", "GetLastError", common.lastError),
+    GetErrorString: logged("2004", "GetErrorString", common.errorString),
+    GetDiagnostic: logged("2004", "GetDiagnostic", common.errorString),
   };
 
   Object.assign(win, { API: api12, API_1484_11: api2004 });
 
   return {
     data: () => ({ ...data }),
+    calls: () => calls,
+    subscribeCalls(listener: (calls: ScormCall[]) => void) {
+      callListeners.add(listener);
+      listener(calls);
+      return () => callListeners.delete(listener);
+    },
+    clearCalls() {
+      calls = [];
+      callListeners.forEach((listener) => listener(calls));
+    },
     subscribe(listener: Listener) {
       listeners.add(listener);
       listener({ ...data });

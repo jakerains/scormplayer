@@ -90,6 +90,8 @@ In the player:
 | Save a pin | <kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>Enter</kbd> |
 | See, edit, resolve or delete pins | **Pins** |
 | Check tablet or phone layouts | The screen-size switch in the bar (tablet 1024×768, phone 390×844) |
+| See what the course tells the LMS | **More → SCORM inspector**, or <kbd>I</kbd> |
+| Move between modules (multi-SCO packages) | The **Module** switcher in the bar |
 | Copy open pins for an agent | **Copy** |
 | Move between pages | ‹ › in the bar, the page menu, or <kbd>[</kbd> <kbd>]</kbd> |
 | Skip narration or a video | **Skip** in the bar, or <kbd>.</kbd> |
@@ -112,6 +114,27 @@ best first:
 While audio or video is playing, **Skip** (or <kbd>.</kbd>) jumps it to the end, so the course
 runs its own "finished" logic: a narrated driver.js tour unlocks Next exactly as if you had
 waited. While a tour is open the bar also shows its step and Back/Next.
+
+### SCORM inspector
+
+**More → SCORM inspector** (or <kbd>I</kbd>) shows the course's SCORM data as the LMS sees it
+(completion, success, score, location, suspend data, interactions) and every API call it makes,
+newest first, with a filter, a *writes only* switch and **Copy JSON**. It's the quickest way to
+see why a course doesn't complete, score or resume.
+
+### Packages with several modules
+
+When a manifest lists several SCOs, a **Module** switcher appears in the bar. Each module keeps
+its own SCORM data, as it would in an LMS, and pins remember their module.
+
+### For AI agents in the browser (WebMCP)
+
+In browsers that support [WebMCP](https://github.com/webmachinelearning/webmcp), the player
+registers tools an agent can call instead of clicking around: `scormplayer_status`,
+`scormplayer_go_to_page`, `scormplayer_switch_module`, `scormplayer_skip_narration`,
+`scormplayer_tour_step`, `scormplayer_list_pins`, `scormplayer_add_pin`,
+`scormplayer_resolve_pin`, `scormplayer_get_handoff`, `scormplayer_set_screen_size` and
+`scormplayer_scorm_data`. In other browsers nothing is registered and nothing changes.
 
 ### Where pins are kept
 

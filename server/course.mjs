@@ -111,7 +111,14 @@ export function readManifest(root) {
   if (!isInside(root, launchFile) || !fs.existsSync(launchFile)) {
     throw new UserError(`The manifest launches ${parsed.href}, but that file is not in the package.`);
   }
-  return { root, title: parsed.title, scormVersion: parsed.scormVersion, launch, identifier: parsed.identifier };
+  // Every launchable item, for packages with more than one SCO.
+  const scos = parsed.items
+    .map((item) => ({ ...item, launch: [wrapper, item.href].filter(Boolean).join("/") }))
+    .filter((item) => {
+      const file = path.resolve(root, item.launch.split(/[?#]/)[0]);
+      return isInside(root, file) && fs.existsSync(file);
+    });
+  return { root, title: parsed.title, scormVersion: parsed.scormVersion, launch, identifier: parsed.identifier, scos };
 }
 
 /** Parse the parts of imsmanifest.xml the player needs. Exported for tests. */
@@ -135,7 +142,17 @@ export function parseManifestXml(xml) {
   const parameters = launchItem?.["@_parameters"] ? String(launchItem["@_parameters"]).trim() : "";
   const href = joinParameters(String(resource["@_href"]).trim(), parameters);
 
+  const launchable = items
+    .map((item) => {
+      const res = resources.find((r) => r["@_identifier"] === item["@_identifierref"] && r["@_href"]);
+      if (!res) return null;
+      const itemParameters = item["@_parameters"] ? String(item["@_parameters"]).trim() : "";
+      return { id: String(item["@_identifier"] ?? res["@_identifier"]), title: text(item.title) || String(res["@_identifier"]), href: joinParameters(String(res["@_href"]).trim(), itemParameters) };
+    })
+    .filter(Boolean);
+
   return {
+    items: launchable.length ? launchable : [{ id: String(resource["@_identifier"] ?? "sco"), title: text(organization?.title) || "Course", href }],
     identifier: String(manifest["@_identifier"] ?? ""),
     title: text(organization?.title) || text(launchItem?.title) || text(manifest.metadata?.lom?.general?.title?.string) || "Untitled course",
     scormVersion: detectVersion(manifest, xml),

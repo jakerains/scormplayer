@@ -77,6 +77,8 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       launchUrl: course.kind === "live" ? LIVE_BASE : `/course/${encodePath(course.launch)}`,
       courseKey: course.sha256 ?? course.source,
       pinsFile: course.pinsFile,
+      // Packages with several SCOs: each one, in manifest order, to switch between.
+      ...(course.scos?.length > 1 ? { scos: course.scos.map((sco) => ({ id: sco.id, title: sco.title, launchUrl: `/course/${encodePath(sco.launch)}` })) } : {}),
     });
   });
 

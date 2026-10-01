@@ -72,6 +72,15 @@ scormplayer <course> --no-open --port 4620
 It prints the URL and the pins file path. Don't start it unless you need it; the reviewer
 usually has it open already.
 
+## In the browser
+
+If you can drive a browser and it supports WebMCP, the player page offers tools
+(`scormplayer_status`, `scormplayer_go_to_page`, `scormplayer_add_pin`, `scormplayer_list_pins`,
+`scormplayer_resolve_pin`, `scormplayer_get_handoff`, `scormplayer_scorm_data`, and more). Use
+them rather than clicking: they move pages, skip narration, and pin or resolve notes exactly as
+the buttons do. **More → SCORM inspector** (or `I`) shows the SCORM data and every API call when a
+course won't complete, score or resume.
+
 ## When a course doesn't play well
 
 Reviewers may ask you to get a course working in scormplayer. Diagnose first, then propose the
@@ -111,7 +120,11 @@ experience in an LMS; review-only code must do nothing unless a review host is p
    `new Audio()` playback. Sound made with the Web Audio API (`AudioContext`) can't be skipped;
    playing narration through an audio element fixes that. Tour controls follow driver.js's
    `.driver-popover` buttons; a step that requires a learner action can't be skipped.
-6. **Live mode won't start**: install the project's dependencies (the player uses the project's
+6. **It never completes or never resumes**: open the SCORM inspector (`I`) and check the calls.
+   Common causes: no `Initialize`/`LMSInitialize`, values set but never committed, the wrong
+   element for the SCORM version (`cmi.core.lesson_status` is 1.2, `cmi.completion_status` is
+   2004), or `cmi.exit` not set to `suspend` before leaving, so the course doesn't resume.
+7. **Live mode won't start**: install the project's dependencies (the player uses the project's
    own Vite, version 5 or newer) and make sure the folder has `index.html` and a `vite.config.*`.
 
 Add a `scormplayer.config.json` (see the README) when a project needs pins kept outside the
