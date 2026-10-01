@@ -10,6 +10,7 @@ import { DropHome, UploadStatus, ZipInput, useZipOpener } from "./DropHome";
 import { Inspector } from "./Inspector";
 import { UnzipDialog, UnzipNotice, useUnzipNotice } from "./Unzip";
 import { ClosedScreen, StillThereCard, useStillThere } from "./StillThere";
+import { SkillCard, useAgentSkill } from "./SkillOffer";
 import { registerWebMcpTools, type PlayerActions } from "./webmcp";
 import type { ScormCall } from "./scorm-api";
 
@@ -51,6 +52,7 @@ export function App() {
   const [confirmReset, setConfirmReset] = useState(false);
   const [toast, setToast] = useState("");
   const [unzipOpen, setUnzipOpen] = useState(false);
+  const skillOffer = useAgentSkill();
   // A newer scormplayer, when the terminal found one; asked again each time More opens.
   const [update, setUpdate] = useState<{ latest: string; command: string } | null>(null);
   useEffect(() => { if (menuOpen) api.update().then(setUpdate, () => {}); }, [menuOpen]);
@@ -919,6 +921,7 @@ export function App() {
             </button>
             <label><input type="checkbox" checked={showResolved} onChange={(event) => setShowResolved(event.target.checked)} /> Show resolved</label>
           </div>
+          <SkillCard offer={skillOffer} />
           {listedPins.length ? (
             <ol className="sp-pin-list">
               {listedPins.map((pin) => (

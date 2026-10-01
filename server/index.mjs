@@ -13,6 +13,7 @@ import { startLiveCourse, LIVE_BASE } from "./live.mjs";
 import { pruneCache } from "./cache.mjs";
 import { defaultUnzipFolder, existingUnzip, unzipCourse } from "./unzip.mjs";
 import { defaultRegistryDir, registerPlayer } from "./registry.mjs";
+import { skillStatus } from "./skill.mjs";
 
 export { resolveCourse, UserError } from "./course.mjs";
 export { createPinStore } from "./pins.mjs";
@@ -112,6 +113,18 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     if (req.path !== "/api/player") lastActivity = Date.now();
     next();
   });
+  // Changes only from the player's own page. A browser names the page a request comes from, so
+  // another website can't use this local server to save pins or unzip files.
+  app.use((req, res, next) => {
+    if (req.method === "GET" || req.method === "HEAD") return next();
+    const origin = req.get("origin");
+    if (origin && origin !== "null") {
+      let host = null;
+      try { host = new URL(origin).host; } catch { /* malformed */ }
+      if (host !== req.get("host")) return res.status(403).json({ error: "Requests from other sites aren't allowed." });
+    }
+    next();
+  });
   app.use(express.json({ limit: "1mb" }));
   app.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
@@ -180,6 +193,14 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     const course = await openPackage(String(req.body?.name ?? ""));
     res.json({ ok: true, title: course.title, package: course.package });
   }));
+
+  // The agent skill: whether coding agents have it and whether it matches this version. The page
+  // only points to the terminal (`scormplayer skill`); it never installs anything itself.
+  app.get("/api/skill", (_req, res) => {
+    let status = { state: "unknown", version: null, installed: [] };
+    try { status = skillStatus(); } catch { /* no skill file to compare */ }
+    res.json({ state: status.state, version: status.version, installedVersion: status.installed.map((copy) => copy.version).find(Boolean) ?? null });
+  });
 
   app.get("/api/status", (_req, res) => res.json(current?.liveCourse?.status() ?? { lastChangeAt: null }));
 

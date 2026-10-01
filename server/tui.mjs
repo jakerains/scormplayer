@@ -13,9 +13,11 @@ import { spawn, spawnSync } from "node:child_process";
  *   plain?: boolean,
  *   pinsHint?: (entry) => string,
  *   onQuit: () => void | Promise<void>,
+ *   skill?: { status: () => { state: string, version: string, installed: { version: string | null }[] },
+ *     install: () => Promise<{ installed: boolean, output: string }>, update: () => Promise<{ state: string, output: string }> },
  * }} options
  */
-export function createDashboard({ version, entries, plain = false, pinsHint, onQuit, stdout = process.stdout, stdin = process.stdin }) {
+export function createDashboard({ version, entries, plain = false, pinsHint, onQuit, skill = null, stdout = process.stdout, stdin = process.stdin }) {
   const interactive = !plain && stdout.isTTY && stdin.isTTY && !process.env.CI;
   const paint = createPaint(stdout);
   const state = entries.map((entry) => ({
@@ -34,6 +36,15 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
   let closed = false;
   let update = null;
   let updateCommand = "scormplayer update";
+  // Whether coding agents have the scormplayer skill, and whether it matches this version:
+  // missing or outdated is offered on the s key; newer means scormplayer itself is behind.
+  const firstSkill = skill ? safeSkillStatus(skill) : null;
+  let skillState = firstSkill?.state ?? "unknown";
+  const skillVersions = () => {
+    const status = skill ? safeSkillStatus(skill) : null;
+    const installed = status?.installed.map((copy) => copy.version).filter(Boolean)[0];
+    return { installed: installed ?? "an older version", current: status?.version ?? version };
+  };
   const timers = [];
 
   const log = (icon, text, entry = null) => {
@@ -124,6 +135,25 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     render();
   }
 
+  async function installSkill() {
+    if (!skill || (skillState !== "missing" && skillState !== "outdated")) return;
+    const updating = skillState === "outdated";
+    skillState = "installing";
+    say(updating ? "Updating the agent skill…" : "Installing the agent skill…");
+    log("•", updating ? "Updating the scormplayer skill to match this version…" : "Installing the scormplayer skill for your coding agents…");
+    if (updating) {
+      const result = await skill.update();
+      skillState = result.state;
+      if (result.state === "outdated") log("✗", `The agent skill didn't update. Run: scormplayer skill${result.output ? ` (${oneLine(result.output).slice(-120)})` : ""}`);
+      else log("✓", `Agent skill updated to ${version}`);
+      return;
+    }
+    const result = await skill.install();
+    skillState = result.installed ? "current" : "missing";
+    if (result.installed) log("✓", "Agent skill installed: Claude Code, Codex, Cursor and other agents can now act on your pins");
+    else log("✗", `The agent skill didn't install. Run: scormplayer skill${result.output ? ` (${oneLine(result.output).slice(-120)})` : ""}`);
+  }
+
   function canUnzip() {
     return state.length === 1 && state[0].player.course?.kind === "package" && Boolean(state[0].player.unzip);
   }
@@ -204,6 +234,13 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       lines.push(boxLine(`${p.dim("Progress".padEnd(10))}${progressGraphic(entry.progress, inner - 12)}`, width));
       if (course.kind === "live") lines.push(boxLine(`${p.dim("Source".padEnd(10))}${sourceLine(entry, inner - 12)}`, width));
       lines.push(boxLine(`${p.dim("Pins".padEnd(10))}${pinCounts(entry.pins)}`, width));
+      const agentsLine = {
+        missing: () => `${p.amber("Skill not installed.")} ${p.dim("Press s to teach coding agents about pins")}`,
+        outdated: () => `${p.amber(`Skill out of date (${skillVersions().installed}; this is ${version}).`)} ${p.dim("Press s to update it")}`,
+        newer: () => `${p.amber(`Skill is newer than scormplayer ${version}.`)} ${p.dim("Run: scormplayer update")}`,
+        installing: () => p.amber("Updating the agent skill…"),
+      }[skillState];
+      if (agentsLine) lines.push(boxLine(`${p.dim("Agents".padEnd(10))}${agentsLine()}`, width));
       if (course.kind === "package" && entry.player.unzip) {
         lines.push(boxLine(`${p.dim("Edit".padEnd(10))}${p.amber("Read-only zip.")} ${p.dim("Press u to unzip it to a folder you and agents can edit")}`, width));
       }
@@ -266,6 +303,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       ["c", "copy pins"],
       ["p", "show pins"],
       ...(canUnzip() ? [["u", "unzip to edit"]] : []),
+      ...(skillState === "missing" ? [["s", "install agent skill"]] : skillState === "outdated" ? [["s", "update agent skill"]] : []),
       ["q", "quit"],
     ];
     lines.push(`  ${keys.map(([key, label]) => `${p.key(` ${key} `)} ${p.dim(label)}`).join("   ")}`);
@@ -381,12 +419,14 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     stdin.setRawMode(true);
     stdin.setEncoding("utf8");
     stdin.resume();
-    stdin.on("data", (key) => {
-      if (key === "\u0003" || (view === "home" && (key === "q" || key === "Q"))) return void quit();
+    onKeys(stdin, (key) => {
+      if (key === "ctrl-c" || (view === "home" && (key === "q" || key === "Q"))) return void quit();
       if (view === "brief") {
-        if (key === "\u001b" || key === "q" || key === "p") { view = "home"; render(); }
-        else if (key === "\u001b[A" || key === "k") { briefScroll -= 1; render(); }
-        else if (key === "\u001b[B" || key === "j" || key === " ") { briefScroll += key === " " ? 10 : 1; render(); }
+        if (key === "escape" || key === "q" || key === "p") { view = "home"; render(); }
+        else if (key === "up" || key === "k") { briefScroll -= 1; render(); }
+        else if (key === "down" || key === "j" || key === " ") { briefScroll += key === " " ? 10 : 1; render(); }
+        else if (key === "pageup") { briefScroll -= 10; render(); }
+        else if (key === "pagedown") { briefScroll += 10; render(); }
         else if (key === "c") { copyPins(); view = "home"; render(); }
         return;
       }
@@ -395,6 +435,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       else if (key === "c") copyPins();
       else if (key === "p") showPins();
       else if (key === "u" && canUnzip()) void unzip(state[0]);
+      else if (key === "s" && (skillState === "missing" || skillState === "outdated")) void installSkill();
     });
     stdout.on("resize", render);
     timers.push(setInterval(render, 1000));
@@ -429,6 +470,10 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
 }
 
 // ---- Shared helpers --------------------------------------------------------------------------
+
+function safeSkillStatus(skill) {
+  try { return skill.status(); } catch { return null; }
+}
 
 export function progressLabel(progress) {
   if (!progress) return { text: "Not opened yet", tone: "muted" };
@@ -690,8 +735,9 @@ export function pickCourse({ version, courses, cwd = process.cwd(), stdout = pro
 
     const kindColor = (kind) => ({ zip: p.green, folder: p.blue, live: p.amber })[kind] ?? p.dim;
 
+    let stopKeys = () => {};
     const finish = (choice) => {
-      stdin.off("data", onKey);
+      stopKeys();
       stdout.off("resize", render);
       stdin.setRawMode?.(false);
       stdin.pause();
@@ -699,12 +745,14 @@ export function pickCourse({ version, courses, cwd = process.cwd(), stdout = pro
       resolve(choice);
     };
     const onKey = (key) => {
-      if (key === "\u0003" || key === "q" || key === "\u001b") return finish(null);
-      if (key === "d" || (!courses.length && (key === "\r" || key === "\n"))) return finish(DROP_PAGE);
+      if (key === "ctrl-c" || key === "q" || key === "escape") return finish(null);
+      if (key === "d" || (!courses.length && key === "enter")) return finish(DROP_PAGE);
       if (!courses.length) return;
-      if (key === "\u001b[A" || key === "k") index = (index - 1 + rows.length) % rows.length;
-      else if (key === "\u001b[B" || key === "j") index = (index + 1) % rows.length;
-      else if (key === "\r" || key === "\n" || key === " ") return finish(rows[index].path);
+      if (key === "up" || key === "k") index = (index - 1 + rows.length) % rows.length;
+      else if (key === "down" || key === "j") index = (index + 1) % rows.length;
+      else if (key === "home") index = 0;
+      else if (key === "end") index = rows.length - 1;
+      else if (key === "enter" || key === " ") return finish(rows[index].path);
       else if (/^[1-9]$/.test(key) && courses[Number(key) - 1]) return finish(courses[Number(key) - 1].path);
       render();
     };
@@ -713,8 +761,105 @@ export function pickCourse({ version, courses, cwd = process.cwd(), stdout = pro
     stdin.setRawMode(true);
     stdin.setEncoding("utf8");
     stdin.resume();
-    stdin.on("data", onKey);
+    stopKeys = onKeys(stdin, onKey);
     stdout.on("resize", render);
     render();
   });
+}
+
+/**
+ * A short list to choose from with the arrow keys, drawn in place under what's already on screen
+ * (not a full-screen view): the courses in a zip, say. Resolves to the chosen item's index, or
+ * null on q / Esc / Ctrl+C.
+ *
+ * @param {{ title: string, items: { label: string, note?: string }[], stdout?: any, stdin?: any }} options
+ */
+export function pickFromList({ title, items, stdout = process.stdout, stdin = process.stdin }) {
+  const p = createPaint(stdout);
+  let index = 0;
+  let drawn = 0;
+  return new Promise((resolve) => {
+    const render = () => {
+      const width = Math.max(40, (stdout.columns || 80) - 4);
+      const lines = [
+        p.bold(title),
+        ...items.map((item, i) => {
+          const active = i === index;
+          const label = truncate(item.label, Math.max(10, width - 14 - visible(item.note ?? "")));
+          return `${active ? p.pin("❯") : " "} ${i < 9 ? p.dim(String(i + 1)) : " "}  ${active ? p.bold(label) : label}${item.note ? `  ${p.dim(item.note)}` : ""}`;
+        }),
+        `${p.key(" ↑↓ ")} ${p.dim("choose")}   ${p.key(" enter ")} ${p.dim("open")}   ${p.key(" q ")} ${p.dim("cancel")}`,
+      ];
+      // Back to the top of the list drawn last time, then redraw it.
+      stdout.write(`${drawn ? `\x1b[${drawn}A\r` : ""}${lines.map((line) => `${line}\x1b[K`).join("\n")}\n`);
+      drawn = lines.length;
+    };
+    let stopKeys = () => {};
+    const finish = (choice) => {
+      stopKeys();
+      stdin.setRawMode?.(false);
+      stdin.pause();
+      stdout.write("\x1b[?25h");
+      resolve(choice);
+    };
+    stdout.write("\x1b[?25l");
+    stdin.setRawMode?.(true);
+    stdin.setEncoding("utf8");
+    stdin.resume();
+    stopKeys = onKeys(stdin, (key) => {
+      if (key === "ctrl-c" || key === "q" || key === "escape") return finish(null);
+      if (key === "up" || key === "k") index = (index - 1 + items.length) % items.length;
+      else if (key === "down" || key === "j") index = (index + 1) % items.length;
+      else if (key === "home") index = 0;
+      else if (key === "end") index = items.length - 1;
+      else if (key === "enter" || key === " ") return finish(index);
+      else if (/^[1-9]$/.test(key) && items[Number(key) - 1]) return finish(Number(key) - 1);
+      render();
+    });
+    render();
+  });
+}
+
+/**
+ * Turn raw terminal input into key names: "up", "down", "left", "right", "home", "end",
+ * "pageup", "pagedown", "enter", "escape", "ctrl-c", or the character typed. Terminals send the
+ * arrows two ways (ESC [ A, or ESC O A in "application" mode, as macOS Terminal, iTerm and tmux
+ * can), several presses can arrive in one chunk, and a sequence can arrive split; a lone ESC only
+ * counts once nothing follows it. Returns a function that stops listening.
+ */
+export function onKeys(stdin, handle) {
+  let pending = "";
+  let timer = null;
+  const NAMES = { A: "up", B: "down", C: "right", D: "left", H: "home", F: "end" };
+  const TILDE = { 1: "home", 4: "end", 5: "pageup", 6: "pagedown", 7: "home", 8: "end" };
+  const drain = (flush) => {
+    while (pending) {
+      const char = pending[0];
+      if (char !== "\u001b") {
+        pending = pending.slice(1);
+        handle(char === "\r" || char === "\n" ? "enter" : char === "\u0003" ? "ctrl-c" : char);
+        continue;
+      }
+      // ESC [ … letter, ESC [ n ~, or ESC O letter.
+      const match = /^\u001b(?:\[([0-9;]*)([A-Za-z~])|O([A-Za-z]))/.exec(pending);
+      if (match) {
+        pending = pending.slice(match[0].length);
+        const key = match[3] ? NAMES[match[3]] : match[2] === "~" ? TILDE[Number(match[1].split(";")[0])] : NAMES[match[2]];
+        if (key) handle(key);
+        continue;
+      }
+      // An ESC that might begin a sequence still on its way: wait a moment before calling it Esc.
+      if (!flush && /^\u001b(?:\[[0-9;]*|O)?$/.test(pending)) return;
+      pending = pending.slice(1);
+      handle("escape");
+    }
+  };
+  const onData = (chunk) => {
+    clearTimeout(timer);
+    pending += String(chunk);
+    drain(false);
+    if (pending) timer = setTimeout(() => drain(true), 40);
+  };
+  stdin.on("data", onData);
+  return () => { clearTimeout(timer); stdin.off("data", onData); };
 }

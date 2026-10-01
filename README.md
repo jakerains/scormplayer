@@ -26,7 +26,7 @@ can drop a zip.
 **3. Optional: let your AI coding agent work through your pins**
 
 ```sh
-scormplayer skill install
+scormplayer skill
 ```
 
 **Just trying it out?** Run it once without installing anything:
@@ -75,6 +75,7 @@ saved and resolved, files edited, the course completing).
 | <kbd>c</kbd> | Copy the open pins as a hand-off for an agent |
 | <kbd>p</kbd> | Show the hand-off in the terminal (<kbd>↑</kbd>/<kbd>↓</kbd> to scroll, <kbd>esc</kbd> to go back) |
 | <kbd>u</kbd> | Unzip a zipped course to a folder you can edit (shown only for a zip) |
+| <kbd>s</kbd> | Install the agent skill, or update it (shown only when it's missing or out of date) |
 | <kbd>q</kbd> | Quit, with a summary of what's still open |
 
 Without a real terminal (an agent, CI, a pipe), or with `--plain`, it prints plain timestamped
@@ -269,6 +270,14 @@ works on its own. Flags pass through: `-g` for all projects, `-a claude-code -a 
 agents, `-y` to skip prompts, `--copy` to copy instead of symlink. `--local` installs the copy
 bundled with your installed version instead of the GitHub one. `npx skills update` keeps it
 current, and `scormplayer skill remove` removes it. Nothing is installed automatically.
+
+`scormplayer skill` on its own does whatever is needed: installs the skill if no agent has it,
+updates it if it's behind your scormplayer, and otherwise says it's current. Each release stamps
+the skill with its version, and every time scormplayer starts it compares the installed copy with
+the one it ships with, so the two don't drift apart after an upgrade (`scormplayer update`
+refreshes both). When the skill is missing or out of date, the dashboard shows an <kbd>s</kbd> key
+that installs or updates it, and the player's **Pins** panel shows the command.
+`scormplayer skill status` (or `--json`) says which version is installed.
 
 ### Live mode
 

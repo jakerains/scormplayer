@@ -375,3 +375,15 @@ kbd {
 .sp-menu button.is-current { font-weight: 650; color: var(--pin); }
 .sp-menu__rule { margin: 6px 4px; border: 0; border-top: 1px solid var(--line); }
 .sp-menu > .sp-menu__meta:first-child { margin-top: 0; padding-top: 4px; border-top: 0; }
+
+/* Offer of the agent skill, in the pins panel: the terminal command that installs or updates it. */
+.sp-skill { position: relative; margin: 10px 12px; padding: 12px 36px 12px 12px; border-radius: 10px; background: var(--pin-soft); border: 1px solid rgba(255, 92, 57, 0.25); }
+.sp-skill__text { display: flex; flex-direction: column; gap: 3px; line-height: 1.4; }
+.sp-skill__text strong { font-size: 13px; }
+.sp-skill__text span { font-size: 12px; color: var(--ink-muted); }
+.sp-skill__command { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 4px 4px 4px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
+.sp-skill__command code { flex: 1; font: 12.5px var(--mono); }
+.sp-skill__command .sp-button { height: 26px; padding: 0 8px; font-size: 12px; }
+.sp-skill__alt { display: block; margin-top: 6px; font-size: 11.5px; color: var(--ink-muted); }
+.sp-skill__alt kbd { color: var(--ink); }
+.sp-skill__close { position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; }

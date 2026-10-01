@@ -4,15 +4,14 @@ import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
-import { createInterface } from "node:readline/promises";
 import { startPlayer, resolveCourse, createPinStore, createDashboard, openBrowser, unzipCourse, UserError, PORT_RANGE } from "../server/index.mjs";
 import { listPlayers, findPlayer, stopPlayer, askPlayer, unregisteredPlayers, isAlive } from "../server/registry.mjs";
-import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere, skillScopes } from "../server/skill.mjs";
+import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere, skillScopes, installSkill, skillStatus, updateSkills } from "../server/skill.mjs";
 import { findConfig, configuredPinsFile, startSync } from "../server/config.mjs";
 import { findCourses, isCourseFolder } from "../server/finder.mjs";
 import { cacheEntries, clearCache, formatBytes, MAX_AGE_DAYS, MAX_ENTRIES } from "../server/cache.mjs";
 import { checkForUpdate, fetchLatest, hasTool, installMethod, installedVersion, isNewer, npmNeedsSudo, NPM_INSTALL, runInstall, tarballInstall, updateHint } from "../server/update.mjs";
-import { pickCourse, DROP_PAGE } from "../server/tui.mjs";
+import { pickCourse, pickFromList, DROP_PAGE } from "../server/tui.mjs";
 import { pinsReport, createJsonReporter, jsonError } from "../server/agent.mjs";
 
 // Who started this process, read first thing: if it exits later, the player has been left behind.
@@ -30,7 +29,7 @@ Usage
   scormplayer pins <course>       Print the open pins as a hand-off for a teammate or an agent
   scormplayer unzip <zip>         Unzip a course to a folder you can edit (beside the zip, or
                                   --to <folder>); its pins move with it
-  scormplayer skill install       Teach your coding agents to act on pins (pick agents and scope)
+  scormplayer skill               Install the agent skill, or update it if it's out of date
   scormplayer cache [clear]       Show (or empty) the cache of unpacked zips
   scormplayer update              Update scormplayer and its agent skill to the latest version
                                   (--check only reports whether there is a newer one)
@@ -62,7 +61,9 @@ pins options
   --resolve <n>     Mark pin <n> resolved (repeatable); --note "<text>" records what changed
 
 skill commands (run through the open skills CLI: npx skills, 75+ agents)
+  skill             Install it if no agent has it, update it if it's behind this version
   skill install     Pick agents and scope, then install or update the skill
+  skill status      Which version is installed, and whether it matches this scormplayer
   skill remove      Remove it
   skill print       Print the skill to stdout
   Flags passed to skills: -g/--global, -a/--agent <name>, -y/--yes, --copy;
@@ -80,7 +81,8 @@ For agents (--json)
   scormplayer update --check --json             {ok, current, latest, updateAvailable, method}
   scormplayer ps --json                         {ok, players[]: port, pid, url, title, idleSeconds}
   scormplayer stop <port> --json                {ok, stopped[], failed[]}
-  scormplayer cache --json, skill status --json
+  scormplayer skill status --json               {ok, state: missing|current|outdated|newer, version, installed[]}
+  scormplayer cache --json
   Errors print {ok: false, error, code} and exit 1.
 
 Project settings
@@ -145,7 +147,7 @@ async function main(argv) {
 
   const cacheDir = defaultCacheDir();
 
-  if (positionals[0] === "skill") return runSkill(positionals[1] ?? "status", values);
+  if (positionals[0] === "skill") return runSkill(positionals[1] ?? "auto", values);
   if (positionals[0] === "cache") return runCache(positionals[1] ?? "status", defaultCacheDir(), json);
   if (positionals[0] === "update" || positionals[0] === "upgrade") return runUpdate({ cacheDir, check: values.check, json });
   if (positionals[0] === "ps") return runPs({ json, host: values.host });
@@ -208,7 +210,10 @@ async function main(argv) {
   let pkg = values.package ?? null;
   if (input && !pkg && mode === "dashboard" && fs.existsSync(input)) {
     const packages = (() => { try { return resolveCourse(input, { cacheDir, live: values.live }).packages; } catch { return null; } })();
-    if (packages) pkg = await askWhichPackage(input, packages);
+    if (packages) {
+      pkg = await askWhichPackage(input, packages);
+      if (!pkg) return;
+    }
   }
 
   // One player per course: if this course is already open (same pins), use that player.
@@ -248,6 +253,7 @@ async function main(argv) {
       ? `scormplayer pins ${quote(positionals[0])}`
       : `scormplayer pins ${quote(player.course?.source ?? "")} --pins ${quote(player.course?.pinsFile ?? "")}`),
     onQuit,
+    skill: { status: () => skillStatus(), install: () => installSkill(), update: () => updateSkills() },
   });
   if (input) stopSync = startSync(config, input, (message) => dashboard.log(message));
   watchForAbandonment(player, idleMinutes, (reason) => { dashboard.log(`Stopping: ${reason}`); void dashboard.quit(); });
@@ -257,7 +263,12 @@ async function main(argv) {
     player.setUpdate({ latest, command: updateHint() });
   });
   if (player.course?.packages) dashboard.log(packagesNote(player.course, positionals[0]));
-  if (!skillInstalledAnywhere()) dashboard.log("Tip: run `scormplayer skill install` so coding agents can act on your pins");
+  // The full dashboard offers the s key instead; plain output gets a one-line tip.
+  if (mode !== "dashboard") {
+    const skill = skillStatus();
+    if (skill.state === "missing") dashboard.log("Tip: run `scormplayer skill` so coding agents can act on your pins");
+    else if (skill.state === "outdated") dashboard.log(`The agent skill is behind scormplayer ${skill.version}. Update it: scormplayer skill`);
+  }
   if (!values["no-open"]) openBrowser(player.url);
 }
 
@@ -293,22 +304,13 @@ function watchForAbandonment(player, idleMinutes, stop) {
   timer.unref();
 }
 
-/** Several courses in one zip or folder: ask which to open. Enter takes the first. */
+/** Several courses in one zip or folder: choose one with the arrow keys. Null when cancelled. */
 async function askWhichPackage(input, packages) {
-  const lines = packages.map((item, index) => `  ${String(index + 1).padStart(2)}. ${item.title}  (${item.name})`);
-  console.log(`${path.basename(input)} holds ${packages.length} courses:\n${lines.join("\n")}`);
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    for (;;) {
-      const answer = (await rl.question(`Open which? [1-${packages.length}, Enter for 1] `)).trim();
-      if (!answer) return packages[0].name;
-      const number = Number(answer);
-      if (Number.isInteger(number) && number >= 1 && number <= packages.length) return packages[number - 1].name;
-      console.log(`Type a number from 1 to ${packages.length}.`);
-    }
-  } finally {
-    rl.close();
-  }
+  const index = await pickFromList({
+    title: `${path.basename(input)} holds ${packages.length} courses. Open which?`,
+    items: packages.map((item) => ({ label: item.title, note: item.name })),
+  });
+  return index === null ? null : packages[index].name;
 }
 
 /** Which of several courses is open, and how to open the others. */
@@ -493,6 +495,15 @@ async function runUpdate({ cacheDir, check, json }) {
   if (Object.values(skill).includes("failed")) say("The agent skill didn't update; run: npx skills update scormplayer");
 }
 
+/** One line on the installed skill against this scormplayer's. */
+function describeSkill(status) {
+  const where = status.installed.map((copy) => `${copy.scope === "global" ? "all projects" : "this project"}${copy.version ? ` ${copy.version}` : ""}`).join(", ");
+  if (status.state === "missing") return `No coding agent has the scormplayer skill. Install it with: scormplayer skill`;
+  if (status.state === "current") return `The agent skill matches scormplayer ${status.version} (${where}).`;
+  if (status.state === "newer") return `The agent skill (${where}) is newer than scormplayer ${status.version}. Update scormplayer: scormplayer update`;
+  return `The agent skill (${where}) is behind scormplayer ${status.version}.`;
+}
+
 async function runSkill(action, values) {
   if (action === "print") return void process.stdout.write(fs.readFileSync(SKILL_FILE, "utf8"));
   if (action === "install" || action === "add" || action === "update") {
@@ -505,13 +516,31 @@ async function runSkill(action, values) {
     return;
   }
   if (action === "status") {
-    if (values.json) return void console.log(JSON.stringify({ ok: true, installed: skillInstalledAnywhere(), install: "scormplayer skill install" }));
-    console.log(skillInstalledAnywhere()
-      ? "The scormplayer skill is installed. Update it with: scormplayer skill install"
-      : `Not installed. Run: scormplayer skill install   (or: npx skills add ${SKILL_REPO})`);
-    return;
+    const status = skillStatus();
+    if (values.json) return void console.log(JSON.stringify({ ok: true, ...status, installed: status.installed }));
+    return void console.log(describeSkill(status));
   }
-  throw new UserError(`Unknown skill command "${action}". Use install, remove or print.`);
+  // Plain `scormplayer skill`: whatever it takes to have a current skill.
+  if (action === "auto") {
+    const status = skillStatus();
+    if (status.state === "missing") {
+      if (values.json || !process.stdin.isTTY) throw new UserError("No agent has the scormplayer skill. Install it with: scormplayer skill install (add -g -y to skip the questions)");
+      console.log("No coding agent has the scormplayer skill yet. Installing it (choose your agents and scope):");
+      process.exitCode = await runSkills(skillsArgs("add", { local: values.local, global: values.global, agents: values.agent ?? [], yes: values.yes, copy: values.copy }));
+      return;
+    }
+    if (status.state === "outdated") {
+      if (!values.json) console.log(`${describeSkill(status)} Updating it…`);
+      const after = await updateSkills();
+      if (values.json) return void console.log(JSON.stringify({ ok: after.state !== "outdated", state: after.state, version: after.version, installed: after.installed }));
+      console.log(after.state === "outdated" ? `It didn't update. Run: scormplayer skill install${after.output ? `\n${after.output.split("\n").slice(-3).join("\n")}` : ""}` : `The agent skill is now ${after.version}.`);
+      if (after.state === "outdated") process.exitCode = 1;
+      return;
+    }
+    if (values.json) return void console.log(JSON.stringify({ ok: true, ...status }));
+    return void console.log(describeSkill(status));
+  }
+  throw new UserError(`Unknown skill command "${action}". Use install, status, remove or print, or just: scormplayer skill`);
 }
 
 

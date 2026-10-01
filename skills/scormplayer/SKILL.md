@@ -1,6 +1,8 @@
 ---
 name: scormplayer
 description: Work with scormplayer, a local SCORM player whose reviewers leave pinned notes on a course. Use when someone asks you to act on pins, review notes or feedback on a SCORM course or lesson, mentions scormplayer or a *.pins.json file, pastes a "# Pinned notes:" hand-off, or wants to open, preview or review a SCORM zip, SCORM folder or Vite-built course.
+metadata:
+  version: "0.8.8"
 ---
 
 # scormplayer
@@ -177,7 +179,9 @@ course folders or generated files rebuilt while reviewing, rather than changing 
 
 If a command or flag in this skill isn't recognized, the installed scormplayer is older than the
 skill. `scormplayer update --check --json` reports `{ current, latest, updateAvailable }`, and
-`scormplayer update` installs the latest version and refreshes this skill. It may need the
+`scormplayer update` installs the latest version and refreshes this skill.
+`scormplayer skill status --json` says whether this skill matches the installed scormplayer
+(`state`: current, outdated or newer); `scormplayer skill` updates it when it's behind. It may need the
 person's password (npm asks for admin rights on some Macs), so suggest it rather than running
 it unprompted. Under `npx`, use `npx @jakerains/scormplayer@latest` instead.
 

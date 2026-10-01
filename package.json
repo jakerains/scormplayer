@@ -1,6 +1,6 @@
 {
   "name": "@jakerains/scormplayer",
-  "version": "0.8.7",
+  "version": "0.8.8",
   "description": "Open any SCORM package in your browser, click through it like an LMS would, and leave pinned notes you can hand to a teammate or an AI agent.",
   "keywords": [
     "scorm",
@@ -47,7 +47,8 @@
     "check": "npm run typecheck && npm run build && npm test",
     "start": "node bin/scormplayer.mjs",
     "prepack": "npm run build",
-    "test:e2e": "node --test --test-concurrency=1 tests/e2e.test.mjs"
+    "test:e2e": "node --test --test-concurrency=1 tests/e2e.test.mjs",
+    "version": "node scripts/sync-skill-version.mjs"
   },
   "dependencies": {
     "adm-zip": "^0.6.1",

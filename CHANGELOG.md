@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.8] - October 1, 2026
+
+### Added
+- The agent skill keeps up with the player. Each release stamps the skill with its version, and
+  scormplayer compares the installed copy with its own every time it starts.
+- `scormplayer skill` on its own installs the skill if no agent has it, updates it if it's behind,
+  or says it's current. `scormplayer skill status` (and `--json`) reports the versions.
+- When the skill is missing or out of date, the dashboard says so and offers the `s` key to
+  install or update it; the player's Pins panel shows the `scormplayer skill` command.
+
+### Security
+- The player only accepts changes (pins, unzip and the rest) from its own page, so another
+  website open in the browser can't use the local server.
+
+### Fixed
+- Arrow keys work in the course picker and the dashboard's pin list in every terminal. Some
+  (macOS Terminal and iTerm in some modes, tmux) send arrows in a form that was ignored, and a
+  quick press arriving in pieces could close the picker as if Esc were pressed.
+- Choosing a course in a zip that holds several now uses the same arrow-key list (↑↓, Enter,
+  1–9, q) instead of typing a number.
+
 ## [0.8.7] - October 1, 2026
 
 ### Fixed

@@ -122,6 +122,27 @@ test("serves the course, saves pins and frames over HTTP", async () => {
   }
 });
 
+test("only the player's own page can make changes; it reports the agent skill", async () => {
+  const dir = tempDir();
+  const zipPath = path.join(dir, "demo.zip");
+  fs.writeFileSync(zipPath, scorm12Zip());
+  const clientDir = path.join(dir, "client");
+  fs.mkdirSync(clientDir);
+  fs.writeFileSync(path.join(clientDir, "index.html"), "<!doctype html><title>player</title>");
+  const player = await startPlayer({ input: zipPath, cacheDir: path.join(dir, "cache"), port: 0, clientDir, registryDir: null });
+  try {
+    const post = (origin) => fetch(`${player.url}api/pins`, { method: "POST", headers: { "content-type": "application/json", ...(origin ? { origin } : {}) }, body: JSON.stringify({ note: "Hello" }) });
+    assert.equal((await post("https://evil.example")).status, 403, "another website can't save pins");
+    assert.equal((await post(new URL(player.url).origin)).status, 201, "the player's own page can");
+    assert.equal((await post(null)).status, 201, "and so can local tools that send no origin");
+    assert.equal((await fetch(`${player.url}api/unzip`, { method: "POST", headers: { origin: "https://evil.example", "content-type": "application/json" }, body: "{}" })).status, 403);
+    const skill = await (await fetch(`${player.url}api/skill`)).json();
+    assert.match(skill.state, /^(missing|current|outdated|newer)$/);
+  } finally {
+    await player.close();
+  }
+});
+
 test("the CLI prints help, version and a pins hand-off", () => {
   assert.match(execFileSync(process.execPath, [BIN, "--help"], { encoding: "utf8" }), /Usage/);
   assert.match(execFileSync(process.execPath, [BIN, "--version"], { encoding: "utf8" }), /^\d+\.\d+\.\d+/);
@@ -260,6 +281,41 @@ test("unzip: a zip becomes an editable folder beside it, and its pins move along
   const result = JSON.parse(execFileSync(process.execPath, [BIN, "unzip", zip2, "--json"], { encoding: "utf8", env }));
   assert.equal(result.folder, path.join(dir, "second"));
   assert.ok(fs.existsSync(path.join(dir, "second", "index.html")));
+});
+
+test("the agent skill is stamped with this version, and installed copies are checked against it", async () => {
+  const { skillStatus, SKILL_FILE } = await import("../server/skill.mjs");
+  const bundled = fs.readFileSync(SKILL_FILE, "utf8");
+  const version = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+  assert.match(bundled, new RegExp(`^metadata:\\n  version: "${version.replace(/\./g, "\\.")}"$`, "m"), "run npm version (or scripts/sync-skill-version.mjs) so the skill carries the package version");
+
+  const home = tempDir();
+  const cwd = tempDir();
+  const install = (dir, text) => {
+    fs.mkdirSync(path.join(home, dir, "skills", "scormplayer"), { recursive: true });
+    fs.writeFileSync(path.join(home, dir, "skills", "scormplayer", "SKILL.md"), text);
+  };
+  const stamp = (text, v) => text.replace(/^(metadata:\n  version: )".*"$/m, `$1"${v}"`);
+  assert.equal(skillStatus({ home, cwd }).state, "missing");
+  install(".agents", bundled);
+  assert.equal(skillStatus({ home, cwd }).state, "current");
+  // A link to the same copy (as Claude Code's often is) counts once.
+  fs.mkdirSync(path.join(home, ".claude", "skills"), { recursive: true });
+  fs.symlinkSync(path.join(home, ".agents", "skills", "scormplayer"), path.join(home, ".claude", "skills", "scormplayer"), process.platform === "win32" ? "junction" : "dir");
+  assert.equal(skillStatus({ home, cwd }).installed.length, 1);
+  // Same text from an earlier release is still current; different text from one is behind.
+  install(".agents", stamp(bundled, "0.0.1"));
+  assert.equal(skillStatus({ home, cwd }).state, "current");
+  install(".agents", `${stamp(bundled, "0.0.1")}\nAn old line.\n`);
+  const behind = skillStatus({ home, cwd });
+  assert.equal(behind.state, "outdated");
+  assert.equal(behind.installed[0].version, "0.0.1");
+  // From a later scormplayer: the player is the one behind.
+  install(".agents", `${stamp(bundled, "99.0.0")}\nA new line.\n`);
+  assert.equal(skillStatus({ home, cwd }).state, "newer");
+  // A copy from before versioning, with other text, is behind.
+  install(".agents", "---\nname: scormplayer\ndescription: old\n---\nOld skill.\n");
+  assert.equal(skillStatus({ home, cwd }).state, "outdated");
 });
 
 test("skill commands hand off to the skills CLI with the user's choices", async () => {
