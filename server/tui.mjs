@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { UPDATE_COMMAND } from "./update.mjs";
 import { spawn, spawnSync } from "node:child_process";
 
 /**
@@ -32,6 +33,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
   let flash = "";
   let flashTimer = null;
   let closed = false;
+  let update = null;
   const timers = [];
 
   const log = (icon, text, entry = null) => {
@@ -156,7 +158,8 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     const live = state.some((entry) => entry.player.course?.kind === "live");
     const lines = [""];
     const headerLeft = `${p.pin("◉")} ${p.bold("scormplayer")} ${p.dim(version)}${entries.length > 1 ? p.dim(` · ${entries.length} courses`) : ""}`;
-    const headerRight = live ? `${p.amber(pulse())} ${p.dim("live")}` : `${p.green("●")} ${p.dim("ready")}`;
+    const status = live ? `${p.amber(pulse())} ${p.dim("live")}` : `${p.green("●")} ${p.dim("ready")}`;
+    const headerRight = update ? `${p.pin("↑")} ${p.bold(update)} ${p.dim("available")}  ${status}` : status;
     lines.push(boxTop(headerLeft, headerRight, width));
     lines.push(boxLine("", width));
 
@@ -270,6 +273,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     const p = createPaint(stdout);
     const open = state.reduce((sum, entry) => sum + entry.pins.filter((pin) => pin.status === "open").length, 0);
     const lines = ["", `  ${p.pin("◉")} ${p.bold("scormplayer stopped")}${open ? ` ${p.dim("·")} ${p.pin(`${open} open ${open === 1 ? "pin" : "pins"}`)}` : ""}`];
+    if (update) lines.push(`    ${p.pin("↑")} scormplayer ${update} is available: ${p.bold(UPDATE_COMMAND)}`);
     for (const entry of state) {
       const count = entry.pins.filter((pin) => pin.status === "open").length;
       if (!count) continue;
@@ -392,7 +396,16 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
 
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => void quit());
 
-  return { log: (text, id) => log("•", text, state.find((entry) => entry.id === id) ?? null), quit, render };
+  return {
+    log: (text, id) => log("•", text, state.find((entry) => entry.id === id) ?? null),
+    /** Show that a newer version is published. */
+    updateAvailable(version) {
+      update = version;
+      log("↑", `scormplayer ${version} is available: ${UPDATE_COMMAND}`);
+    },
+    quit,
+    render,
+  };
 }
 
 // ---- Shared helpers --------------------------------------------------------------------------

@@ -6,7 +6,7 @@
 export type Rect = { x: number; y: number; width: number; height: number };
 
 export type PinTarget = {
-  kind: "element" | "text";
+  kind: "element" | "text" | "region" | "group";
   name: string;
   tag: string;
   selector: string;
@@ -14,6 +14,10 @@ export type PinTarget = {
   rect: Rect;
   viewport: { width: number; height: number };
   attributes?: Record<string, string>;
+  /** Region pins: where the box sits relative to the element that contains it. */
+  offset?: { x: number; y: number };
+  /** Group pins: each selected element. */
+  targets?: PinTarget[];
 };
 
 /** Elements that are worth pinning on their own. */
@@ -89,11 +93,64 @@ export function describeTextSelection(selection: Selection): PinTarget | null {
   };
 }
 
+/** A box drawn over the course: anchored to the smallest element that contains it. */
+export function describeRegion(doc: Document, band: Rect): { element: Element; target: PinTarget } | null {
+  if (band.width < 8 || band.height < 8) return null;
+  let element = doc.elementFromPoint(band.x + band.width / 2, band.y + band.height / 2);
+  while (element && !isRoot(element)) {
+    const box = element.getBoundingClientRect();
+    if (box.x <= band.x && box.y <= band.y && box.right >= band.x + band.width && box.bottom >= band.y + band.height) break;
+    element = element.parentElement;
+  }
+  if (!element) element = doc.body;
+  const anchor = element.getBoundingClientRect();
+  const inside = Array.from(element.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,button,a,label,figcaption,td,th"))
+    .filter((child) => {
+      const box = child.getBoundingClientRect();
+      return box.width > 0 && box.x >= band.x - 2 && box.y >= band.y - 2 && box.right <= band.x + band.width + 2 && box.bottom <= band.y + band.height + 2;
+    })
+    .map(visibleText)
+    .filter(Boolean);
+  const win = doc.defaultView!;
+  const rect = { x: Math.round(band.x), y: Math.round(band.y), width: Math.round(band.width), height: Math.round(band.height) };
+  return {
+    element,
+    target: {
+      kind: "region",
+      name: `Area ${rect.width}×${rect.height} in ${nameOf(element)}`.slice(0, 120),
+      tag: element.tagName.toLowerCase(),
+      selector: isRoot(element) ? "body" : cssPath(element),
+      text: inside.join(" · ").slice(0, 600),
+      rect,
+      offset: { x: Math.round(band.x - anchor.x), y: Math.round(band.y - anchor.y) },
+      viewport: { width: win.innerWidth, height: win.innerHeight },
+    },
+  };
+}
+
+/** Several elements pinned with one note. The first one anchors the pin. */
+export function describeGroup(elements: Element[]): PinTarget {
+  const parts = elements.map(describeElement);
+  const first = parts[0];
+  return {
+    ...first,
+    kind: "group",
+    name: `${parts.length} elements: ${parts.map((part) => part.name).join(" · ")}`.slice(0, 160),
+    text: parts.map((part) => part.text).filter(Boolean).join(" · ").slice(0, 600),
+    targets: parts,
+  };
+}
+
 /** The current on-screen box for a saved pin's target, if it is on this page and visible. */
 export function locateTarget(doc: Document, target: PinTarget): Rect | null {
   let element: Element | null = null;
   try { element = doc.querySelector(target.selector); } catch { return null; }
   if (!element) return null;
+  if (target.kind === "region" && target.offset) {
+    const anchor = element.getBoundingClientRect();
+    if (anchor.width === 0 && anchor.height === 0) return null;
+    return { x: anchor.x + target.offset.x, y: anchor.y + target.offset.y, width: target.rect.width, height: target.rect.height };
+  }
   if (target.kind === "text") {
     const found = findTextRange(element, target.text);
     if (found) return toRect(found.getBoundingClientRect());

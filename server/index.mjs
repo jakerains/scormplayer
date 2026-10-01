@@ -9,10 +9,13 @@ import { resolveCourse, isInside, UserError } from "./course.mjs";
 import { createPinStore } from "./pins.mjs";
 import { findSourceText } from "./source-match.mjs";
 import { startLiveCourse, LIVE_BASE } from "./live.mjs";
+import { pruneCache } from "./cache.mjs";
 
 export { resolveCourse, UserError } from "./course.mjs";
 export { createPinStore } from "./pins.mjs";
 export { createDashboard, openBrowser, copyToClipboard } from "./tui.mjs";
+export { cacheEntries, clearCache, pruneCache } from "./cache.mjs";
+export { checkForUpdate } from "./update.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = path.resolve(HERE, "../dist/client");
@@ -35,6 +38,8 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
 
   async function open(target, options = {}) {
     const course = resolveCourse(target, { cacheDir, live: options.live ?? false, pinsFile: options.pinsFile ?? null });
+    // Keep the cache small; never remove what is being opened.
+    try { pruneCache(cacheDir, { keep: [course.root, target] }); } catch { /* best effort */ }
     if (options.displayName) course.displayName = options.displayName;
     const pins = createPinStore(course.pinsFile, course);
     const liveCourse = course.kind === "live"

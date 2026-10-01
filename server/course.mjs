@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import AdmZip from "adm-zip";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
+import { touchCacheEntry } from "./cache.mjs";
 
 const VITE_CONFIGS = ["vite.config.ts", "vite.config.mts", "vite.config.js", "vite.config.mjs", "vite.config.cjs"];
 
@@ -32,6 +33,7 @@ export function resolveCourse(input, { cacheDir, live = false, pinsFile = null }
       extractZip(bytes, root);
       fs.writeFileSync(path.join(root, ".extracted"), `${target}\n`);
     }
+    touchCacheEntry(root);
     const manifest = readManifest(root);
     return {
       kind: "package",

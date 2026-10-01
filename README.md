@@ -83,10 +83,13 @@ In the player:
 | --- | --- |
 | Start or stop pinning | **Pin** in the bottom bar, or <kbd>P</kbd> |
 | Pin an element | Click it. The expand button in the note box widens the selection. |
+| Pin several elements with one note | <kbd>Shift</kbd>-click each one |
+| Pin an area | Switch to **Area** (or press <kbd>R</kbd>) and drag a box |
 | Pin a phrase | Drag across the text |
 | Use the course without leaving pin mode | Hold <kbd>Space</kbd> |
 | Save a pin | <kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>Enter</kbd> |
-| See, resolve or delete pins | **Pins** |
+| See, edit, resolve or delete pins | **Pins** |
+| Check tablet or phone layouts | The screen-size switch in the bar (tablet 1024×768, phone 390×844) |
 | Copy open pins for an agent | **Copy** |
 | Move between pages | ‹ › in the bar, the page menu, or <kbd>[</kbd> <kbd>]</kbd> |
 | Skip narration or a video | **Skip** in the bar, or <kbd>.</kbd> |
@@ -204,12 +207,22 @@ createDashboard({ version: "1.0.0", entries: [{ id: "course", player }], onQuit:
 
 Pass several players to `createDashboard` to watch several courses in one screen.
 
+### Cache and updates
+
+Opened zips are unpacked into a cache (`~/.cache/scormplayer`, or `%LOCALAPPDATA%\scormplayer\Cache` on
+Windows). It keeps itself small: the 20 most recently used courses, nothing unused for 14 days.
+`scormplayer cache` shows its size and `scormplayer cache clear` empties it.
+
+The dashboard tells you when a newer scormplayer is published (checked at most once a day). Set
+`SCORMPLAYER_NO_UPDATE_CHECK=1` to turn that off.
+
 ## Develop
 
 ```sh
 npm install
 npm run build        # builds the player UI into dist/client
 npm test
+npx playwright install chromium && npm run test:e2e   # browser tests of the player page
 node bin/scormplayer.mjs ./some-course.zip
 ```
 

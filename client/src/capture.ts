@@ -1,4 +1,4 @@
-import { toBlob } from "html-to-image";
+import { toBlob, toCanvas } from "html-to-image";
 
 /**
  * A picture of the pinned element, rendered by the browser from the course's own DOM. Best
@@ -32,4 +32,21 @@ function backgroundOf(element: Element) {
     if (color && color !== "transparent" && !/rgba\(.*,\s*0\)$/.test(color)) return color;
   }
   return "#ffffff";
+}
+
+/** A drawn area: render the element that contains it, then cut out the box. */
+export async function captureRegion(element: Element, offset: { x: number; y: number }, size: { width: number; height: number }): Promise<Blob | null> {
+  const view = element.ownerDocument.defaultView;
+  if (!view) return null;
+  const ratio = Math.min(2, view.devicePixelRatio || 1);
+  try {
+    const canvas = await toCanvas(element as HTMLElement, { backgroundColor: backgroundOf(element), pixelRatio: ratio, filter: (node) => !(node instanceof view.HTMLIFrameElement) });
+    const out = document.createElement("canvas");
+    out.width = Math.max(1, Math.round(size.width * ratio));
+    out.height = Math.max(1, Math.round(size.height * ratio));
+    out.getContext("2d")!.drawImage(canvas, offset.x * ratio, offset.y * ratio, out.width, out.height, 0, 0, out.width, out.height);
+    return await new Promise((resolve) => out.toBlob(resolve, "image/png"));
+  } catch {
+    return null;
+  }
 }

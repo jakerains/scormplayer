@@ -136,6 +136,10 @@ export function formatBrief(course, pins, pinsDir) {
     lines.push("", `## Pin ${pin.number}${page ? ` · ${page}` : ""}${pin.status === "resolved" ? " (resolved)" : ""}`, "", pin.note, "");
     const target = pin.target ?? {};
     if (target.name || target.selector) lines.push(`- Target: ${target.name ?? target.tag ?? "element"}${target.selector ? ` (\`${target.selector}\`)` : ""}`);
+    if (Array.isArray(target.targets) && target.targets.length > 1) {
+      lines.push(`- Elements: ${target.targets.map((part) => `${part.name ?? part.tag}${part.selector ? ` (\`${part.selector}\`)` : ""}`).join("; ")}`);
+    }
+    if (target.kind === "region" && target.rect) lines.push(`- Area: ${target.rect.width}×${target.rect.height} px at ${target.rect.x},${target.rect.y} in the viewport`);
     if (target.text) lines.push(`- Text: "${truncate(target.text, 240)}"`);
     for (const [key, value] of Object.entries(target.attributes ?? {})) lines.push(`- ${key}: ${truncate(String(value), 240)}`);
     for (const match of pin.source ?? []) lines.push(`- Source: ${match.file}:${match.line}${match.preview ? ` · ${truncate(match.preview, 120)}` : ""}`);

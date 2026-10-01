@@ -31,3 +31,17 @@ jobs:
           npm install -g "$RUNNER_TEMP"/jakerains-scormplayer-*.tgz
           scormplayer --version
           scormplayer --help | head -3
+
+  browser:
+    name: Browser tests (Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - run: npm run test:e2e

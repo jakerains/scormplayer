@@ -267,3 +267,51 @@ test("starts empty and opens zips sent from the browser", async () => {
     await player.close();
   }
 });
+
+test("cache: prunes old and surplus entries, keeps the one in use", async () => {
+  const { pruneCache, cacheEntries, clearCache, touchCacheEntry } = await import("../server/cache.mjs");
+  const cache = tempDir();
+  const now = Date.now();
+  const make = (name, daysAgo) => {
+    const dir = path.join(cache, "packages", name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "index.html"), "x".repeat(100));
+    touchCacheEntry(dir);
+    const when = new Date(now - daysAgo * 86_400_000);
+    fs.utimesSync(path.join(dir, ".last-used"), when, when);
+    return dir;
+  };
+  const old = make("old", 30);
+  const inUse = make("in-use", 40);
+  for (let i = 0; i < 5; i += 1) make(`recent-${i}`, i);
+  const removed = pruneCache(cache, { keep: [inUse], now, maxEntries: 3 });
+  const left = cacheEntries(cache).map((entry) => entry.name).sort();
+  assert.ok(removed.some((entry) => entry.path === old));
+  assert.deepEqual(left, ["in-use", "recent-0", "recent-1", "recent-2"]);
+  assert.equal(clearCache(cache).length, 4);
+  assert.equal(cacheEntries(cache).length, 0);
+});
+
+test("update check: newer versions only, asked at most once a day", async () => {
+  const { checkForUpdate, isNewer } = await import("../server/update.mjs");
+  assert.equal(isNewer("0.10.0", "0.9.9"), true);
+  assert.equal(isNewer("0.6.0", "0.6.0"), false);
+  assert.equal(isNewer("0.5.9", "0.6.0"), false);
+  const cacheDir = tempDir();
+  let calls = 0;
+  const fetchImpl = async () => { calls += 1; return { ok: true, json: async () => ({ version: "9.0.0" }) }; };
+  const saved = { CI: process.env.CI, OFF: process.env.SCORMPLAYER_NO_UPDATE_CHECK };
+  delete process.env.CI;
+  delete process.env.SCORMPLAYER_NO_UPDATE_CHECK;
+  try {
+    assert.equal(await checkForUpdate({ current: "0.6.0", cacheDir, fetchImpl }), "9.0.0");
+    assert.equal(await checkForUpdate({ current: "0.6.0", cacheDir, fetchImpl }), "9.0.0");
+    assert.equal(calls, 1, "the second check uses the saved answer");
+    assert.equal(await checkForUpdate({ current: "9.0.0", cacheDir, fetchImpl }), null);
+    process.env.SCORMPLAYER_NO_UPDATE_CHECK = "1";
+    assert.equal(await checkForUpdate({ current: "0.1.0", cacheDir: tempDir(), fetchImpl }), null);
+  } finally {
+    if (saved.CI === undefined) delete process.env.CI; else process.env.CI = saved.CI;
+    if (saved.OFF === undefined) delete process.env.SCORMPLAYER_NO_UPDATE_CHECK; else process.env.SCORMPLAYER_NO_UPDATE_CHECK = saved.OFF;
+  }
+});

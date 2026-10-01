@@ -8,6 +8,8 @@ import { startPlayer, resolveCourse, createPinStore, createDashboard, openBrowse
 import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere } from "../server/skill.mjs";
 import { findConfig, configuredPinsFile, startSync } from "../server/config.mjs";
 import { findCourses, isCourseFolder } from "../server/finder.mjs";
+import { cacheEntries, clearCache, formatBytes, MAX_AGE_DAYS, MAX_ENTRIES } from "../server/cache.mjs";
+import { checkForUpdate } from "../server/update.mjs";
 import { pickCourse, DROP_PAGE } from "../server/tui.mjs";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -22,6 +24,7 @@ Usage
   scormplayer <course>            Open a SCORM .zip, a SCORM folder, or a Vite project
   scormplayer pins <course>       Print the open pins as a hand-off for a teammate or an agent
   scormplayer skill install       Teach your coding agents to act on pins (pick agents and scope)
+  scormplayer cache [clear]       Show (or empty) the cache of unpacked zips
 
 Options
   --live            Serve a Vite project from source with hot reload (automatic when the
@@ -101,6 +104,7 @@ async function main(argv) {
   const cacheDir = defaultCacheDir();
 
   if (positionals[0] === "skill") return runSkill(positionals[1] ?? "status", values);
+  if (positionals[0] === "cache") return runCache(positionals[1] ?? "status", defaultCacheDir());
 
   if (positionals[0] === "pins") {
     const input = positionals[1];
@@ -143,6 +147,7 @@ async function main(argv) {
     },
   });
   if (input) stopSync = startSync(config, input, (message) => dashboard.log(message));
+  void checkForUpdate({ current: VERSION, cacheDir }).then((latest) => { if (latest) dashboard.updateAvailable(latest); });
   if (!skillInstalledAnywhere()) dashboard.log("Tip: run `scormplayer skill install` so coding agents can act on your pins");
   if (!values["no-open"]) openBrowser(player.url);
 }
@@ -155,6 +160,19 @@ function defaultCacheDir() {
 
 function quote(value) {
   return /^[\w./~:-]+$/.test(value) ? value : JSON.stringify(value);
+}
+
+function runCache(action, cacheDir) {
+  if (action === "clear") {
+    const removed = clearCache(cacheDir);
+    const bytes = removed.reduce((sum, entry) => sum + entry.bytes, 0);
+    return void console.log(`Removed ${removed.length} cached ${removed.length === 1 ? "course" : "courses"} (${formatBytes(bytes)}) from ${cacheDir}`);
+  }
+  if (action !== "status") throw new UserError(`Unknown cache command "${action}". Use: scormplayer cache, or scormplayer cache clear`);
+  const entries = cacheEntries(cacheDir);
+  const bytes = entries.reduce((sum, entry) => sum + entry.bytes, 0);
+  console.log(`${cacheDir}\n${entries.length} cached ${entries.length === 1 ? "course" : "courses"}, ${formatBytes(bytes)}.`);
+  console.log(`Kept automatically: the ${MAX_ENTRIES} most recent, nothing unused for ${MAX_AGE_DAYS} days. Empty it with: scormplayer cache clear`);
 }
 
 async function runSkill(action, values) {

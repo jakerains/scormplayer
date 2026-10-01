@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, copyText, type Course, type Pin, type PinPage } from "./api";
-import { captureElement } from "./capture";
+import { captureElement, captureRegion } from "./capture";
 import { Icon } from "./icons";
-import { chooseTarget, describeElement, describeTextSelection, locateTarget, visibleText, elementFor, widenTarget, type PinTarget, type Rect } from "./picker";
+import { chooseTarget, describeElement, describeGroup, describeRegion, describeTextSelection, locateTarget, visibleText, elementFor, widenTarget, type PinTarget, type Rect } from "./picker";
 import { installScormApis, progressOf, type ScormData } from "./scorm-api";
 import { createNavigator, type NavState } from "./nav";
 import { activeMedia, skipMedia, tourState, watchMedia } from "./media";
 import { DropHome, UploadStatus, ZipInput, useZipOpener } from "./DropHome";
 
-type Selection = { element: Element; target: PinTarget };
+type Selection = { element: Element; target: PinTarget; elements?: Element[] };
 type Marker = { id: string; number: number; rect: Rect };
 
 export function App() {
@@ -28,6 +28,10 @@ export function App() {
   const [hover, setHover] = useState<Rect | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [selectionRect, setSelectionRect] = useState<Rect | null>(null);
+  const [groupRects, setGroupRects] = useState<Rect[]>([]);
+  const [pinTool, setPinTool] = useState<"element" | "region">("element");
+  const [band, setBand] = useState<Rect | null>(null);
+  const selectionRef = useRef<Selection | null>(null);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -47,6 +51,21 @@ export function App() {
   const [now, setNow] = useState(Date.now());
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const deviceRef = useRef<HTMLDivElement | null>(null);
+  const [viewport, setViewport] = useState<Viewport>(() => {
+    try { const saved = localStorage.getItem("scormplayer:viewport"); return saved === "tablet" || saved === "phone" ? saved : "desktop"; } catch { return "desktop"; }
+  });
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    try { localStorage.setItem("scormplayer:viewport", viewport); } catch { /* storage blocked */ }
+  }, [viewport]);
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const observer = new ResizeObserver(() => setStageSize({ width: stage.clientWidth, height: stage.clientHeight }));
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [course]);
 
   const say = useCallback((message: string) => setToast(message), []);
   useEffect(() => {
@@ -138,14 +157,18 @@ export function App() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const openComposer = useCallback((element: Element, target: PinTarget) => {
-    setSelection({ element, target });
+  const openComposer = useCallback((element: Element, target: PinTarget, elements?: Element[]) => {
+    const next = { element, target, elements };
+    selectionRef.current = next;
+    setSelection(next);
     setSelectionRect(target.rect);
     setHover(null);
     setActivePin(null);
   }, []);
 
   const closeComposer = useCallback(() => {
+    selectionRef.current = null;
+    setGroupRects([]);
     setSelection(null);
     setSelectionRect(null);
     setDraft("");
@@ -157,10 +180,28 @@ export function App() {
     if (!doc || !pinMode) { setHover(null); return; }
     let frame = 0;
     let suppressClick = false;
+    let start: { x: number; y: number } | null = null;
     const active = () => !passthrough;
+    const bandFrom = (event: MouseEvent): Rect => ({
+      x: Math.min(start!.x, event.clientX),
+      y: Math.min(start!.y, event.clientY),
+      width: Math.abs(event.clientX - start!.x),
+      height: Math.abs(event.clientY - start!.y),
+    });
+
+    const onMouseDown = (event: MouseEvent) => {
+      if (!active()) return;
+      event.stopPropagation();
+      if (pinTool !== "region" || event.button !== 0) return;
+      event.preventDefault();
+      start = { x: event.clientX, y: event.clientY };
+      setHover(null);
+    };
 
     const onMove = (event: MouseEvent) => {
       if (!active()) return;
+      if (start) { setBand(bandFrom(event)); return; }
+      if (pinTool === "region") return;
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         const target = chooseTarget(event.target as Element);
@@ -173,6 +214,15 @@ export function App() {
     const block = (event: Event) => { if (active()) event.stopPropagation(); };
     const onMouseUp = (event: MouseEvent) => {
       if (!active()) return;
+      if (start) {
+        const region = describeRegion(doc, bandFrom(event));
+        start = null;
+        setBand(null);
+        suppressClick = true;
+        if (region) openComposer(region.element, region.target);
+        event.stopPropagation();
+        return;
+      }
       const selected = doc.getSelection();
       if (selected && !selected.isCollapsed && selected.toString().trim()) {
         const target = describeTextSelection(selected);
@@ -189,14 +239,27 @@ export function App() {
       event.preventDefault();
       event.stopPropagation();
       if (suppressClick) { suppressClick = false; return; }
+      if (pinTool === "region") return;
       const element = chooseTarget(event.target as Element);
-      if (element) openComposer(element, describeElement(element));
+      if (!element) return;
+      // Shift (or ⌘/Ctrl) adds the element to the current selection: one note for several things.
+      const current = selectionRef.current;
+      if ((event.shiftKey || event.metaKey || event.ctrlKey) && current && (current.target.kind === "element" || current.target.kind === "group")) {
+        const existing = current.elements ?? [current.element];
+        const elements = existing.includes(element) ? existing.filter((item) => item !== element) : [...existing, element];
+        if (elements.length === 0) return;
+        if (elements.length === 1) openComposer(elements[0], describeElement(elements[0]));
+        else openComposer(elements[0], describeGroup(elements), elements);
+        return;
+      }
+      openComposer(element, describeElement(element));
     };
 
     const options = { capture: true } as const;
     doc.addEventListener("mousemove", onMove, options);
     doc.addEventListener("mouseleave", onLeave, options);
-    for (const type of ["pointerdown", "mousedown", "pointerup", "touchstart", "dblclick", "submit"]) doc.addEventListener(type, block, options);
+    for (const type of ["pointerdown", "pointerup", "touchstart", "dblclick", "submit"]) doc.addEventListener(type, block, options);
+    doc.addEventListener("mousedown", onMouseDown, options);
     doc.addEventListener("mouseup", onMouseUp, options);
     doc.addEventListener("click", onClick, options);
     // A crosshair while picking; removed as soon as pin mode ends. Runtime only.
@@ -207,12 +270,14 @@ export function App() {
       cancelAnimationFrame(frame);
       doc.removeEventListener("mousemove", onMove, options);
       doc.removeEventListener("mouseleave", onLeave, options);
-      for (const type of ["pointerdown", "mousedown", "pointerup", "touchstart", "dblclick", "submit"]) doc.removeEventListener(type, block, options);
+      for (const type of ["pointerdown", "pointerup", "touchstart", "dblclick", "submit"]) doc.removeEventListener(type, block, options);
+      doc.removeEventListener("mousedown", onMouseDown, options);
+      setBand(null);
       doc.removeEventListener("mouseup", onMouseUp, options);
       doc.removeEventListener("click", onClick, options);
       cursor.remove();
     };
-  }, [pinMode, passthrough, frameLoads, openComposer]);
+  }, [pinMode, passthrough, frameLoads, openComposer, pinTool]);
 
   // Keyboard: P toggles pin mode, Esc backs out, hold Space to use the course while pinning.
   useEffect(() => {
@@ -237,6 +302,9 @@ export function App() {
       } else if (event.key.toLowerCase() === "p" && !selection) {
         event.preventDefault();
         setPinMode((value) => !value);
+      } else if (event.key.toLowerCase() === "r" && pinMode && !selection) {
+        event.preventDefault();
+        setPinTool((tool) => (tool === "region" ? "element" : "region"));
       } else if (event.key === "[" || event.key === "]") {
         event.preventDefault();
         void stepPage(event.key === "]" ? 1 : -1);
@@ -266,8 +334,15 @@ export function App() {
         next.push({ id: pin.id, number: pin.number, rect });
       }
       setMarkers((previous) => (JSON.stringify(previous) === JSON.stringify(next) ? previous : next));
+      if (selection?.elements && selection.elements.length > 1) {
+        const rects = selection.elements.filter((element) => element.isConnected).map((element) => {
+          const box = element.getBoundingClientRect();
+          return { x: box.x, y: box.y, width: box.width, height: box.height };
+        });
+        setGroupRects((previous) => (JSON.stringify(previous) === JSON.stringify(rects) ? previous : rects));
+      }
       if (selection) {
-        const box = selection.target.kind === "text" ? locateTarget(doc, selection.target) : selection.element.isConnected ? selection.element.getBoundingClientRect() : null;
+        const box = selection.target.kind === "text" || selection.target.kind === "region" ? locateTarget(doc, selection.target) : selection.element.isConnected ? selection.element.getBoundingClientRect() : null;
         const rect = box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
         setSelectionRect((previous) => (JSON.stringify(previous) === JSON.stringify(rect) ? previous : rect));
       }
@@ -286,7 +361,10 @@ export function App() {
       const element = selection.element;
       closeComposer();
       say(`Pin ${pin.number} saved${pin.source?.length ? ` · found in ${pin.source[0].file}` : ""}`);
-      void captureElement(element).then((png) => (png ? api.saveFrame(pin.id, png).then(refreshPins) : undefined)).catch(() => {});
+      const shot = selection.target.kind === "region" && selection.target.offset
+        ? captureRegion(element, selection.target.offset, selection.target.rect)
+        : captureElement(element);
+      void shot.then((png) => (png ? api.saveFrame(pin.id, png).then(refreshPins) : undefined)).catch(() => {});
     } catch (error) {
       say(error instanceof Error ? error.message : "Could not save the pin.");
     } finally {
@@ -316,17 +394,20 @@ export function App() {
     say(`Pin ${pin.number} deleted`);
   }
 
+  // The latest request wins, so quick presses of ] or [ are never dropped.
+  const navRequest = useRef(0);
   async function goToPage(index: number) {
     const navigator = navigatorRef.current;
-    if (!navigator || navBusy) return false;
+    if (!navigator) return false;
+    const request = ++navRequest.current;
     setNavBusy(true);
     setPagesOpen(false);
     try {
       const reached = await navigator.goTo(index);
-      if (!reached) say("The course didn't move to that page");
+      if (!reached && request === navRequest.current) say("The course didn't move to that page");
       return reached;
     } finally {
-      setNavBusy(false);
+      if (request === navRequest.current) setNavBusy(false);
     }
   }
 
@@ -398,7 +479,8 @@ export function App() {
   const progressLabel = describeProgress(progress);
   const kindLabel = course ? describeKind(course, lastChangeAt, now) : "";
 
-  const composerStyle = useMemo(() => composerPosition(selectionRect, stageRef.current), [selectionRect]);
+  const composerStyle = useMemo(() => composerPosition(selectionRect, deviceRef.current), [selectionRect, viewport, stageSize]);
+  const deviceStyle = deviceLayout(viewport, stageSize);
 
   // Dropping a zip anywhere on the player (including over the course) opens it instead.
   useEffect(() => {
@@ -422,6 +504,7 @@ export function App() {
     <div className={`sp-app ${panelOpen ? "has-panel" : ""}`}>
       <div className="sp-main">
         <div className={`sp-stage ${pinMode && !passthrough ? "is-picking" : ""}`} ref={stageRef}>
+          <div className={`sp-device sp-device--${viewport}`} ref={deviceRef} style={deviceStyle}>
           {course && scorm ? (
             <iframe
               key={frameKey}
@@ -436,7 +519,9 @@ export function App() {
 
           <div className="sp-overlay" aria-hidden={!markers.length}>
             {hover && !selection ? <div className="sp-box sp-box--hover" style={boxStyle(hover)} /> : null}
-            {selectionRect ? <div className="sp-box sp-box--selected" style={boxStyle(selectionRect)} /> : null}
+            {selectionRect ? <div className={`sp-box sp-box--selected ${selection?.target.kind === "region" ? "is-region" : ""}`} style={boxStyle(selectionRect)} /> : null}
+            {groupRects.slice(1).map((rect, index) => <div key={index} className="sp-box sp-box--also" style={boxStyle(rect)} />)}
+            {band ? <div className="sp-box sp-box--band" style={boxStyle(band)} /> : null}
             {markers.map((marker) => (
               <button
                 key={marker.id}
@@ -451,12 +536,6 @@ export function App() {
             ))}
             {activePin ? markers.filter((marker) => marker.id === activePin).map((marker) => <div key={marker.id} className="sp-box sp-box--flash" style={boxStyle(marker.rect)} />) : null}
           </div>
-
-          {pinMode && !selection ? (
-            <div className="sp-hint" role="status">
-              {passthrough ? "Using the course · release Space to keep pinning" : <>Click anything to pin it · drag across text to pin a phrase · hold <kbd>Space</kbd> to use the course · <kbd>Esc</kbd> to stop</>}
-            </div>
-          ) : null}
 
           {selection ? (
             <div className="sp-composer" style={composerStyle} role="dialog" aria-label="New pin" onKeyDown={(event) => {
@@ -484,6 +563,23 @@ export function App() {
                   {saving ? "Saving…" : "Save pin"}
                 </button>
               </div>
+            </div>
+          ) : null}
+          </div>
+
+          {pinMode && !selection ? (
+            <div className="sp-hint" role="status">
+              <div className="sp-hint__tools" role="group" aria-label="Pin tool">
+                <button type="button" aria-pressed={pinTool === "element"} onClick={() => setPinTool("element")}>Element</button>
+                <button type="button" aria-pressed={pinTool === "region"} onClick={() => setPinTool("region")}>Area <kbd>R</kbd></button>
+              </div>
+              <span>
+                {passthrough
+                  ? "Using the course · release Space to keep pinning"
+                  : pinTool === "region"
+                    ? <>Drag a box around the area · hold <kbd>Space</kbd> to use the course · <kbd>Esc</kbd> to stop</>
+                    : <>Click to pin · <kbd>Shift</kbd>-click to add more · drag across text for a phrase · hold <kbd>Space</kbd> to use the course</>}
+              </span>
             </div>
           ) : null}
 
@@ -514,7 +610,7 @@ export function App() {
 
           {nav ? (
             <div className="sp-nav" aria-label="Pages">
-              <button type="button" className="sp-nav__step" disabled={navBusy || nav.index === 0} onClick={() => void stepPage(-1)} title="Previous page ( [ )" aria-label="Previous page">
+              <button type="button" className="sp-nav__step" disabled={nav.index === 0} onClick={() => void stepPage(-1)} title="Previous page ( [ )" aria-label="Previous page">
                 <Icon name="chevronLeft" />
               </button>
               <div className="sp-menu-anchor">
@@ -535,7 +631,7 @@ export function App() {
                   </div>
                 ) : null}
               </div>
-              <button type="button" className="sp-nav__step" disabled={navBusy || nav.index >= nav.pages.length - 1} onClick={() => void stepPage(1)} title="Next page ( ] )" aria-label="Next page">
+              <button type="button" className="sp-nav__step" disabled={nav.index >= nav.pages.length - 1} onClick={() => void stepPage(1)} title="Next page ( ] )" aria-label="Next page">
                 <Icon name="chevronRight" />
               </button>
             </div>
@@ -556,6 +652,14 @@ export function App() {
           <span className={`sp-progress sp-progress--${progressLabel.tone}`} title={progress.location ? `SCORM location: ${progress.location}` : undefined}>
             {progressLabel.text}
           </span>
+
+          <div className="sp-views" role="group" aria-label="Screen size">
+            {(["desktop", "tablet", "phone"] as const).map((size) => (
+              <button key={size} type="button" aria-pressed={viewport === size} onClick={() => setViewport(size)} title={`${VIEWPORT_LABEL[size]}${size === "desktop" ? "" : ` (${VIEWPORTS[size].width}×${VIEWPORTS[size].height})`}`} aria-label={VIEWPORT_LABEL[size]}>
+                <Icon name={size} size={17} />
+              </button>
+            ))}
+          </div>
 
           <nav className="sp-bar__actions" aria-label="Player">
             <button type="button" className="sp-tab" aria-pressed={pinMode} onClick={() => { setPinMode((value) => !value); setMenuOpen(false); }} title="Pin mode (P)">
@@ -612,7 +716,8 @@ export function App() {
             <ol className="sp-pin-list">
               {listedPins.map((pin) => (
                 <PinRow key={pin.id} pin={pin} active={activePin === pin.id} onPage={markers.some((marker) => marker.id === pin.id)}
-                  onOpen={() => goToPin(pin)} onStatus={(status) => void setStatus(pin, status)} onDelete={() => void removePin(pin)} />
+                  onOpen={() => void goToPin(pin)} onStatus={(status) => void setStatus(pin, status)} onDelete={() => void removePin(pin)}
+                  onEdit={async (note) => { const updated = await api.updatePin(pin.id, { note }); setPins((previous) => previous.map((item) => (item.id === pin.id ? updated : item))); }} />
               ))}
             </ol>
           ) : (
@@ -624,11 +729,35 @@ export function App() {
   );
 }
 
-function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete }: {
+function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete, onEdit }: {
   pin: Pin; active: boolean; onPage: boolean;
-  onOpen: () => void; onStatus: (status: Pin["status"]) => void; onDelete: () => void;
+  onOpen: () => void; onStatus: (status: Pin["status"]) => void; onDelete: () => void; onEdit: (note: string) => Promise<void>;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(pin.note);
+  const save = async () => {
+    if (!text.trim() || text.trim() === pin.note) { setEditing(false); return; }
+    await onEdit(text.trim());
+    setEditing(false);
+  };
+  if (editing) {
+    return (
+      <li className="sp-pin is-active">
+        <div className="sp-pin__edit">
+          <span className="sp-pin__number">{pin.number}</span>
+          <textarea autoFocus rows={3} value={text} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void save(); }
+            if (event.key === "Escape") { event.stopPropagation(); setText(pin.note); setEditing(false); }
+          }} />
+        </div>
+        <div className="sp-pin__actions">
+          <button type="button" onClick={() => void save()}><Icon name="check" size={14} /> Save</button>
+          <button type="button" onClick={() => { setText(pin.note); setEditing(false); }}>Cancel</button>
+        </div>
+      </li>
+    );
+  }
   return (
     <li className={`sp-pin ${active ? "is-active" : ""} ${pin.status === "resolved" ? "is-resolved" : ""}`}>
       <button type="button" className="sp-pin__main" onClick={onOpen}>
@@ -647,6 +776,7 @@ function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete }: {
         {pin.status === "open"
           ? <button type="button" onClick={() => onStatus("resolved")}><Icon name="check" size={14} /> Resolve</button>
           : <button type="button" onClick={() => onStatus("open")}><Icon name="undo" size={14} /> Reopen</button>}
+        <button type="button" onClick={() => { setText(pin.note); setEditing(true); }}><Icon name="edit" size={14} /> Edit</button>
         <button type="button" className={confirmDelete ? "is-danger" : ""} onClick={() => (confirmDelete ? onDelete() : setConfirmDelete(true))} onBlur={() => setConfirmDelete(false)}>
           <Icon name="trash" size={14} /> {confirmDelete ? "Confirm delete" : "Delete"}
         </button>
@@ -655,16 +785,37 @@ function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete }: {
   );
 }
 
+/** Is the saved target still the thing on screen? Group pins check their first element; areas their anchor exists. */
 function sameText(doc: Document, target: PinTarget) {
-  if (!target.text) return true;
-  const element = elementFor(doc, target);
+  if (target.kind === "region") return Boolean(elementFor(doc, target));
+  const reference = target.kind === "group" ? target.targets?.[0] : target;
+  if (!reference?.text) return true;
+  const element = elementFor(doc, reference);
   if (!element) return false;
   const fold = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase().slice(0, 40);
-  return visibleText(element).toLowerCase().replace(/\s+/g, " ").includes(fold(target.text));
+  return visibleText(element).toLowerCase().replace(/\s+/g, " ").includes(fold(reference.text));
 }
 
 function boxStyle(rect: Rect) {
   return { left: rect.x, top: rect.y, width: rect.width, height: rect.height };
+}
+
+type Viewport = "desktop" | "tablet" | "phone";
+const VIEWPORTS = { tablet: { width: 1024, height: 768 }, phone: { width: 390, height: 844 } } as const;
+const VIEWPORT_LABEL: Record<Viewport, string> = { desktop: "Desktop", tablet: "Tablet", phone: "Phone" };
+
+/** Desktop fills the stage; tablet and phone are fixed sizes, scaled down to fit when needed. */
+function deviceLayout(viewport: Viewport, stage: { width: number; height: number }): React.CSSProperties {
+  if (viewport === "desktop" || !stage.width) return { inset: 0 };
+  const size = VIEWPORTS[viewport];
+  const scale = Math.min(1, (stage.width - 48) / size.width, (stage.height - 48) / size.height);
+  return {
+    left: "50%",
+    top: "50%",
+    width: size.width,
+    height: size.height,
+    transform: `translate(-50%, -50%) scale(${Math.max(0.2, scale)})`,
+  };
 }
 
 function composerPosition(rect: Rect | null, stage: HTMLElement | null) {
