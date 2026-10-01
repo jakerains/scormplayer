@@ -59,14 +59,14 @@ export function createJsonReporter({ player, stdout = process.stdout, onQuit }) 
 
   emit("ready", { url: player.url, pid: process.pid, ...courseState(player) });
 
-  async function quit() {
+  async function quit(reason = "stopped") {
     if (closed) return;
     closed = true;
     clearInterval(timer);
-    emit("stopped", { counts: countPins(list(player)) });
+    emit("stopped", { reason, counts: countPins(list(player)) });
     await onQuit();
   }
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => void quit());
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => void quit(`received ${signal}`));
 
   return { log: (message) => emit("log", { message }), quit };
 }

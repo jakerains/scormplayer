@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4] - October 1, 2026
+
+### Added
+- `scormplayer ps` lists running players: port, process, course, and when a browser last
+  looked. `scormplayer stop <port|pid>` and `stop --all` stop them. Both take `--json`. Players
+  from older versions are found on the port range too.
+- Opening a course that's already open reuses that player instead of starting another
+  (`--new` starts another anyway). In agent mode, `ready` says `reused: true`.
+- A player in the background (an agent, a script, CI) stops by itself after 30 minutes with no
+  browser looking at it, or when the program that started it exits. `--idle <minutes>` changes
+  that; `--idle 0` turns it off. A terminal dashboard never stops by itself.
+
+### Changed
+- When all 20 player ports (4620–4639) are taken, scormplayer lists the players holding them and
+  how to stop them, instead of failing with a stack trace.
+- The agent `stopped` event says why it stopped.
+
 ## [0.8.3] - October 1, 2026
 
 ### Changed

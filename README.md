@@ -208,8 +208,10 @@ notices. Errors print `{"ok": false, "error": "…", "code": "…"}` and exit 1.
 | `scormplayer pins <course> --json` | `{ ok, course, pinsFile, counts, pins }`; each pin includes its screenshot's full path |
 | `scormplayer pins <course> --resolve 3 --note "…" --json` | `{ ok, resolved, counts }` |
 | `scormplayer unzip <zip> --json` | `{ ok, folder, pinsFile, reused, movedPins }` |
-| `scormplayer <course> --json --no-open` | One event per line: `ready` (with `url`, `pid`, `pinsFile`, and `course.editable`, which is false for a zip), then `pin`, `progress`, `source`, `browser`, `course`, `unzipped`, `log`, and `stopped` on exit |
+| `scormplayer <course> --json --no-open` | One event per line: `ready` (with `url`, `pid`, `pinsFile`, and `course.editable`, which is false for a zip), then `pin`, `progress`, `source`, `browser`, `course`, `unzipped`, `log`, and `stopped` (with a `reason`) on exit. If the course is already open, `ready` has `reused: true` and the command exits |
 | `scormplayer update --check --json` | `{ ok, current, latest, updateAvailable, method }` |
+| `scormplayer ps --json` | `{ ok, players }`: each with `port`, `pid`, `url`, `title`, `mode`, `idleSeconds` |
+| `scormplayer stop <port> --json` | `{ ok, stopped, failed }` |
 | `scormplayer cache --json`, `scormplayer skill status --json` | `{ ok, … }` |
 
 An agent can start the player in the background with `--port 0`, read the URL from the first
@@ -286,6 +288,23 @@ createDashboard({ version: "1.0.0", entries: [{ id: "course", player }], onQuit:
 ```
 
 Pass several players to `createDashboard` to watch several courses in one screen.
+
+### Running players
+
+Each course opens in one player. Run `scormplayer` on a course that's already open and it opens
+that player again rather than starting another (`--new` starts another anyway).
+
+```sh
+scormplayer ps                 # what's running: port, course, when a browser last looked
+scormplayer stop 4621          # stop one (by port or process id)
+scormplayer stop --all         # stop them all
+```
+
+Players use ports 4620–4639, 20 at most. One started in the background (by an agent, a script
+or CI, with no terminal) stops by itself after 30 minutes with no browser looking at it, or when
+the program that started it exits; `--idle <minutes>` changes that and `--idle 0` turns it off.
+A dashboard in your terminal runs until you quit it. If all 20 ports are ever taken,
+scormplayer says which players hold them.
 
 ### Cache and updates
 

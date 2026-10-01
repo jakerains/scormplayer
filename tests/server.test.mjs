@@ -12,6 +12,8 @@ import { startPlayer } from "../server/index.mjs";
 import { MANIFEST_12, MANIFEST_2004, multiScoZip, scorm12Zip, scorm2004Zip, traversalZip } from "./fixtures.mjs";
 
 const BIN = fileURLToPath(new URL("../bin/scormplayer.mjs", import.meta.url));
+// Keep the players these tests start out of the real registry of running players.
+process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "scormplayer-test-cache-"));
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "scormplayer-test-"));
@@ -490,6 +492,67 @@ test("update: tells how scormplayer was installed, and how to update it", async 
   } finally {
     await player.close();
   }
+});
+
+test("running players: registry, reuse, ps and stop, and stopping when idle", async () => {
+  const { registerPlayer, listPlayers, findPlayer } = await import("../server/registry.mjs");
+  const dir = tempDir();
+  const zipPath = path.join(dir, "demo.zip");
+  fs.writeFileSync(zipPath, scorm12Zip());
+  const env = { ...process.env, XDG_CACHE_HOME: path.join(dir, "cache") };
+  const registry = path.join(dir, "cache", "scormplayer", "players");
+
+  // A file left by a process that died is cleaned up when the players are listed.
+  const dead = registerPlayer(registry, { pid: 999999, port: 1, url: "http://127.0.0.1:1/", input: zipPath, startedAt: new Date().toISOString() });
+  assert.equal(listPlayers(registry).length, 0);
+  dead.remove();
+
+  const lines = (child) => {
+    const seen = [];
+    let buffer = "";
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk;
+      const parts = buffer.split("\n");
+      buffer = parts.pop();
+      seen.push(...parts.filter(Boolean).map((line) => JSON.parse(line)));
+    });
+    return (event) => new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`No ${event} event`)), 15_000);
+      const check = () => {
+        const found = seen.find((line) => line.event === event);
+        if (found) { clearTimeout(timeout); clearInterval(poll); resolve(found); }
+      };
+      const poll = setInterval(check, 50);
+      check();
+    });
+  };
+
+  const first = spawn(process.execPath, [BIN, zipPath, "--json", "--no-open", "--port", "0"], { env });
+  const next = lines(first);
+  const ready = await next("ready");
+  assert.equal(findPlayer({ input: zipPath }, registry).pid, first.pid);
+
+  // Opening the same course again reuses the running player and exits.
+  const again = JSON.parse(execFileSync(process.execPath, [BIN, zipPath, "--json", "--no-open"], { encoding: "utf8", env }));
+  assert.equal(again.reused, true);
+  assert.equal(again.url, ready.url);
+  assert.equal(again.pid, first.pid);
+
+  // ps lists it, with how long since anything used it; stop ends it.
+  const ps = JSON.parse(execFileSync(process.execPath, [BIN, "ps", "--json"], { encoding: "utf8", env }));
+  const listed = ps.players.find((player) => player.pid === first.pid);
+  assert.equal(listed.title, "Demo 1.2 course");
+  assert.equal(listed.mode, "background");
+  assert.equal(typeof listed.idleSeconds, "number");
+  const port = new URL(ready.url).port;
+  const stopped = JSON.parse(execFileSync(process.execPath, [BIN, "stop", port, "--json"], { encoding: "utf8", env }));
+  assert.equal(stopped.stopped[0]?.pid, first.pid, JSON.stringify(stopped));
+  assert.match((await next("stopped")).reason, /SIGTERM/);
+  assert.equal(listPlayers(registry).length, 0, "a stopped player leaves the registry");
+
+  // A background player nobody uses stops by itself.
+  const idle = spawn(process.execPath, [BIN, zipPath, "--json", "--no-open", "--port", "0", "--idle", "0.02"], { env });
+  assert.match((await lines(idle)("stopped")).reason, /nobody has used the player/);
 });
 
 test("multi-SCO packages list every module in manifest order", async () => {

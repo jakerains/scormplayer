@@ -12,6 +12,7 @@ import { findSourceText } from "./source-match.mjs";
 import { startLiveCourse, LIVE_BASE } from "./live.mjs";
 import { pruneCache } from "./cache.mjs";
 import { defaultUnzipFolder, existingUnzip, unzipCourse } from "./unzip.mjs";
+import { defaultRegistryDir, registerPlayer } from "./registry.mjs";
 
 export { resolveCourse, UserError } from "./course.mjs";
 export { createPinStore } from "./pins.mjs";
@@ -19,6 +20,10 @@ export { createDashboard, openBrowser, copyToClipboard } from "./tui.mjs";
 export { cacheEntries, clearCache, pruneCache } from "./cache.mjs";
 export { checkForUpdate } from "./update.mjs";
 export { defaultUnzipFolder, unzipCourse } from "./unzip.mjs";
+export { defaultRegistryDir, listPlayers, findPlayer, stopPlayer } from "./registry.mjs";
+
+/** Players use one of 20 ports from 4620 up, so a machine never fills with them unnoticed. */
+export const PORT_RANGE = 20;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = path.resolve(HERE, "../dist/client");
@@ -28,14 +33,21 @@ const CLIENT_DIR = path.resolve(HERE, "../dist/client");
  * offers a drop zone. Either way a SCORM zip can be dropped or chosen in the browser to switch
  * courses while it runs.
  *
+ * It records itself in the registry of running players (`registryDir`; null to skip), so
+ * `scormplayer ps` and `stop` can find it, and keeps the time anything last talked to it
+ * (`idleFor()`), so a player nobody is looking at can be stopped.
+ *
  * @param {{ input?: string | null, cacheDir: string, host?: string, port?: number, live?: boolean,
- *   pinsFile?: string | null, pinsDir?: string, clientDir?: string }} options
+ *   pinsFile?: string | null, pinsDir?: string, clientDir?: string, registryDir?: string | null,
+ *   mode?: "dashboard" | "background" | "library", idleMinutes?: number | null }} options
  */
-export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", port = 4620, live = false, pinsFile = null, pinsDir = process.cwd(), clientDir = CLIENT_DIR }) {
+export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", port = 4620, live = false, pinsFile = null, pinsDir = process.cwd(), clientDir = CLIENT_DIR, registryDir = defaultRegistryDir(), mode = "library", idleMinutes = null }) {
   // What the terminal dashboard shows: pins, source changes, SCORM progress, browser visits.
   const events = new EventEmitter();
   let progress = null;
   let current = null;
+  let lastActivity = Date.now();
+  let registration = null;
   // A newer published scormplayer, when the CLI finds one, for the page's More menu.
   let update = null;
   const app = express();
@@ -55,6 +67,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     current = { course, pins, liveCourse, keepPinsFile: Boolean(options.keepPinsFile) };
     progress = null;
     await previous?.liveCourse?.close();
+    registration?.update(registryFields(target));
     if (started) events.emit("course", course);
     return course;
   }
@@ -77,6 +90,12 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     return current;
   };
 
+  // Any request counts as someone using the player: the open page asks for its pins every few seconds.
+  app.use((req, _res, next) => {
+    // ps asking about a player isn't someone using it.
+    if (req.path !== "/api/player") lastActivity = Date.now();
+    next();
+  });
   app.use(express.json({ limit: "1mb" }));
   app.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
@@ -121,6 +140,9 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
   }));
 
   app.get("/api/update", (_req, res) => res.json({ update }));
+
+  // For `scormplayer ps`: who this is and how long since a browser last asked for anything.
+  app.get("/api/player", (_req, res) => res.json({ pid: process.pid, mode, idleMinutes, idleSeconds: Math.round((Date.now() - lastActivity) / 1000) }));
 
   app.get("/api/status", (_req, res) => res.json(current?.liveCourse?.status() ?? { lastChangeAt: null }));
 
@@ -203,6 +225,20 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
 
   const actualPort = await listen(httpServer, host, port);
   const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${actualPort}/`;
+  const startedAt = new Date().toISOString();
+  function registryFields(source) {
+    const course = current?.course;
+    return {
+      input: source ? path.resolve(source) : null,
+      title: course?.title ?? null,
+      kind: course?.kind ?? null,
+      source: course ? course.displayName ?? course.source : null,
+      pinsFile: course?.pinsFile ?? null,
+    };
+  }
+  if (registryDir) {
+    registration = registerPlayer(registryDir, { pid: process.pid, port: actualPort, url, mode, idleMinutes, startedAt, cwd: process.cwd(), ...registryFields(input) });
+  }
   return {
     url,
     get course() { return current?.course ?? null; },
@@ -214,7 +250,10 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     setUpdate(value) { update = value; },
     progress: () => progress,
     liveStatus: () => current?.liveCourse?.status() ?? null,
+    /** Milliseconds since anything last asked the player for something. */
+    idleFor: () => Date.now() - lastActivity,
     async close() {
+      registration?.remove();
       await current?.liveCourse?.close();
       httpServer.closeAllConnections?.();
       await new Promise((resolve) => httpServer.close(resolve));
@@ -229,7 +268,7 @@ function safeZipName(value) {
 
 /** Listen on the requested port, or the next free one (up to 20 tries). Port 0 picks any. */
 async function listen(server, host, port) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; attempt < PORT_RANGE; attempt += 1) {
     const candidate = port === 0 ? 0 : port + attempt;
     try {
       await new Promise((resolve, reject) => {
@@ -244,7 +283,7 @@ async function listen(server, host, port) {
       if (error.code !== "EADDRINUSE" || port === 0) throw error;
     }
   }
-  throw new Error(`Ports ${port}–${port + 19} are all in use. Pass --port to choose another.`);
+  throw Object.assign(new UserError(`Ports ${port}–${port + PORT_RANGE - 1} are all in use. Pass --port to choose another.`), { code: "PORTS_FULL", firstPort: port });
 }
 
 function handle(fn) {

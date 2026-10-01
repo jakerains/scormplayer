@@ -4,7 +4,8 @@ import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
-import { startPlayer, resolveCourse, createPinStore, createDashboard, openBrowser, unzipCourse, UserError } from "../server/index.mjs";
+import { startPlayer, resolveCourse, createPinStore, createDashboard, openBrowser, unzipCourse, UserError, PORT_RANGE } from "../server/index.mjs";
+import { listPlayers, findPlayer, stopPlayer, askPlayer, unregisteredPlayers, isAlive } from "../server/registry.mjs";
 import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere, skillScopes } from "../server/skill.mjs";
 import { findConfig, configuredPinsFile, startSync } from "../server/config.mjs";
 import { findCourses, isCourseFolder } from "../server/finder.mjs";
@@ -13,6 +14,8 @@ import { checkForUpdate, fetchLatest, hasTool, installMethod, installedVersion, 
 import { pickCourse, DROP_PAGE } from "../server/tui.mjs";
 import { pinsReport, createJsonReporter, jsonError } from "../server/agent.mjs";
 
+// Who started this process, read first thing: if it exits later, the player has been left behind.
+const STARTED_BY = process.ppid;
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 const HELP = `scormplayer ${VERSION}
@@ -30,6 +33,8 @@ Usage
   scormplayer cache [clear]       Show (or empty) the cache of unpacked zips
   scormplayer update              Update scormplayer and its agent skill to the latest version
                                   (--check only reports whether there is a newer one)
+  scormplayer ps                  List running players: port, course, when a browser last looked
+  scormplayer stop <port|pid>     Stop a running player (--all stops every one)
 
 Options
   --live            Serve a Vite project from source with hot reload (automatic when the
@@ -41,6 +46,10 @@ Options
   --drop            Start with an empty player: drop or choose a SCORM zip in the browser
   --no-open         Don't open the browser
   --plain           Plain log lines instead of the dashboard (automatic without a terminal)
+  --new             Start another player even if this course is already open in one
+  --idle <minutes>  A player in the background (no terminal: agents, scripts) stops after this
+                    long with no browser looking at it, or when what started it exits.
+                    Default 30; 0 never stops on its own. A terminal dashboard never does.
   --json            Agent mode: JSON on stdout, no colours, prompts or tips (see below)
   -v, --version     Print the version
   -h, --help        Show this help
@@ -62,8 +71,12 @@ For agents (--json)
   scormplayer unzip <zip> --json                {ok, folder, pinsFile, reused, movedPins}
   scormplayer <course> --json --no-open         One JSON event per line: ready (url, pid,
                                                 pinsFile), then pin, progress, source, browser,
-                                                course, log; stopped on exit
+                                                course, log; stopped (with a reason) on exit.
+                                                If the course is already open, ready has
+                                                reused: true and the command exits.
   scormplayer update --check --json             {ok, current, latest, updateAvailable, method}
+  scormplayer ps --json                         {ok, players[]: port, pid, url, title, idleSeconds}
+  scormplayer stop <port> --json                {ok, stopped[], failed[]}
   scormplayer cache --json, skill status --json
   Errors print {ok: false, error, code} and exit 1.
 
@@ -99,6 +112,8 @@ async function main(argv) {
       note: { type: "string" },
       to: { type: "string" },
       check: { type: "boolean", default: false },
+      new: { type: "boolean", default: false },
+      idle: { type: "string" },
       global: { type: "boolean", short: "g", default: false },
       agent: { type: "string", short: "a", multiple: true },
       yes: { type: "boolean", short: "y", default: false },
@@ -129,6 +144,8 @@ async function main(argv) {
   if (positionals[0] === "skill") return runSkill(positionals[1] ?? "status", values);
   if (positionals[0] === "cache") return runCache(positionals[1] ?? "status", defaultCacheDir(), json);
   if (positionals[0] === "update" || positionals[0] === "upgrade") return runUpdate({ cacheDir, check: values.check, json });
+  if (positionals[0] === "ps") return runPs({ json, host: values.host });
+  if (positionals[0] === "stop") return runStop(positionals.slice(1), { all: values.all, json, host: values.host });
 
   if (positionals[0] === "unzip") {
     const input = positionals[1];
@@ -169,7 +186,7 @@ async function main(argv) {
   const word = positionals[0];
   if (word && /^[a-z][a-z-]*$/i.test(word) && !fs.existsSync(path.resolve(word))) {
     throw new UserError(`"${word}" isn't a command in scormplayer ${VERSION}, or a course in this folder. `
-      + `The commands are pins, unzip, update, skill and cache (scormplayer --help). `
+      + `The commands are pins, unzip, update, ps, stop, skill and cache (scormplayer --help). `
       + `If "${word}" is newer than this version, update first: scormplayer update`);
   }
 
@@ -177,14 +194,27 @@ async function main(argv) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UserError("--port must be a number from 0 to 65535.");
   const input = positionals[0] ? path.resolve(positionals[0]) : null;
   const config = input && fs.existsSync(input) ? findConfig(input) : null;
-  const player = await startPlayer({
-    input,
-    cacheDir,
-    host: values.host,
-    port,
-    live: values.live,
-    pinsFile: values.pins ?? (input ? configuredPinsFile(config, input) : null),
-  });
+  const pinsFile = values.pins ?? (input ? configuredPinsFile(config, input) : null);
+
+  // One player per course: if this course is already open (same pins), use that player.
+  if (input && !values.new) {
+    const running = findPlayer({ input, pinsFile });
+    if (running && await askPlayer(running.url)) return reusePlayer(running, { json, open: !values["no-open"] });
+  }
+
+  // A dashboard in a terminal someone is watching runs until they quit it. A player in the
+  // background (an agent, a script, CI) stops by itself once nobody is using it.
+  const mode = process.stdout.isTTY && process.stdin.isTTY && !values.plain && !json && !process.env.CI ? "dashboard" : "background";
+  const idleMinutes = values.idle !== undefined ? Number(values.idle) : mode === "background" ? 30 : 0;
+  if (!Number.isFinite(idleMinutes) || idleMinutes < 0) throw new UserError("--idle must be a number of minutes (0 to never stop on its own).");
+
+  let player;
+  try {
+    player = await startPlayer({ input, cacheDir, host: values.host, port, live: values.live, pinsFile, mode, idleMinutes: idleMinutes || null });
+  } catch (error) {
+    if (error.code === "PORTS_FULL") throw new UserError(await portsFullMessage(error.firstPort, values.host));
+    throw error;
+  }
   let stopSync = () => {};
   const onQuit = async () => {
     stopSync();
@@ -194,6 +224,7 @@ async function main(argv) {
   if (json) {
     const reporter = createJsonReporter({ player, onQuit });
     if (input) stopSync = startSync(config, input, reporter.log);
+    watchForAbandonment(player, idleMinutes, (reason) => reporter.quit(reason));
     if (!values["no-open"]) openBrowser(player.url);
     return;
   }
@@ -207,6 +238,7 @@ async function main(argv) {
     onQuit,
   });
   if (input) stopSync = startSync(config, input, (message) => dashboard.log(message));
+  watchForAbandonment(player, idleMinutes, (reason) => { dashboard.log(`Stopping: ${reason}`); void dashboard.quit(); });
   void checkForUpdate({ current: VERSION, cacheDir }).then((latest) => {
     if (!latest) return;
     dashboard.updateAvailable(latest, updateHint());
@@ -224,6 +256,118 @@ function defaultCacheDir() {
 
 function quote(value) {
   return /^[\w./~:-]+$/.test(value) ? value : JSON.stringify(value);
+}
+
+/**
+ * Stop a player that has been left behind: nobody has asked it for anything in `idleMinutes`
+ * (an open page asks every few seconds), or the program that started it has exited, which on
+ * macOS and Linux shows as a new parent process (whoever adopted it). 0 minutes turns both off.
+ */
+function watchForAbandonment(player, idleMinutes, stop) {
+  if (!idleMinutes) return;
+  const timer = setInterval(() => {
+    if (player.idleFor() > idleMinutes * 60_000) {
+      clearInterval(timer);
+      stop(`nobody has used the player for ${idleMinutes} ${idleMinutes === 1 ? "minute" : "minutes"}`);
+    } else if (process.platform !== "win32" && process.ppid !== STARTED_BY) {
+      clearInterval(timer);
+      stop("the program that started it has exited");
+    }
+  }, Math.min(5_000, idleMinutes * 60_000));
+  timer.unref();
+}
+
+/** The course is already open in another player: point at that one instead of starting another. */
+async function reusePlayer(running, { json, open }) {
+  if (open) openBrowser(running.url);
+  if (json) {
+    return void console.log(JSON.stringify({
+      event: "ready", at: new Date().toISOString(), reused: true, url: running.url, pid: running.pid,
+      course: { title: running.title, kind: running.kind, source: running.source, editable: running.kind !== "package" },
+      pinsFile: running.pinsFile,
+    }));
+  }
+  console.log(`${running.title ?? "This course"} is already open at ${running.url} (started ${since(running.startedAt)} ago, process ${running.pid}).`);
+  console.log(`${open ? "Opened it in your browser. " : ""}Stop it with: scormplayer stop ${running.port}   Start another anyway with: --new`);
+}
+
+/** Every player on this machine: the registered ones, plus ones from older versions found on the port range. */
+async function allPlayers(host) {
+  const registered = await Promise.all(listPlayers().map(async (player) => {
+    const info = await askPlayer(player.url);
+    return { ...player, registered: true, responding: Boolean(info), idleSeconds: info?.idleSeconds ?? null };
+  }));
+  const older = (await unregisteredPlayers({ count: PORT_RANGE, known: registered.map((player) => player.port), host }))
+    .map((player) => ({ ...player, mode: "unknown", startedAt: null, idleSeconds: null, responding: true }));
+  return [...registered, ...older].sort((a, b) => a.port - b.port);
+}
+
+async function runPs({ json, host }) {
+  const players = await allPlayers(host);
+  if (json) return void console.log(JSON.stringify({ ok: true, players, range: { first: 4620, last: 4620 + PORT_RANGE - 1 } }));
+  const inRange = players.filter((player) => player.port >= 4620 && player.port < 4620 + PORT_RANGE).length;
+  if (!players.length) return void console.log(`No players running. (Ports 4620–${4620 + PORT_RANGE - 1} are free.)`);
+  console.log(`${players.length} ${players.length === 1 ? "player" : "players"} running · ${PORT_RANGE - inRange} of ${PORT_RANGE} ports free\n`);
+  const rows = players.map((player) => [
+    String(player.port),
+    String(player.pid ?? "?"),
+    player.mode === "dashboard" ? "terminal" : player.mode === "background" ? "background" : "older version",
+    player.idleSeconds === null ? "—" : player.idleSeconds < 20 ? "now" : `${since(Date.now() - player.idleSeconds * 1000)} ago`,
+    `${player.title ?? "No course open"}${player.kind === "live" ? " (live)" : ""}`,
+  ]);
+  const head = ["PORT", "PID", "RUNNING IN", "LAST USED", "COURSE"];
+  const widths = head.map((title, column) => Math.max(title.length, ...rows.map((row) => row[column].length)));
+  for (const row of [head, ...rows]) console.log(`  ${row.map((cell, column) => (column === row.length - 1 ? cell : cell.padEnd(widths[column]))).join("  ")}`);
+  console.log("\nStop one with: scormplayer stop <port>   Stop all: scormplayer stop --all");
+}
+
+async function runStop(targets, { all, json, host }) {
+  const players = await allPlayers(host);
+  if (!all && !targets.length) {
+    if (players.length !== 1) throw new UserError(players.length ? "Say which: scormplayer stop <port> (scormplayer ps lists them), or --all." : "No players running.");
+  }
+  const chosen = all || !targets.length ? players : targets.map((target) => {
+    const number = Number(target);
+    const player = players.find((item) => item.port === number) ?? players.find((item) => item.pid === number);
+    if (!player) throw new UserError(`No player on port or with process id ${target}. scormplayer ps lists them.`);
+    return player;
+  });
+  const stopped = [];
+  const failed = [];
+  for (const player of chosen) {
+    if (!player.pid || player.pid === process.pid) { failed.push({ port: player.port, reason: "no process id" }); continue; }
+    if (await stopPlayer(player.pid)) stopped.push({ port: player.port, pid: player.pid, title: player.title });
+    else failed.push({ port: player.port, pid: player.pid, reason: isAlive(player.pid) ? "still running" : "unknown" });
+  }
+  if (json) return void console.log(JSON.stringify({ ok: !failed.length, stopped, failed }));
+  for (const item of stopped) console.log(`Stopped port ${item.port}${item.title ? `: ${item.title}` : ""}`);
+  for (const item of failed) console.log(`Couldn't stop port ${item.port} (${item.reason})${item.pid ? `. Try: kill ${item.pid}` : ""}`);
+  if (!chosen.length) console.log("No players running.");
+  if (failed.length) process.exitCode = 1;
+}
+
+/** When every port in the range is taken: say what holds them and how to free them. */
+async function portsFullMessage(first, host) {
+  const players = (await allPlayers(host)).filter((player) => player.port >= first && player.port < first + PORT_RANGE);
+  const lines = [`All ${PORT_RANGE} player ports (${first}–${first + PORT_RANGE - 1}) are in use.`];
+  if (players.length) {
+    lines.push(`${players.length} of them are scormplayer players, probably left running:`);
+    for (const player of players.slice(0, 8)) lines.push(`  ${player.port}  ${player.title ?? "No course open"}${player.idleSeconds !== null ? ` (last used ${since(Date.now() - player.idleSeconds * 1000)} ago)` : ""}`);
+    if (players.length > 8) lines.push(`  … and ${players.length - 8} more`);
+    lines.push("See them all: scormplayer ps   Stop them: scormplayer stop --all");
+  } else {
+    lines.push("Other programs hold them. Pass --port to choose another, like --port 5000.");
+  }
+  return lines.join("\n");
+}
+
+/** "3 min", "2 h", "5 days": how long ago a time was. */
+function since(time) {
+  const seconds = Math.max(0, (Date.now() - new Date(time).getTime()) / 1000);
+  if (seconds < 90) return `${Math.round(seconds)} s`;
+  if (seconds < 90 * 60) return `${Math.round(seconds / 60)} min`;
+  if (seconds < 36 * 3600) return `${Math.round(seconds / 3600)} h`;
+  return `${Math.round(seconds / 86400)} days`;
 }
 
 function runCache(action, cacheDir, json) {

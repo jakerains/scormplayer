@@ -85,18 +85,28 @@ seconds.
 - **Zip:** the player shows that package, read-only. Either unzip it and edit the folder, or
   rebuild the zip from its source, and the reviewer reopens it.
 
-To open the player yourself, run it in the background, because it keeps serving until stopped:
+To open the player yourself, first check whether one is already running (`scormplayer ps --json`
+lists every player with its `url` and `title`). Otherwise run it in the background:
 
 ```sh
-scormplayer <course> --json --no-open --port 0
+scormplayer <course> --json --no-open
 ```
 
 It prints one JSON event per line. The first is
 `{"event":"ready","url":"http://127.0.0.1:…/","pid":…,"course":{…},"pinsFile":"…","counts":{…}}`;
 read the URL from it. After that come `pin` (`change`: created, edited, resolved, reopened or
 deleted), `progress` (the course's SCORM status), `source` (a file changed in Live mode),
-`browser`, `course` (another zip was opened in the page) and `log`, then `stopped` when it exits.
-Stop it with `kill <pid>`. Drop `--no-open` if the reviewer should see it in their browser.
+`browser`, `course` (another zip was opened in the page) and `log`, then `stopped` (with a
+`reason`) when it exits. Drop `--no-open` if the reviewer should see it in their browser.
+
+- **Already open:** if that course is already open in a player, `ready` has `"reused": true` with
+  that player's `url`, and the command exits instead of starting a second one. Use the URL.
+- **Stop what you start.** When you're done, run `scormplayer stop <port>` (or `--json`). Players
+  use 20 ports (4620–4639), and leftovers fill them.
+- **It stops itself when abandoned:** a background player stops after 30 minutes with no browser
+  looking at it, or when the program that started it exits. Don't rely on that instead of
+  stopping it.
+
 Don't start it unless you need it; the reviewer usually has it open already.
 
 ## In the browser

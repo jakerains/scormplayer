@@ -1,6 +1,6 @@
 {
   "name": "@jakerains/scormplayer",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "Open any SCORM package in your browser, click through it like an LMS would, and leave pinned notes you can hand to a teammate or an AI agent.",
   "keywords": [
     "scorm",
