@@ -177,3 +177,56 @@ test("dashboard: plain output without a terminal, and text fits the screen", asy
   assert.match(text, /scormplayer stopped · 1 open pin/);
   assert.doesNotMatch(text, /\x1b\[/, "no escape codes when not writing to a terminal");
 });
+
+test("project config: pins location, course list and sync commands", async () => {
+  const { findConfig, configuredPinsFile, configuredCourses, startSync } = await import("../server/config.mjs");
+  const { findCourses, isCourseFolder } = await import("../server/finder.mjs");
+  const project = tempDir();
+  for (const id of ["m01-l01", "m01-l02"]) {
+    fs.mkdirSync(path.join(project, "lessons", id), { recursive: true });
+    fs.writeFileSync(path.join(project, "lessons", id, "vite.config.js"), "export default {};\n");
+    fs.writeFileSync(path.join(project, "lessons", id, "index.html"), `<title>Lesson ${id}</title>`);
+  }
+  fs.mkdirSync(path.join(project, "content"));
+  fs.writeFileSync(path.join(project, "content", "m01-l01.json"), "{}");
+  fs.writeFileSync(path.join(project, "scormplayer.config.json"), JSON.stringify({
+    courses: ["lessons/*"],
+    pins: ".local/pins/{name}.pins.json",
+    sync: [{ files: ["content/{name}.json"], run: "node -e \"require('fs').writeFileSync('synced-{name}.txt','ok')\"" }],
+  }));
+
+  const lesson = path.join(project, "lessons", "m01-l01");
+  const config = findConfig(lesson);
+  assert.equal(config.root, project);
+  assert.equal(configuredPinsFile(config, lesson), path.join(project, ".local", "pins", "m01-l01.pins.json"));
+  assert.equal(configuredCourses(config).length, 2);
+  assert.ok(isCourseFolder(lesson));
+
+  // From a parent folder, the nested config's courses are listed (not a blind scan).
+  const parent = path.dirname(project);
+  const found = findCourses(parent).filter((course) => course.path.startsWith(project));
+  assert.deepEqual(found.map((course) => [course.kind, course.title]), [["live", "Lesson m01-l01"], ["live", "Lesson m01-l02"]]);
+
+  const messages = [];
+  const stop = startSync(config, lesson, (message) => messages.push(message));
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  fs.writeFileSync(path.join(project, "content", "m01-l01.json"), '{"changed":true}');
+  for (let i = 0; i < 40 && !messages.length; i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+  stop();
+  assert.match(messages[0] ?? "", /^Synced: /);
+  assert.equal(fs.readFileSync(path.join(project, "synced-m01-l01.txt"), "utf8"), "ok");
+});
+
+test("finder: lists SCORM zips and folders, skipping zips without a manifest", async () => {
+  const { findCourses } = await import("../server/finder.mjs");
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, "safety.zip"), scorm12Zip({ title: "Safety" }));
+  const { default: AdmZip } = await import("adm-zip");
+  const photos = new AdmZip();
+  photos.addFile("holiday.jpg", Buffer.from("not a course"));
+  fs.writeFileSync(path.join(dir, "photos.zip"), photos.toBuffer());
+  fs.mkdirSync(path.join(dir, "unzipped"));
+  fs.writeFileSync(path.join(dir, "unzipped", "imsmanifest.xml"), MANIFEST_12("Unzipped course"));
+  fs.writeFileSync(path.join(dir, "unzipped", "index.html"), "<p>hi</p>");
+  assert.deepEqual(findCourses(dir).map((course) => [course.kind, course.title]), [["zip", "safety.zip"], ["folder", "Unzipped course"]]);
+});

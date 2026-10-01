@@ -6,6 +6,9 @@ import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
 import { startPlayer, resolveCourse, createPinStore, createDashboard, openBrowser, UserError } from "../server/index.mjs";
 import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere } from "../server/skill.mjs";
+import { findConfig, configuredPinsFile, startSync } from "../server/config.mjs";
+import { findCourses, isCourseFolder } from "../server/finder.mjs";
+import { pickCourse } from "../server/tui.mjs";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -14,6 +17,7 @@ const HELP = `scormplayer ${VERSION}
 Open a SCORM course in your browser and leave pinned notes on it.
 
 Usage
+  scormplayer                     Pick a course found in this folder (or open this folder)
   scormplayer <course>            Open a SCORM .zip, a SCORM folder, or a Vite project
   scormplayer pins <course>       Print the open pins as a hand-off for a teammate or an agent
   scormplayer skill install       Teach your coding agents to act on pins (pick agents and scope)
@@ -41,6 +45,12 @@ skill commands (run through the open skills CLI: npx skills, 75+ agents)
   skill print       Print the skill to stdout
   Flags passed to skills: -g/--global, -a/--agent <name>, -y/--yes, --copy;
   --local installs the copy bundled with this version instead of the GitHub one
+
+Project settings
+  A scormplayer.config.json in the course folder or above it can set where pins go,
+  where the course picker looks, and commands to run when files change:
+  { "courses": ["lessons/*"], "pins": ".local/pins/{name}.pins.json",
+    "sync": [{ "files": ["content/{name}.json"], "run": "npm run sync -- {name}" }] }
 
 Examples
   scormplayer ./my-course.zip
@@ -75,7 +85,15 @@ async function main(argv) {
   });
 
   if (values.version) return void console.log(VERSION);
-  if (values.help || positionals.length === 0) return void console.log(HELP);
+  if (values.help) return void console.log(HELP);
+  if (positionals.length === 0) {
+    const interactive = process.stdout.isTTY && process.stdin.isTTY && !values.plain;
+    if (!interactive) return void console.log(HELP);
+    const here = process.cwd();
+    const choice = isCourseFolder(here) ? here : await pickCourse({ version: VERSION, courses: findCourses(here) });
+    if (!choice) return;
+    positionals.push(choice);
+  }
 
   const cacheDir = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "scormplayer");
 
@@ -84,7 +102,7 @@ async function main(argv) {
   if (positionals[0] === "pins") {
     const input = positionals[1];
     if (!input) throw new UserError("Usage: scormplayer pins <course>");
-    const course = resolveCourse(input, { cacheDir, live: values.live, pinsFile: values.pins ?? null });
+    const course = resolveCourse(input, { cacheDir, live: values.live, pinsFile: values.pins ?? configuredPinsFile(findConfig(input), path.resolve(input)) });
     const store = createPinStore(course.pinsFile, course);
     for (const id of values.resolve ?? []) {
       const pin = store.update(id, { status: "resolved", resolution: values.note });
@@ -97,24 +115,29 @@ async function main(argv) {
 
   const port = values.port === undefined ? 4620 : Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UserError("--port must be a number from 0 to 65535.");
+  const input = path.resolve(positionals[0]);
+  const config = fs.existsSync(input) ? findConfig(input) : null;
   const player = await startPlayer({
-    input: positionals[0],
+    input,
     cacheDir,
     host: values.host,
     port,
     live: values.live,
-    pinsFile: values.pins ?? null,
+    pinsFile: values.pins ?? configuredPinsFile(config, input),
   });
+  let stopSync = () => {};
   const dashboard = createDashboard({
     version: VERSION,
     entries: [{ id: path.basename(player.course.source), player }],
     plain: values.plain,
     pinsHint: () => `scormplayer pins ${quote(positionals[0])}`,
     onQuit: async () => {
+      stopSync();
       await player.close();
       process.exit(0);
     },
   });
+  stopSync = startSync(config, input, (message) => dashboard.log(message));
   if (!skillInstalledAnywhere()) dashboard.log("Tip: run `scormplayer skill install` so coding agents can act on your pins");
   if (!values["no-open"]) openBrowser(player.url);
 }

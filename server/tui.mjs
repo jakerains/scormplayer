@@ -193,8 +193,9 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     // Pins
     const openPins = state.flatMap((entry) => entry.pins.filter((pin) => pin.status === "open").map((pin) => ({ pin, entry })));
     lines.push("");
-    const pinsFile = state.length === 1 ? p.dim(truncate(displayPath(state[0].player.course.pinsFile), width - 30)) : "";
-    lines.push(`  ${p.bold("Pins")} ${p.dim("·")} ${openPins.length ? p.pin(`${openPins.length} open`) : p.dim("none open")}${spacer(`  Pins · ${openPins.length} open`, pinsFile, width)}${pinsFile}`);
+    const pinsLeft = `  ${p.bold("Pins")} ${p.dim("·")} ${openPins.length ? p.pin(`${openPins.length} open`) : p.dim("none open")}`;
+    const pinsFile = state.length === 1 ? p.dim(truncateStart(displayPath(state[0].player.course.pinsFile), width - visible(pinsLeft) - 4)) : "";
+    lines.push(`${pinsLeft}${spacer(pinsLeft, pinsFile, width)}${pinsFile}`);
     // Each pin takes two lines; leave room for the activity feed and the footer.
     const activityRows = Math.min(6, Math.max(1, activity.length)) + 2;
     const pinRows = Math.max(1, Math.min(openPins.length, Math.floor((height - lines.length - 3 - activityRows) / 2)));
@@ -476,6 +477,22 @@ export function truncate(text, width) {
   return `${out}…`;
 }
 
+/** Cut from the front, keeping the end of a path ("…/lessons/m02-l01"). */
+export function truncateStart(text, width) {
+  const value = String(text ?? "");
+  if (visible(value) <= width) return value;
+  const chars = [...value];
+  let out = "";
+  let used = 1;
+  for (let i = chars.length - 1; i >= 0; i -= 1) {
+    const size = charWidth(chars[i].codePointAt(0));
+    if (used + size > width) break;
+    out = chars[i] + out;
+    used += size;
+  }
+  return `…${out}`;
+}
+
 /** Cut styled text to a display width, keeping escape codes intact. */
 function truncateVisible(text, width) {
   let out = "";
@@ -541,3 +558,95 @@ export function tildify(file) {
   return file && file.startsWith(home) ? `~${file.slice(home.length)}` : file;
 }
 
+
+const KIND_LABEL = { zip: "SCORM zip", folder: "SCORM folder", live: "Live source" };
+
+/**
+ * The screen for a bare `scormplayer`: the logo, what was found here, and a list to pick from
+ * with the arrow keys. Resolves to the chosen course path, or null when the user quits or
+ * nothing was found.
+ */
+export function pickCourse({ version, courses, cwd = process.cwd(), stdout = process.stdout, stdin = process.stdin }) {
+  const p = createPaint(stdout);
+  let index = 0;
+  const here = displayPath(cwd) === "." || !displayPath(cwd) ? "this folder" : displayPath(cwd);
+  return new Promise((resolve) => {
+    const logo = logoLines(p);
+    const header = [
+      `${p.bold("scormplayer")} ${p.dim(version)}`,
+      p.dim("Open a SCORM course in your browser"),
+      p.dim("and pin notes on anything you want changed."),
+      "",
+      courses.length
+        ? `${p.pin(String(courses.length))} ${courses.length === 1 ? "course" : "courses"} ${p.dim(`in ${here}`)}`
+        : p.dim(`No SCORM course in ${here}`),
+    ];
+
+    const render = () => {
+      const width = Math.max(56, Math.min(stdout.columns || 80, 112));
+      const height = stdout.rows || 30;
+      const lines = [""];
+      logo.forEach((row, i) => lines.push(`  ${row}   ${header[i] ?? ""}`));
+      lines.push("");
+      if (!courses.length) {
+        lines.push(`  ${p.bold("Open one by pointing at it:")}`);
+        lines.push("");
+        for (const [command, note] of [
+          ["scormplayer ./course.zip", "a SCORM zip"],
+          ["scormplayer ./course-folder", "an unzipped SCORM package"],
+          ["scormplayer ./my-vite-course", "a Vite project, live with hot reload"],
+          ["scormplayer --help", "everything else"],
+        ]) lines.push(`    ${p.pin("›")} ${p.bold(command.padEnd(30))} ${p.dim(note)}`);
+        lines.push("");
+        lines.push(`  ${p.key(" q ")} ${p.dim("quit")}`);
+      } else {
+        const room = Math.max(3, height - lines.length - 4);
+        const start = Math.max(0, Math.min(index - Math.floor(room / 2), courses.length - room));
+        const nameWidth = Math.min(46, Math.max(...courses.map((course) => visible(course.title))) + 2);
+        courses.slice(start, start + room).forEach((course, offset) => {
+          const i = start + offset;
+          const active = i === index;
+          const marker = active ? p.pin("❯") : " ";
+          const number = i < 9 ? p.dim(String(i + 1)) : " ";
+          const title = truncate(course.title, nameWidth);
+          const kind = KIND_LABEL[course.kind] ?? course.kind;
+          const where = truncateStart(displayPath(course.path), width - nameWidth - 30);
+          const row = `${padVisible(active ? p.bold(title) : title, nameWidth + 1)}${padVisible(active ? kindColor(course.kind)(kind) : p.dim(kind), 14)}${p.dim(where)}`;
+          lines.push(`  ${marker} ${number}  ${active ? row : row}`);
+        });
+        if (courses.length > room) lines.push(`      ${p.dim(`${courses.length} in all · scroll with ↑ ↓`)}`);
+        while (lines.length < height - 2) lines.push("");
+        lines.push(`  ${p.key(" ↑↓ ")} ${p.dim("choose")}   ${p.key(" enter ")} ${p.dim("open")}   ${p.key(" 1–9 ")} ${p.dim("open that one")}   ${p.key(" q ")} ${p.dim("quit")}`);
+      }
+      stdout.write(`\x1b[H${lines.slice(0, height).map((line) => `${line}\x1b[K`).join("\n")}\x1b[J`);
+    };
+
+    const kindColor = (kind) => ({ zip: p.green, folder: p.blue, live: p.amber })[kind] ?? p.dim;
+
+    const finish = (choice) => {
+      stdin.off("data", onKey);
+      stdout.off("resize", render);
+      stdin.setRawMode?.(false);
+      stdin.pause();
+      stdout.write("\x1b[?25h\x1b[?1049l");
+      resolve(choice);
+    };
+    const onKey = (key) => {
+      if (key === "\u0003" || key === "q" || key === "\u001b") return finish(null);
+      if (!courses.length) return;
+      if (key === "\u001b[A" || key === "k") index = (index - 1 + courses.length) % courses.length;
+      else if (key === "\u001b[B" || key === "j") index = (index + 1) % courses.length;
+      else if (key === "\r" || key === "\n" || key === " ") return finish(courses[index].path);
+      else if (/^[1-9]$/.test(key) && courses[Number(key) - 1]) return finish(courses[Number(key) - 1].path);
+      render();
+    };
+
+    stdout.write("\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J");
+    stdin.setRawMode(true);
+    stdin.setEncoding("utf8");
+    stdin.resume();
+    stdin.on("data", onKey);
+    stdout.on("resize", render);
+    render();
+  });
+}

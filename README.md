@@ -60,6 +60,7 @@ Needs Node.js 20.19 or newer.
 ## Use
 
 ```sh
+scormplayer                        # pick from the courses found here (or open this folder)
 scormplayer ./course.zip           # a SCORM zip
 scormplayer ./course-folder        # an unzipped SCORM package (imsmanifest.xml inside)
 scormplayer ./my-vite-course       # a Vite project: live source with hot reload
@@ -101,6 +102,26 @@ scormplayer pins ./course.zip --resolve 3 --note "Shortened the heading"
 
 An agent can read the hand-off, make the changes, and resolve each pin with the last command.
 The player picks up the change within a few seconds.
+
+### Project settings
+
+A `scormplayer.config.json` in the course folder or any folder above it can tell scormplayer
+where a project's courses are, where their pins go, and what to run when files change while a
+course is open. `{name}` is the course's folder or zip name; paths are relative to the config.
+
+```json
+{
+  "courses": ["lessons/*"],
+  "pins": ".local/pins/{name}.pins.json",
+  "sync": [
+    { "files": ["content/{name}.json"], "run": "npm run build-content -- {name}" }
+  ]
+}
+```
+
+With it, a bare `scormplayer` lists exactly those courses (from the project or a folder above
+it), pins stay out of the course folders, and generated files stay current while you review.
+Sync results appear in the dashboard's activity feed.
 
 ### Teach your coding agents
 
