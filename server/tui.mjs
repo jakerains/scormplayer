@@ -67,6 +67,12 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       }
     });
     events.on("pin", () => pollPins(entry));
+    events.on("course", (course) => {
+      entry.pins = safeList(entry.player);
+      entry.progress = null;
+      entry.lastSource = null;
+      log("◉", `Opened ${course.title}`, entry);
+    });
   }
 
   // Pins can also change from the command line (an agent resolving them), so watch the files.
@@ -96,7 +102,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
   }
 
   function handOff() {
-    return state.map((entry) => entry.player.pins.brief({ status: "open" })).join("\n---\n\n");
+    return state.filter((entry) => entry.player.pins).map((entry) => entry.player.pins.brief({ status: "open" })).join("\n---\n\n");
   }
 
   function copyPins() {
@@ -147,14 +153,25 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
   function renderHome(width, height) {
     const p = paint;
     const inner = width - 4;
-    const live = state.some((entry) => entry.player.course.kind === "live");
+    const live = state.some((entry) => entry.player.course?.kind === "live");
     const lines = [""];
     const headerLeft = `${p.pin("◉")} ${p.bold("scormplayer")} ${p.dim(version)}${entries.length > 1 ? p.dim(` · ${entries.length} courses`) : ""}`;
     const headerRight = live ? `${p.amber(pulse())} ${p.dim("live")}` : `${p.green("●")} ${p.dim("ready")}`;
     lines.push(boxTop(headerLeft, headerRight, width));
     lines.push(boxLine("", width));
 
-    if (state.length === 1) {
+    if (state.length === 1 && !state[0].player.course) {
+      const { url } = state[0].player;
+      const logo = logoLines(p);
+      const card = [
+        p.bold("No course open yet"),
+        p.dim("Drop a SCORM zip on the page in your browser,"),
+        p.dim("or click Choose a SCORM zip."),
+        "",
+        `${p.pin("➜")}  ${p.link(p.bold(p.blue(url)), url)}${state[0].browser ? p.dim("  · open in your browser") : p.dim("  · press o to open")}`,
+      ];
+      card.forEach((line, index) => lines.push(boxLine(`${logo[index]}   ${line}`, width)));
+    } else if (state.length === 1) {
       const entry = state[0];
       const { course, url } = entry.player;
       const logo = logoLines(p);
@@ -173,7 +190,8 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       lines.push(boxLine(`${p.dim("Pins".padEnd(10))}${pinCounts(entry.pins)}`, width));
     } else {
       state.forEach((entry, index) => {
-        const { course, url } = entry.player;
+        const { url } = entry.player;
+        const course = entry.player.course ?? { title: "No course open" };
         const key = index < 9 ? p.pin(String(index + 1)) : " ";
         lines.push(boxLine(`${key}  ${p.bold(entry.id.padEnd(9))} ${truncate(course.title, inner - 16)}`, width));
         const label = progressLabel(entry.progress);
@@ -194,7 +212,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     const openPins = state.flatMap((entry) => entry.pins.filter((pin) => pin.status === "open").map((pin) => ({ pin, entry })));
     lines.push("");
     const pinsLeft = `  ${p.bold("Pins")} ${p.dim("·")} ${openPins.length ? p.pin(`${openPins.length} open`) : p.dim("none open")}`;
-    const pinsFile = state.length === 1 ? p.dim(truncateStart(displayPath(state[0].player.course.pinsFile), width - visible(pinsLeft) - 4)) : "";
+    const pinsFile = state.length === 1 && state[0].player.course ? p.dim(truncateStart(displayPath(state[0].player.course.pinsFile), width - visible(pinsLeft) - 4)) : "";
     lines.push(`${pinsLeft}${spacer(pinsLeft, pinsFile, width)}${pinsFile}`);
     // Each pin takes two lines; leave room for the activity feed and the footer.
     const activityRows = Math.min(6, Math.max(1, activity.length)) + 2;
@@ -255,7 +273,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     for (const entry of state) {
       const count = entry.pins.filter((pin) => pin.status === "open").length;
       if (!count) continue;
-      lines.push(`    ${state.length > 1 ? `${entry.id}  ` : ""}${p.dim(displayPath(entry.player.course.pinsFile))}`);
+      lines.push(`    ${state.length > 1 ? `${entry.id}  ` : ""}${p.dim(displayPath(entry.player.course?.pinsFile))}`);
       if (pinsHint) lines.push(`    ${p.dim("Hand off:")} ${pinsHint(entry)}`);
     }
     return `${lines.join("\n")}\n\n`;
@@ -363,6 +381,10 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     const p = createPaint(stdout);
     for (const entry of state) {
       const { course, url } = entry.player;
+      if (!course) {
+        stdout.write(`\n  No course open yet. Open ${url} and drop a SCORM zip on the page.\n`);
+        continue;
+      }
       stdout.write(`\n  ${p.bold(course.title)}${entries.length > 1 ? p.dim(`  (${entry.id})`) : ""}\n  ${kindLine(course)}\n\n  Player  ${url}\n  Pins    ${course.pinsFile}\n`);
     }
     stdout.write("\n  Press Ctrl+C to stop.\n\n");
@@ -561,6 +583,9 @@ export function tildify(file) {
 
 const KIND_LABEL = { zip: "SCORM zip", folder: "SCORM folder", live: "Live source" };
 
+/** What pickCourse returns when the user wants to drop or choose a zip in the browser. */
+export const DROP_PAGE = Symbol("drop page");
+
 /**
  * The screen for a bare `scormplayer`: the logo, what was found here, and a list to pick from
  * with the arrow keys. Resolves to the chosen course path, or null when the user quits or
@@ -569,6 +594,7 @@ const KIND_LABEL = { zip: "SCORM zip", folder: "SCORM folder", live: "Live sourc
 export function pickCourse({ version, courses, cwd = process.cwd(), stdout = process.stdout, stdin = process.stdin }) {
   const p = createPaint(stdout);
   let index = 0;
+  const rows = courses.length ? [...courses, { path: DROP_PAGE, kind: "drop", title: "Empty player" }] : [];
   const here = displayPath(cwd) === "." || !displayPath(cwd) ? "this folder" : displayPath(cwd);
   return new Promise((resolve) => {
     const logo = logoLines(p);
@@ -589,7 +615,10 @@ export function pickCourse({ version, courses, cwd = process.cwd(), stdout = pro
       logo.forEach((row, i) => lines.push(`  ${row}   ${header[i] ?? ""}`));
       lines.push("");
       if (!courses.length) {
-        lines.push(`  ${p.bold("Open one by pointing at it:")}`);
+        lines.push(`  ${p.pin("❯")} ${p.bold("Press enter")} to open the player in your browser, then drop a SCORM`);
+        lines.push(`    zip on it or click ${p.bold("Choose a SCORM zip")}.`);
+        lines.push("");
+        lines.push(`  ${p.dim("Or point at a course:")}`);
         lines.push("");
         for (const [command, note] of [
           ["scormplayer ./course.zip", "a SCORM zip"],
@@ -598,25 +627,30 @@ export function pickCourse({ version, courses, cwd = process.cwd(), stdout = pro
           ["scormplayer --help", "everything else"],
         ]) lines.push(`    ${p.pin("›")} ${p.bold(command.padEnd(30))} ${p.dim(note)}`);
         lines.push("");
-        lines.push(`  ${p.key(" q ")} ${p.dim("quit")}`);
+        lines.push(`  ${p.key(" enter ")} ${p.dim("open the drop page")}   ${p.key(" q ")} ${p.dim("quit")}`);
       } else {
         const room = Math.max(3, height - lines.length - 4);
-        const start = Math.max(0, Math.min(index - Math.floor(room / 2), courses.length - room));
-        const nameWidth = Math.min(46, Math.max(...courses.map((course) => visible(course.title))) + 2);
-        courses.slice(start, start + room).forEach((course, offset) => {
+        const start = Math.max(0, Math.min(index - Math.floor(room / 2), rows.length - room));
+        const nameWidth = Math.min(46, Math.max(...rows.map((course) => visible(course.title))) + 2);
+        rows.slice(start, start + room).forEach((course, offset) => {
           const i = start + offset;
           const active = i === index;
           const marker = active ? p.pin("❯") : " ";
+          if (course.kind === "drop") {
+            const label = `${active ? p.bold("Empty player") : "Empty player"}`;
+            lines.push(`  ${marker} ${p.pin("+")}  ${padVisible(label, nameWidth + 1)}${p.dim("drop or choose a SCORM zip in the browser")}`);
+            return;
+          }
           const number = i < 9 ? p.dim(String(i + 1)) : " ";
           const title = truncate(course.title, nameWidth);
           const kind = KIND_LABEL[course.kind] ?? course.kind;
           const where = truncateStart(displayPath(course.path), width - nameWidth - 30);
           const row = `${padVisible(active ? p.bold(title) : title, nameWidth + 1)}${padVisible(active ? kindColor(course.kind)(kind) : p.dim(kind), 14)}${p.dim(where)}`;
-          lines.push(`  ${marker} ${number}  ${active ? row : row}`);
+          lines.push(`  ${marker} ${number}  ${row}`);
         });
-        if (courses.length > room) lines.push(`      ${p.dim(`${courses.length} in all · scroll with ↑ ↓`)}`);
+        if (rows.length > room) lines.push(`      ${p.dim(`${courses.length} courses · scroll with ↑ ↓`)}`);
         while (lines.length < height - 2) lines.push("");
-        lines.push(`  ${p.key(" ↑↓ ")} ${p.dim("choose")}   ${p.key(" enter ")} ${p.dim("open")}   ${p.key(" 1–9 ")} ${p.dim("open that one")}   ${p.key(" q ")} ${p.dim("quit")}`);
+        lines.push(`  ${p.key(" ↑↓ ")} ${p.dim("choose")}   ${p.key(" enter ")} ${p.dim("open")}   ${p.key(" 1–9 ")} ${p.dim("open that one")}   ${p.key(" d ")} ${p.dim("empty player")}   ${p.key(" q ")} ${p.dim("quit")}`);
       }
       stdout.write(`\x1b[H${lines.slice(0, height).map((line) => `${line}\x1b[K`).join("\n")}\x1b[J`);
     };
@@ -633,10 +667,11 @@ export function pickCourse({ version, courses, cwd = process.cwd(), stdout = pro
     };
     const onKey = (key) => {
       if (key === "\u0003" || key === "q" || key === "\u001b") return finish(null);
+      if (key === "d" || (!courses.length && (key === "\r" || key === "\n"))) return finish(DROP_PAGE);
       if (!courses.length) return;
-      if (key === "\u001b[A" || key === "k") index = (index - 1 + courses.length) % courses.length;
-      else if (key === "\u001b[B" || key === "j") index = (index + 1) % courses.length;
-      else if (key === "\r" || key === "\n" || key === " ") return finish(courses[index].path);
+      if (key === "\u001b[A" || key === "k") index = (index - 1 + rows.length) % rows.length;
+      else if (key === "\u001b[B" || key === "j") index = (index + 1) % rows.length;
+      else if (key === "\r" || key === "\n" || key === " ") return finish(rows[index].path);
       else if (/^[1-9]$/.test(key) && courses[Number(key) - 1]) return finish(courses[Number(key) - 1].path);
       render();
     };

@@ -8,7 +8,7 @@ import { startPlayer, resolveCourse, createPinStore, createDashboard, openBrowse
 import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere } from "../server/skill.mjs";
 import { findConfig, configuredPinsFile, startSync } from "../server/config.mjs";
 import { findCourses, isCourseFolder } from "../server/finder.mjs";
-import { pickCourse } from "../server/tui.mjs";
+import { pickCourse, DROP_PAGE } from "../server/tui.mjs";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -17,7 +17,8 @@ const HELP = `scormplayer ${VERSION}
 Open a SCORM course in your browser and leave pinned notes on it.
 
 Usage
-  scormplayer                     Pick a course found in this folder (or open this folder)
+  scormplayer                     Pick a course found in this folder (or open this folder);
+                                  with none, open the player to drop or choose a SCORM zip
   scormplayer <course>            Open a SCORM .zip, a SCORM folder, or a Vite project
   scormplayer pins <course>       Print the open pins as a hand-off for a teammate or an agent
   scormplayer skill install       Teach your coding agents to act on pins (pick agents and scope)
@@ -29,6 +30,7 @@ Options
   --host <host>     Host to bind (default 127.0.0.1)
   --pins <file>     Where to keep pins (default: <course>.pins.json beside a zip or folder,
                     .scormplayer/pins.json inside a live project)
+  --drop            Start with an empty player: drop or choose a SCORM zip in the browser
   --no-open         Don't open the browser
   --plain           Plain log lines instead of the dashboard (automatic without a terminal)
   -v, --version     Print the version
@@ -70,6 +72,7 @@ async function main(argv) {
       pins: { type: "string" },
       "no-open": { type: "boolean", default: false },
       plain: { type: "boolean", default: false },
+      drop: { type: "boolean", default: false },
       all: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       resolve: { type: "string", multiple: true },
@@ -86,16 +89,16 @@ async function main(argv) {
 
   if (values.version) return void console.log(VERSION);
   if (values.help) return void console.log(HELP);
-  if (positionals.length === 0) {
+  if (positionals.length === 0 && !values.drop) {
     const interactive = process.stdout.isTTY && process.stdin.isTTY && !values.plain;
     if (!interactive) return void console.log(HELP);
     const here = process.cwd();
     const choice = isCourseFolder(here) ? here : await pickCourse({ version: VERSION, courses: findCourses(here) });
     if (!choice) return;
-    positionals.push(choice);
+    if (choice !== DROP_PAGE) positionals.push(choice);
   }
 
-  const cacheDir = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "scormplayer");
+  const cacheDir = defaultCacheDir();
 
   if (positionals[0] === "skill") return runSkill(positionals[1] ?? "status", values);
 
@@ -115,31 +118,39 @@ async function main(argv) {
 
   const port = values.port === undefined ? 4620 : Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UserError("--port must be a number from 0 to 65535.");
-  const input = path.resolve(positionals[0]);
-  const config = fs.existsSync(input) ? findConfig(input) : null;
+  const input = positionals[0] ? path.resolve(positionals[0]) : null;
+  const config = input && fs.existsSync(input) ? findConfig(input) : null;
   const player = await startPlayer({
     input,
     cacheDir,
     host: values.host,
     port,
     live: values.live,
-    pinsFile: values.pins ?? configuredPinsFile(config, input),
+    pinsFile: values.pins ?? (input ? configuredPinsFile(config, input) : null),
   });
   let stopSync = () => {};
   const dashboard = createDashboard({
     version: VERSION,
-    entries: [{ id: path.basename(player.course.source), player }],
+    entries: [{ id: player.course ? path.basename(player.course.source) : "scormplayer", player }],
     plain: values.plain,
-    pinsHint: () => `scormplayer pins ${quote(positionals[0])}`,
+    pinsHint: () => (positionals[0]
+      ? `scormplayer pins ${quote(positionals[0])}`
+      : `scormplayer pins ${quote(player.course?.source ?? "")} --pins ${quote(player.course?.pinsFile ?? "")}`),
     onQuit: async () => {
       stopSync();
       await player.close();
       process.exit(0);
     },
   });
-  stopSync = startSync(config, input, (message) => dashboard.log(message));
+  if (input) stopSync = startSync(config, input, (message) => dashboard.log(message));
   if (!skillInstalledAnywhere()) dashboard.log("Tip: run `scormplayer skill install` so coding agents can act on your pins");
   if (!values["no-open"]) openBrowser(player.url);
+}
+
+/** Unpacked zips live here: %LOCALAPPDATA% on Windows, XDG_CACHE_HOME or ~/.cache elsewhere. */
+function defaultCacheDir() {
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) return path.join(process.env.LOCALAPPDATA, "scormplayer", "Cache");
+  return path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "scormplayer");
 }
 
 function quote(value) {

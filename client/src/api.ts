@@ -1,5 +1,7 @@
 import type { PinTarget } from "./picker";
 
+export type CourseResponse = Course | { empty: true };
+
 export type Course = {
   title: string;
   kind: "package" | "folder" | "live";
@@ -40,7 +42,7 @@ const json = (method: string, body: unknown): RequestInit => ({
 });
 
 export const api = {
-  course: () => request<Course>("/api/course"),
+  course: () => request<CourseResponse>("/api/course"),
   status: () => request<{ lastChangeAt: string | null }>("/api/status"),
   pins: () => request<{ pins: Pin[] }>("/api/pins").then((body) => body.pins),
   createPin: (input: { note: string; page: PinPage; target: PinTarget }) => request<Pin>("/api/pins", json("POST", input)),
@@ -51,6 +53,25 @@ export const api = {
   reportProgress: (progress: { completion: string; success: string; score: string; location: string; progressMeasure: string }) =>
     fetch("/api/progress", json("POST", progress)).catch(() => {}),
 };
+
+/** Send a SCORM zip to the player to open it, reporting upload progress (0–1). */
+export function openZip(file: File, onProgress: (fraction: number) => void): Promise<{ title: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/open");
+    xhr.setRequestHeader("Content-Type", "application/zip");
+    xhr.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
+    xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(event.loaded / event.total); };
+    xhr.onload = () => {
+      let body: any = null;
+      try { body = JSON.parse(xhr.responseText); } catch { /* not JSON */ }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body);
+      else reject(new Error(body?.error ?? `Could not open ${file.name} (${xhr.status}).`));
+    };
+    xhr.onerror = () => reject(new Error("The upload failed. Is scormplayer still running?"));
+    xhr.send(file);
+  });
+}
 
 export async function copyText(text: string) {
   try {

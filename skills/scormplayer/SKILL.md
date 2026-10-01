@@ -91,7 +91,7 @@ experience in an LMS; review-only code must do nothing unless a review host is p
    `window.parent`, then `window.opener`) finds. A course that only checks `window.top`, or opens
    itself in a pop-up without `opener`, needs the standard lookup.
 4. **No page navigation in the bottom bar**: the player reads, in order, a same-origin
-   `window.__ACADEMY_SCORM_REVIEW__` bridge, the scorm-review message handshake, or the course's
+   `window.__SCORM_REVIEW__` bridge, the scorm-review message handshake, or the course's
    own page menu (a `nav`/list with `aria-current="step"` or `"page"` on the current item). The
    lightest fix is `aria-current` on the course's menu. For full support, add the handshake;
    it is inert when no review host announces itself:

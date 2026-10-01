@@ -1,8 +1,8 @@
 /**
  * Page navigation for review, from whatever the course already offers, best first:
  *
- * 1. A same-origin review bridge on the course window (`__ACADEMY_SCORM_REVIEW__`:
- *    getScenes / getCurrentIndex / goToScene).
+ * 1. A same-origin review bridge on the course window (`__SCORM_REVIEW__`, or the older
+ *    `__ACADEMY_SCORM_REVIEW__` name): getScenes / getCurrentIndex / goToScene.
  * 2. The scorm-review message handshake: the player posts `scorm-review:host`, the course answers
  *    with `scorm-review:nav` { pages, index } after every move, and the player posts
  *    `scorm-review:goto` { index } to jump.
@@ -26,14 +26,14 @@ export function createNavigator(frame: HTMLIFrameElement, onChange: (state: NavS
   let last = "";
 
   const win = () => {
-    try { return frame.contentWindow as (Window & { __ACADEMY_SCORM_REVIEW__?: Bridge }) | null; } catch { return null; }
+    try { return frame.contentWindow as (Window & { __SCORM_REVIEW__?: Bridge; __ACADEMY_SCORM_REVIEW__?: Bridge }) | null; } catch { return null; }
   };
   const doc = () => {
     try { return frame.contentDocument; } catch { return null; }
   };
 
   const read = (): NavState => {
-    const bridge = win()?.__ACADEMY_SCORM_REVIEW__;
+    const bridge = bridgeOf(win());
     try {
       const scenes = bridge?.getScenes?.();
       if (scenes?.length) {
@@ -80,7 +80,7 @@ export function createNavigator(frame: HTMLIFrameElement, onChange: (state: NavS
       const state = read();
       if (!state || index < 0 || index >= state.pages.length) return false;
       if (state.source === "bridge") {
-        const result = await win()?.__ACADEMY_SCORM_REVIEW__?.goToScene?.(index);
+        const result = await bridgeOf(win())?.goToScene?.(index);
         if (result === false) return false;
       } else if (state.source === "message") {
         win()?.postMessage({ type: "scorm-review:goto", version: 1, index, target: "package" }, "*");
@@ -102,6 +102,10 @@ export function createNavigator(frame: HTMLIFrameElement, onChange: (state: NavS
       frame.removeEventListener("load", announce);
     },
   };
+}
+
+function bridgeOf(target: (Window & { __SCORM_REVIEW__?: Bridge; __ACADEMY_SCORM_REVIEW__?: Bridge }) | null) {
+  try { return target?.__SCORM_REVIEW__ ?? target?.__ACADEMY_SCORM_REVIEW__; } catch { return undefined; }
 }
 
 function readMenu(document: Document | null): { pages: NavPage[]; index: number; buttons: HTMLButtonElement[] } {

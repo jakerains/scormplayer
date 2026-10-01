@@ -6,12 +6,17 @@ import { chooseTarget, describeElement, describeTextSelection, locateTarget, vis
 import { installScormApis, progressOf, type ScormData } from "./scorm-api";
 import { createNavigator, type NavState } from "./nav";
 import { activeMedia, skipMedia, tourState, watchMedia } from "./media";
+import { DropHome, UploadStatus, ZipInput, useZipOpener } from "./DropHome";
 
 type Selection = { element: Element; target: PinTarget };
 type Marker = { id: string; number: number; rect: Rect };
 
 export function App() {
   const [course, setCourse] = useState<Course | null>(null);
+  const [empty, setEmpty] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const zipInputRef = useRef<HTMLInputElement | null>(null);
+  const zip = useZipOpener();
   const [loadError, setLoadError] = useState("");
   const [scorm, setScorm] = useState<ReturnType<typeof installScormApis> | null>(null);
   const [scormData, setScormData] = useState<ScormData>({});
@@ -52,7 +57,10 @@ export function App() {
 
   // Course, then the SCORM APIs, then the frame: a course looks for its API as it loads.
   useEffect(() => {
-    api.course().then(setCourse, (error) => setLoadError(error.message));
+    api.course().then((result) => {
+      if ("empty" in result) setEmpty(true);
+      else setCourse(result);
+    }, (error) => setLoadError(error.message));
   }, []);
   useEffect(() => {
     if (!course) return;
@@ -392,6 +400,22 @@ export function App() {
 
   const composerStyle = useMemo(() => composerPosition(selectionRect, stageRef.current), [selectionRect]);
 
+  // Dropping a zip anywhere on the player (including over the course) opens it instead.
+  useEffect(() => {
+    if (empty) return;
+    const isFileDrag = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
+    const onDragOver = (event: DragEvent) => { if (isFileDrag(event)) { event.preventDefault(); setDragOver(true); } };
+    const targets: (Window | Document)[] = [window];
+    const doc = frameDoc();
+    if (doc) targets.push(doc);
+    targets.forEach((target) => { target.addEventListener("dragenter", onDragOver as EventListener); target.addEventListener("dragover", onDragOver as EventListener); });
+    return () => targets.forEach((target) => { target.removeEventListener("dragenter", onDragOver as EventListener); target.removeEventListener("dragover", onDragOver as EventListener); });
+  }, [empty, frameLoads]);
+
+  useEffect(() => { if (zip.error) say(zip.error); }, [zip.error, say]);
+
+  if (empty) return <DropHome />;
+
   if (loadError) return <div className="sp-fatal"><strong>scormplayer could not load the course.</strong><p>{loadError}</p></div>;
 
   return (
@@ -462,6 +486,19 @@ export function App() {
               </div>
             </div>
           ) : null}
+
+          {dragOver ? (
+            <div
+              className="sp-dropzone"
+              onDragOver={(event) => event.preventDefault()}
+              onDragLeave={(event) => { if (event.currentTarget === event.target) setDragOver(false); }}
+              onDrop={(event) => { event.preventDefault(); setDragOver(false); void zip.open(event.dataTransfer.files?.[0]); }}
+            >
+              <div><Icon name="file" size={28} /><strong>Drop to open this SCORM zip</strong><span>The current course closes; its pins stay saved.</span></div>
+            </div>
+          ) : null}
+          {zip.upload ? <div className="sp-dropzone is-busy"><UploadStatus upload={zip.upload} /></div> : null}
+          <ZipInput inputRef={zipInputRef} onFile={(file) => void zip.open(file)} />
 
           {toast ? <div className="sp-toast" role="status">{toast}</div> : null}
         </div>
@@ -536,6 +573,9 @@ export function App() {
               </button>
               {menuOpen ? (
                 <div className="sp-menu" role="menu">
+                  <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); zipInputRef.current?.click(); }}>
+                    <Icon name="file" size={16} /> Open another course…
+                  </button>
                   <button type="button" role="menuitem" onClick={() => { setFrameKey((key) => key + 1); setMenuOpen(false); }}>
                     <Icon name="reload" size={16} /> Reload course
                   </button>

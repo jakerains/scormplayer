@@ -1,6 +1,6 @@
 {
   "name": "@jakerains/scormplayer",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Open any SCORM package in your browser, click through it like an LMS would, and leave pinned notes you can hand to a teammate or an AI agent.",
   "keywords": [
     "scorm",
@@ -35,7 +35,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=20.19"
+    "node": ">=20"
   },
   "publishConfig": {
     "access": "public"
@@ -43,7 +43,7 @@
   "scripts": {
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --test tests/server.test.mjs",
     "check": "npm run typecheck && npm run build && npm test",
     "start": "node bin/scormplayer.mjs",
     "prepack": "npm run build"

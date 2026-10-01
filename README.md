@@ -40,6 +40,14 @@ saved and resolved, files edited, the course completing).
 Without a real terminal (an agent, CI, a pipe), or with `--plain`, it prints plain timestamped
 lines instead. `NO_COLOR` is respected.
 
+## Drop a zip in the browser
+
+Run `scormplayer --drop` (or pick **Empty player** in the course list, or just run `scormplayer`
+in a folder with no courses) and the browser opens a drop zone: drag a SCORM zip in, or click
+**Choose a SCORM zip**. While a course is playing you can drop another zip anywhere on the
+player, or use **More → Open another course…**, to switch. Pins for a dropped zip are saved
+next to where you started scormplayer, named after the zip.
+
 ## Install
 
 Run it once without installing:
@@ -55,7 +63,7 @@ npm install -g @jakerains/scormplayer@latest
 scormplayer ./my-course.zip
 ```
 
-Needs Node.js 20.19 or newer.
+Needs Node.js 20 or newer. Works on macOS, Windows and Linux (tested on all three in CI).
 
 ## Use
 
@@ -66,6 +74,7 @@ scormplayer ./course-folder        # an unzipped SCORM package (imsmanifest.xml 
 scormplayer ./my-vite-course       # a Vite project: live source with hot reload
 scormplayer ./course.zip --port 5000 --no-open
 scormplayer ./course.zip --plain   # log lines instead of the dashboard
+scormplayer --drop                 # empty player: drop or choose a zip in the browser
 ```
 
 In the player:
@@ -89,8 +98,8 @@ The bottom bar shows the course's pages (‹ 3 / 7 · Page title ›, with a men
 <kbd>[</kbd> and <kbd>]</kbd> step through them) whenever the course offers a page list. It uses,
 best first:
 
-1. a same-origin `window.__ACADEMY_SCORM_REVIEW__` bridge (`getScenes`, `getCurrentIndex`,
-   `goToScene`);
+1. a same-origin `window.__SCORM_REVIEW__` bridge (`getScenes()` → `[{ id, title }]`,
+   `getCurrentIndex()`, `goToScene(index)`);
 2. the **scorm-review handshake**: the player posts `{ type: "scorm-review:host", version: 1 }` to
    the course frame; the course replies with `{ type: "scorm-review:nav", version: 1, pages:
    [{ id, title }], index }` after every move, and jumps when it receives

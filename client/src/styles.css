@@ -245,3 +245,31 @@ kbd {
   .sp-panel { position: fixed; z-index: 20; left: 0; right: 0; bottom: 62px; top: 30%; width: auto; border-left: 0; border-top: 1px solid var(--line); border-radius: 16px 16px 0 0; box-shadow: var(--shadow); }
   .sp-hint { white-space: normal; text-align: center; border-radius: 12px; }
 }
+
+/* Opening a course from the browser. */
+.sp-home { display: grid; place-items: center; min-height: 100%; padding: 24px; background: radial-gradient(circle at 50% 35%, #232731, var(--bar) 70%); color: var(--bar-text); transition: background 160ms ease; }
+.sp-home.is-over { background: radial-gradient(circle at 50% 35%, #3a2a24, var(--bar) 70%); }
+.sp-home__card {
+  display: flex; flex-direction: column; align-items: center; gap: 12px; width: min(520px, 100%); padding: 48px 36px;
+  border: 2px dashed rgba(255, 255, 255, 0.16); border-radius: 22px; text-align: center; transition: border-color 160ms ease, transform 160ms ease;
+}
+.sp-home.is-over .sp-home__card { border-color: var(--pin); transform: scale(1.02); }
+.sp-home__logo { width: 56px; height: 56px; color: var(--pin); filter: drop-shadow(0 8px 24px rgba(255, 92, 57, 0.35)); }
+.sp-home h1 { margin: 6px 0 0; font-size: 26px; letter-spacing: -0.01em; }
+.sp-home p { margin: 0; max-width: 380px; color: var(--bar-muted); font-size: 14.5px; line-height: 1.5; }
+.sp-home__choose { margin-top: 10px; height: 40px; padding: 0 18px; font-size: 14px; }
+.sp-home small { margin-top: 8px; color: var(--bar-muted); font-size: 12px; opacity: 0.8; }
+.sp-home__error { color: #ff9d8a !important; }
+.sp-upload { display: flex; flex-direction: column; gap: 10px; width: min(320px, 100%); margin-top: 10px; }
+.sp-upload strong { font-size: 13.5px; font-weight: 600; }
+.sp-upload__bar { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+.sp-upload__bar span { display: block; height: 100%; background: var(--pin); transition: width 120ms linear; }
+.sp-dropzone {
+  position: absolute; inset: 12px; z-index: 8; display: grid; place-items: center; border: 2px dashed var(--pin); border-radius: 18px;
+  background: rgba(21, 23, 28, 0.82); color: var(--bar-text); backdrop-filter: blur(4px); animation: sp-rise 120ms ease-out;
+}
+.sp-dropzone > div { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; pointer-events: none; }
+.sp-dropzone svg { color: var(--pin); }
+.sp-dropzone strong { font-size: 20px; }
+.sp-dropzone span { color: var(--bar-muted); font-size: 13.5px; }
+.sp-dropzone.is-busy { border-style: solid; }

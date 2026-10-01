@@ -230,3 +230,40 @@ test("finder: lists SCORM zips and folders, skipping zips without a manifest", a
   fs.writeFileSync(path.join(dir, "unzipped", "index.html"), "<p>hi</p>");
   assert.deepEqual(findCourses(dir).map((course) => [course.kind, course.title]), [["zip", "safety.zip"], ["folder", "Unzipped course"]]);
 });
+
+test("starts empty and opens zips sent from the browser", async () => {
+  const dir = tempDir();
+  const clientDir = path.join(dir, "client");
+  fs.mkdirSync(clientDir);
+  fs.writeFileSync(path.join(clientDir, "index.html"), "<!doctype html><title>player</title>");
+  const player = await startPlayer({ cacheDir: path.join(dir, "cache"), port: 0, clientDir, pinsDir: dir });
+  const opened = [];
+  player.events.on("course", (course) => opened.push(course.title));
+  try {
+    assert.deepEqual(await (await fetch(`${player.url}api/course`)).json(), { empty: true });
+    assert.equal(player.course, null);
+
+    const send = (name, body) => fetch(`${player.url}api/open`, { method: "POST", headers: { "Content-Type": "application/zip", "X-File-Name": encodeURIComponent(name) }, body });
+    const first = await send("Safety Basics.zip", scorm12Zip({ title: "Safety Basics" }));
+    assert.equal(first.status, 200);
+    const course = await (await fetch(`${player.url}api/course`)).json();
+    assert.equal(course.title, "Safety Basics");
+    assert.equal(course.source, "Safety Basics.zip");
+    assert.equal(course.pinsFile, path.join(dir, "Safety Basics.pins.json"));
+    assert.match(await (await fetch(new URL(course.launchUrl, player.url))).text(), /Welcome to the demo/);
+
+    assert.equal((await send("second.zip", scorm2004Zip({ title: "Second" }))).status, 200);
+    assert.equal(player.course.title, "Second");
+    assert.deepEqual(opened, ["Safety Basics", "Second"]);
+
+    const { default: AdmZip } = await import("adm-zip");
+    const notScorm = new AdmZip();
+    notScorm.addFile("photo.jpg", Buffer.from("x"));
+    const refused = await send("photos.zip", notScorm.toBuffer());
+    assert.equal(refused.status, 400);
+    assert.match((await refused.json()).error, /imsmanifest\.xml/);
+    assert.equal(player.course.title, "Second", "a refused zip leaves the open course in place");
+  } finally {
+    await player.close();
+  }
+});
