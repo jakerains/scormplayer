@@ -50,6 +50,19 @@ export function scorm12Zip({ title = "Demo 1.2 course", wrapper = "" } = {}) {
   return zip.toBuffer();
 }
 
+/**
+ * Several packages in one zip, each with its own imsmanifest.xml, as some exports and hand-made
+ * bundles are: `{ "lesson-1": "Lesson one", "more/lesson-2": "Lesson two" }`.
+ */
+export function bundleZip(packages = { "lesson-1": "Lesson one", "more/lesson-2": "Lesson two" }) {
+  const zip = new AdmZip();
+  for (const [folder, title] of Object.entries(packages)) {
+    zip.addFile(`${folder}/imsmanifest.xml`, Buffer.from(MANIFEST_12(title)));
+    zip.addFile(`${folder}/index.html`, Buffer.from(`<!doctype html><title>${title}</title><h1>${title}</h1>`));
+  }
+  return zip.toBuffer();
+}
+
 /** A SCORM 2004 course in a subfolder with launch parameters, as a zip buffer. */
 export function scorm2004Zip({ title = "Demo 2004 course" } = {}) {
   const zip = new AdmZip();

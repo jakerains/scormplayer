@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
 import express from "express";
-import { resolveCourse, isInside, UserError } from "./course.mjs";
+import { resolveCourse, isInside, siblingPinsFile, UserError } from "./course.mjs";
 import { createPinStore } from "./pins.mjs";
 import { findSourceText } from "./source-match.mjs";
 import { startLiveCourse, LIVE_BASE } from "./live.mjs";
@@ -39,9 +39,9 @@ const CLIENT_DIR = path.resolve(HERE, "../dist/client");
  *
  * @param {{ input?: string | null, cacheDir: string, host?: string, port?: number, live?: boolean,
  *   pinsFile?: string | null, pinsDir?: string, clientDir?: string, registryDir?: string | null,
- *   mode?: "dashboard" | "background" | "library", idleMinutes?: number | null }} options
+ *   mode?: "dashboard" | "background" | "library", idleMinutes?: number | null, pkg?: string | null }} options
  */
-export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", port = 4620, live = false, pinsFile = null, pinsDir = process.cwd(), clientDir = CLIENT_DIR, registryDir = defaultRegistryDir(), mode = "library", idleMinutes = null }) {
+export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", port = 4620, live = false, pinsFile = null, pinsDir = process.cwd(), clientDir = CLIENT_DIR, registryDir = defaultRegistryDir(), mode = "library", idleMinutes = null, pkg = null }) {
   // What the terminal dashboard shows: pins, source changes, SCORM progress, browser visits.
   const events = new EventEmitter();
   let progress = null;
@@ -57,17 +57,23 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
   const httpServer = createServer(app);
 
   async function open(target, options = {}) {
-    const course = resolveCourse(target, { cacheDir, live: options.live ?? false, pinsFile: options.pinsFile ?? null });
+    const course = resolveCourse(target, { cacheDir, live: options.live ?? false, pinsFile: options.pinsFile ?? null, pkg: options.pkg ?? null });
     // Keep the cache small; never remove what is being opened.
     try { pruneCache(cacheDir, { keep: [course.root, target] }); } catch { /* best effort */ }
     if (options.displayName) course.displayName = options.displayName;
+    // A zip dropped in the browser keeps its pins where scormplayer started, named after the zip
+    // (and after the package, when it holds several).
+    if (options.pinsBeside) {
+      const chosen = course.packages ? { name: course.package, packages: course.packages } : null;
+      course.pinsFile = siblingPinsFile(path.join(options.pinsBeside, course.displayName ?? path.basename(target)), chosen);
+    }
     const pins = createPinStore(course.pinsFile, course);
     const liveCourse = course.kind === "live"
       ? await startLiveCourse({ root: course.root, viteConfig: course.viteConfig, httpServer, onChange: (change) => events.emit("source", change) })
       : null;
     const previous = current;
     // Pins kept somewhere chosen on purpose (--pins, a project config) stay there after unzipping.
-    current = { course, pins, liveCourse, keepPinsFile: Boolean(options.keepPinsFile) };
+    current = { course, pins, liveCourse, keepPinsFile: Boolean(options.keepPinsFile), target, options };
     progress = null;
     await previous?.liveCourse?.close();
     registration?.update(registryFields(target));
@@ -76,13 +82,20 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
   }
 
   let started = false;
-  if (input) await open(input, { live, pinsFile, keepPinsFile: Boolean(pinsFile) });
+  if (input) await open(input, { live, pinsFile, keepPinsFile: Boolean(pinsFile), pkg });
+
+  /** Switch to another package in the same zip or folder. */
+  async function openPackage(name) {
+    const { target, options, keepPinsFile, course } = requireCourse();
+    if (!course.packages) throw new UserError("This course is a single package.");
+    return open(target, { ...options, pkg: name, pinsFile: keepPinsFile ? course.pinsFile : null });
+  }
 
   /** Unzip the open zip to a folder (beside it by default) and reopen the player on that folder. */
   async function unzip(folder) {
     const { course, keepPinsFile } = requireCourse();
     const result = unzipCourse(course, { folder: folder || defaultUnzipFolder(course), keepPinsFile });
-    await open(result.folder, { pinsFile: result.pinsFile, keepPinsFile });
+    await open(result.folder, { pinsFile: result.pinsFile, keepPinsFile, pkg: course.package ?? null });
     events.emit("unzipped", result);
     return result;
   }
@@ -113,7 +126,9 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       scormVersion: course.scormVersion,
       source: course.displayName ?? course.source,
       launchUrl: course.kind === "live" ? LIVE_BASE : `/course/${encodePath(course.launch)}`,
-      courseKey: course.sha256 ?? course.source,
+      // Each package keeps its own SCORM progress in the browser.
+      courseKey: `${course.sha256 ?? course.source}${course.package ? `:${course.package}` : ""}`,
+      ...(course.packages ? { package: course.package, packages: course.packages } : {}),
       pinsFile: course.pinsFile,
       // After this many minutes without anyone using the page it asks "Still there?" (null: never).
       idleMinutes,
@@ -136,7 +151,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     let file = path.join(uploads, name);
     if (fs.existsSync(file) && !fs.readFileSync(file).equals(req.body)) file = path.join(uploads, name.replace(/\.zip$/i, `-${digest}.zip`));
     fs.writeFileSync(file, req.body);
-    const course = await open(file, { pinsFile: path.join(pinsDir, name.replace(/\.zip$/i, ".pins.json")), displayName: name });
+    const course = await open(file, { pinsBeside: pinsDir, displayName: name });
     res.json({ ok: true, title: course.title });
   }));
 
@@ -160,6 +175,11 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
 
   // For `scormplayer ps`: who this is and how long since a browser last asked for anything.
   app.get("/api/player", (_req, res) => res.json({ pid: process.pid, mode, idleMinutes, idleSeconds: Math.round((Date.now() - lastActivity) / 1000) }));
+
+  app.post("/api/package", handle(async (req, res) => {
+    const course = await openPackage(String(req.body?.name ?? ""));
+    res.json({ ok: true, title: course.title, package: course.package });
+  }));
 
   app.get("/api/status", (_req, res) => res.json(current?.liveCourse?.status() ?? { lastChangeAt: null }));
 
@@ -251,6 +271,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       kind: course?.kind ?? null,
       source: course ? course.displayName ?? course.source : null,
       pinsFile: course?.pinsFile ?? null,
+      package: course?.package ?? null,
     };
   }
   if (registryDir) {
@@ -262,6 +283,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     get pins() { return current?.pins ?? null; },
     events,
     open,
+    openPackage,
     unzip,
     /** @param {{ latest: string, command: string } | null} value */
     setUpdate(value) { update = value; },

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CONFIG_FILE, configuredCourses, findConfig } from "./config.mjs";
+import { findManifests } from "./course.mjs";
 
 const VITE_CONFIGS = ["vite.config.ts", "vite.config.mts", "vite.config.js", "vite.config.mjs", "vite.config.cjs"];
 const SKIP = new Set(["node_modules", "dist-scorm", ".git", ".cache", "coverage", "__MACOSX"]);
@@ -63,20 +64,15 @@ function describe(target) {
       ? { path: target, kind: "zip", title: path.basename(target) }
       : null;
   }
-  const manifest = ["imsmanifest.xml", ...wrappers(target)].map((name) => path.join(target, name)).find((file) => fs.existsSync(file));
-  if (manifest) return { path: target, kind: "folder", title: manifestTitle(manifest) || path.basename(target) };
+  // One package (at the root or in a wrapper folder or two) is a course. Several mean this is a
+  // folder of courses: not one itself, so the scan goes on into it and lists each.
+  const manifests = findManifests(target, 2);
+  if (manifests.length === 1) return { path: target, kind: "folder", title: manifestTitle(manifests[0]) || path.basename(target) };
+  if (manifests.length > 1) return null;
   const vite = VITE_CONFIGS.some((name) => fs.existsSync(path.join(target, name)));
   const html = path.join(target, "index.html");
   if (vite && fs.existsSync(html)) return { path: target, kind: "live", title: htmlTitle(html) || path.basename(target) };
   return null;
-}
-
-function wrappers(dir) {
-  try {
-    return fs.readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && !SKIP.has(entry.name))
-      .map((entry) => path.join(entry.name, "imsmanifest.xml"));
-  } catch { return []; }
 }
 
 /** Look for imsmanifest.xml in the zip's central directory (the end of the file) without unpacking. */

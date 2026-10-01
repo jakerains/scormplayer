@@ -861,6 +861,19 @@ export function App() {
                   <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setPanelOpen(false); setInspectorOpen(true); }}>
                     <Icon name="code" size={16} /> SCORM inspector <kbd>I</kbd>
                   </button>
+                  {course?.packages ? (
+                    <>
+                      <p className="sp-menu__meta">{course.packages.length} courses in this {course.kind === "package" ? "zip" : "folder"}</p>
+                      {course.packages.map((item) => (
+                        <button key={item.name} type="button" role="menuitem" aria-current={item.name === course.package ? "true" : undefined}
+                          className={item.name === course.package ? "is-current" : ""} title={item.name}
+                          onClick={() => { setMenuOpen(false); if (item.name !== course.package) void api.openPackage(item.name).then(() => window.location.reload(), (error) => say(error.message)); }}>
+                          <Icon name={item.name === course.package ? "check" : "file"} size={16} /> {item.title}
+                        </button>
+                      ))}
+                      <hr className="sp-menu__rule" />
+                    </>
+                  ) : null}
                   {course?.kind === "package" ? (
                     <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setUnzipOpen(true); }}>
                       <Icon name="folder" size={16} /> Unzip to edit…

@@ -4,6 +4,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
+import { createInterface } from "node:readline/promises";
 import { startPlayer, resolveCourse, createPinStore, createDashboard, openBrowser, unzipCourse, UserError, PORT_RANGE } from "../server/index.mjs";
 import { listPlayers, findPlayer, stopPlayer, askPlayer, unregisteredPlayers, isAlive } from "../server/registry.mjs";
 import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere, skillScopes } from "../server/skill.mjs";
@@ -47,6 +48,8 @@ Options
   --no-open         Don't open the browser
   --plain           Plain log lines instead of the dashboard (automatic without a terminal)
   --new             Start another player even if this course is already open in one
+  --package <name>  For a zip or folder holding several courses: which one to open (its folder
+                    or part of its title). Without it, a terminal asks; elsewhere the first opens
   --idle <minutes>  A player in the background (no terminal: agents, scripts) stops after this
                     long with no browser looking at it, or when what started it exits.
                     Default 30; 0 never stops on its own. A terminal dashboard never does.
@@ -113,6 +116,7 @@ async function main(argv) {
       to: { type: "string" },
       check: { type: "boolean", default: false },
       new: { type: "boolean", default: false },
+      package: { type: "string" },
       idle: { type: "string" },
       global: { type: "boolean", short: "g", default: false },
       agent: { type: "string", short: "a", multiple: true },
@@ -151,7 +155,7 @@ async function main(argv) {
     const input = positionals[1];
     if (!input) throw new UserError("Usage: scormplayer unzip <zip> [--to <folder>]");
     const explicitPins = values.pins ?? configuredPinsFile(findConfig(input), path.resolve(input));
-    const course = resolveCourse(input, { cacheDir, pinsFile: explicitPins });
+    const course = resolveCourse(input, { cacheDir, pinsFile: explicitPins, pkg: values.package });
     const result = unzipCourse(course, { folder: values.to ? path.resolve(values.to) : undefined, keepPinsFile: Boolean(explicitPins) });
     if (json) return void console.log(JSON.stringify({ ok: true, ...result }));
     console.log(result.reused ? `Already unzipped: ${result.folder}` : `Unzipped to ${result.folder}`);
@@ -164,7 +168,7 @@ async function main(argv) {
   if (positionals[0] === "pins") {
     const input = positionals[1];
     if (!input) throw new UserError("Usage: scormplayer pins <course>");
-    const course = resolveCourse(input, { cacheDir, live: values.live, pinsFile: values.pins ?? configuredPinsFile(findConfig(input), path.resolve(input)) });
+    const course = resolveCourse(input, { cacheDir, live: values.live, pkg: values.package, pinsFile: values.pins ?? configuredPinsFile(findConfig(input), path.resolve(input)) });
     const store = createPinStore(course.pinsFile, course);
     const resolved = [];
     for (const id of values.resolve ?? []) {
@@ -196,21 +200,29 @@ async function main(argv) {
   const config = input && fs.existsSync(input) ? findConfig(input) : null;
   const pinsFile = values.pins ?? (input ? configuredPinsFile(config, input) : null);
 
-  // One player per course: if this course is already open (same pins), use that player.
-  if (input && !values.new) {
-    const running = findPlayer({ input, pinsFile });
-    if (running && await askPlayer(running.url)) return reusePlayer(running, { json, open: !values["no-open"] });
-  }
-
   // A dashboard in a terminal someone is watching runs until they quit it. A player in the
   // background (an agent, a script, CI) stops by itself once nobody is using it.
   const mode = process.stdout.isTTY && process.stdin.isTTY && !values.plain && !json && !process.env.CI ? "dashboard" : "background";
+
+  // A zip or folder holding several courses: in a terminal, ask which one; elsewhere the first opens.
+  let pkg = values.package ?? null;
+  if (input && !pkg && mode === "dashboard" && fs.existsSync(input)) {
+    const packages = (() => { try { return resolveCourse(input, { cacheDir, live: values.live }).packages; } catch { return null; } })();
+    if (packages) pkg = await askWhichPackage(input, packages);
+  }
+
+  // One player per course: if this course is already open (same pins), use that player.
+  if (input && !values.new) {
+    const running = findPlayer({ input, pinsFile, pkg });
+    if (running && await askPlayer(running.url)) return reusePlayer(running, { json, open: !values["no-open"] });
+  }
+
   const idleMinutes = values.idle !== undefined ? Number(values.idle) : mode === "background" ? 30 : 0;
   if (!Number.isFinite(idleMinutes) || idleMinutes < 0) throw new UserError("--idle must be a number of minutes (0 to never stop on its own).");
 
   let player;
   try {
-    player = await startPlayer({ input, cacheDir, host: values.host, port, live: values.live, pinsFile, mode, idleMinutes: idleMinutes || null });
+    player = await startPlayer({ input, cacheDir, host: values.host, port, live: values.live, pinsFile, mode, idleMinutes: idleMinutes || null, pkg });
   } catch (error) {
     if (error.code === "PORTS_FULL") throw new UserError(await portsFullMessage(error.firstPort, values.host));
     throw error;
@@ -244,6 +256,7 @@ async function main(argv) {
     dashboard.updateAvailable(latest, updateHint());
     player.setUpdate({ latest, command: updateHint() });
   });
+  if (player.course?.packages) dashboard.log(packagesNote(player.course, positionals[0]));
   if (!skillInstalledAnywhere()) dashboard.log("Tip: run `scormplayer skill install` so coding agents can act on your pins");
   if (!values["no-open"]) openBrowser(player.url);
 }
@@ -278,6 +291,31 @@ function watchForAbandonment(player, idleMinutes, stop) {
     }
   }, Math.min(5_000, idleMinutes * 60_000));
   timer.unref();
+}
+
+/** Several courses in one zip or folder: ask which to open. Enter takes the first. */
+async function askWhichPackage(input, packages) {
+  const lines = packages.map((item, index) => `  ${String(index + 1).padStart(2)}. ${item.title}  (${item.name})`);
+  console.log(`${path.basename(input)} holds ${packages.length} courses:\n${lines.join("\n")}`);
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    for (;;) {
+      const answer = (await rl.question(`Open which? [1-${packages.length}, Enter for 1] `)).trim();
+      if (!answer) return packages[0].name;
+      const number = Number(answer);
+      if (Number.isInteger(number) && number >= 1 && number <= packages.length) return packages[number - 1].name;
+      console.log(`Type a number from 1 to ${packages.length}.`);
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+/** Which of several courses is open, and how to open the others. */
+function packagesNote(course, input) {
+  const others = course.packages.filter((item) => item.name !== course.package);
+  return `This holds ${course.packages.length} courses; opened ${course.package}. Others: ${others.map((item) => item.name).join(", ")} `
+    + `(switch in the player under More, or: scormplayer ${quote(input ?? course.source)} --package ${quote(others[0]?.name ?? "")})`;
 }
 
 /** The course is already open in another player: point at that one instead of starting another. */

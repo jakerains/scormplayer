@@ -128,8 +128,11 @@ experience in an LMS; review-only code must do nothing unless a review host is p
 
 1. **Run it and read the message:** `scormplayer <course> --json --no-open`. The `error` field
    (or the `ready` line, if it opens) tells you what scormplayer found.
-   - *No imsmanifest.xml*: the zip may hold several packages or nest the manifest two folders deep.
-     The manifest must sit at the root or inside one wrapper folder.
+   - *No imsmanifest.xml*: scormplayer looks at the root and up to three folders down. A manifest
+     deeper than that, or a zip that isn't a SCORM package, won't open.
+   - *Several courses in one zip or folder* (several imsmanifest.xml files): it opens the first
+     and lists the rest (`course.packages` in `--json` output). Open another with
+     `--package <folder or part of its title>`; each one keeps its own pins file.
    - *The manifest launches X, but that file is not in the package*: fix the resource `href`
      (case and path must match the file exactly).
    - Not a SCORM package at all: a Vite project opens with `--live`; anything else needs packaging.

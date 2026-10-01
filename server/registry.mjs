@@ -57,10 +57,11 @@ export function listPlayers(dir = defaultRegistryDir()) {
 }
 
 /** A running player already serving this course with these pins, if there is one. */
-export function findPlayer({ input, pinsFile = null }, dir = defaultRegistryDir()) {
+export function findPlayer({ input, pinsFile = null, pkg = null }, dir = defaultRegistryDir()) {
   const target = path.resolve(input);
   return listPlayers(dir).find((player) => player.input && path.resolve(player.input) === target
-    && (!pinsFile || path.resolve(pinsFile) === player.pinsFile)) ?? null;
+    && (!pinsFile || path.resolve(pinsFile) === player.pinsFile)
+    && (!pkg || player.package === pkg)) ?? null;
 }
 
 /** Stop a player by its process id: ask it to stop, then insist after a few seconds. */

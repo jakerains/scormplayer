@@ -44,7 +44,9 @@ export function unzipCourse(course, { folder = defaultUnzipFolder(course), keepP
     for (const name of [".extracted", ".last-used"]) fs.rmSync(path.join(target, name), { force: true });
   }
 
-  const pinsFile = keepPinsFile ? course.pinsFile : siblingPinsFile(target);
+  // A zip of several packages keeps one pins file per package, named the same way beside the folder.
+  const chosen = course.packages ? { name: course.package, packages: course.packages } : null;
+  const pinsFile = keepPinsFile ? course.pinsFile : siblingPinsFile(target, chosen);
   const movedPins = pinsFile === course.pinsFile ? 0 : movePins(course.pinsFile, pinsFile);
   return { folder: target, pinsFile, reused, movedPins };
 }

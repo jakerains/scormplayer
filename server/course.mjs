@@ -11,14 +11,17 @@ const VITE_CONFIGS = ["vite.config.ts", "vite.config.mts", "vite.config.js", "vi
  * Resolve what the user pointed at into something the player can serve.
  *
  * - a `.zip`: extracted once into the cache (keyed by its SHA-256), then served as a package
+ *
+ * A zip or folder may hold several packages (several imsmanifest.xml files below its root):
+ * `pkg` picks one by folder or title, otherwise the first is opened, and `packages` lists them all.
  * - a folder with `imsmanifest.xml` (at its root or inside one wrapper folder): served as is
  * - a Vite project (or any folder with `--live`): served from source through the project's own
  *   Vite, with hot reload
  *
  * @param {string} input
- * @param {{ cacheDir: string, live?: boolean, pinsFile?: string | null }} options
+ * @param {{ cacheDir: string, live?: boolean, pinsFile?: string | null, pkg?: string | null }} options
  */
-export function resolveCourse(input, { cacheDir, live = false, pinsFile = null }) {
+export function resolveCourse(input, { cacheDir, live = false, pinsFile = null, pkg = null }) {
   const target = path.resolve(input);
   if (!fs.existsSync(target)) throw new UserError(`Nothing found at ${target}.`);
   const stat = fs.statSync(target);
@@ -34,25 +37,28 @@ export function resolveCourse(input, { cacheDir, live = false, pinsFile = null }
       fs.writeFileSync(path.join(root, ".extracted"), `${target}\n`);
     }
     touchCacheEntry(root);
-    const manifest = readManifest(root);
+    const chosen = choosePackage(root, { pkg });
+    if (!chosen) throw new UserError(`No imsmanifest.xml in ${path.basename(target)}. A SCORM zip has one at its root or in a folder inside.`);
     return {
       kind: "package",
       source: target,
-      ...manifest,
+      ...readManifest(root, chosen.manifestPath),
+      ...packageFields(chosen),
       sha256,
-      pinsFile: pinsFile ? path.resolve(pinsFile) : siblingPinsFile(target),
+      pinsFile: pinsFile ? path.resolve(pinsFile) : siblingPinsFile(target, chosen),
     };
   }
 
   if (!stat.isDirectory()) throw new UserError(`${target} is neither a file nor a folder.`);
-  const manifestPath = findManifest(target, { required: false });
+  const chosen = choosePackage(target, { pkg });
+  const manifestPath = chosen?.manifestPath ?? null;
   const viteConfig = VITE_CONFIGS.find((name) => fs.existsSync(path.join(target, name))) ?? null;
 
   if (live || (!manifestPath && viteConfig)) {
     if (!fs.existsSync(path.join(target, "index.html"))) {
       throw new UserError(`Live mode needs an index.html in ${target}.`);
     }
-    const manifest = manifestPath ? readManifest(target) : null;
+    const manifest = manifestPath ? readManifest(target, manifestPath) : null;
     return {
       kind: "live",
       source: target,
@@ -71,38 +77,94 @@ export function resolveCourse(input, { cacheDir, live = false, pinsFile = null }
   return {
     kind: "folder",
     source: target,
-    ...readManifest(target),
-    pinsFile: pinsFile ? path.resolve(pinsFile) : siblingPinsFile(target),
+    ...readManifest(target, manifestPath),
+    ...packageFields(chosen),
+    pinsFile: pinsFile ? path.resolve(pinsFile) : siblingPinsFile(target, chosen),
   };
+}
+
+/** For a zip or folder holding several packages: which one is open, and all of them. */
+function packageFields(chosen) {
+  return chosen.packages.length > 1 ? { package: chosen.name, packages: chosen.packages } : {};
 }
 
 export class UserError extends Error {}
 
-/** `course.zip` → `course.pins.json`; `course/` → `course.pins.json` beside it. */
-export function siblingPinsFile(target) {
+/**
+ * `course.zip` → `course.pins.json`; `course/` → `course.pins.json` beside it. When it holds
+ * several packages, each keeps its own pins: `bundle.lesson-2.pins.json`.
+ */
+export function siblingPinsFile(target, chosen = null) {
   const parsed = path.parse(target);
   const name = parsed.ext.toLowerCase() === ".zip" ? parsed.name : parsed.base;
-  return path.join(parsed.dir, `${name}.pins.json`);
+  const part = chosen && chosen.packages.length > 1 ? `.${chosen.name.replace(/[^\w.-]+/g, "-")}` : "";
+  return path.join(parsed.dir, `${name}${part}.pins.json`);
 }
 
-/** Locate imsmanifest.xml at the root or directly inside a single wrapper folder. */
-export function findManifest(dir, { required = true } = {}) {
+const MANIFEST_SKIP = new Set(["node_modules", "__MACOSX"]);
+
+/**
+ * Every package here: the imsmanifest.xml at the root, or else each one found in the folders up to
+ * three levels down (exports often nest the package in a folder or two). A folder holding a
+ * manifest is a package, so its own subfolders aren't searched.
+ */
+export function findManifests(dir, depth = 3) {
   const atRoot = path.join(dir, "imsmanifest.xml");
-  if (fs.existsSync(atRoot)) return atRoot;
-  const folders = fs.readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "__MACOSX" && entry.name !== "node_modules");
-  const nested = folders
-    .map((entry) => path.join(dir, entry.name, "imsmanifest.xml"))
-    .filter((file) => fs.existsSync(file));
-  if (nested.length === 1) return nested[0];
-  if (nested.length > 1) throw new UserError(`Found ${nested.length} imsmanifest.xml files in ${dir}; expected one.`);
-  if (required) throw new UserError(`No imsmanifest.xml in ${dir}.`);
-  return null;
+  if (fs.existsSync(atRoot)) return [atRoot];
+  const found = [];
+  const walk = (folder, left) => {
+    let entries = [];
+    try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))) {
+      if (!entry.isDirectory() || entry.name.startsWith(".") || MANIFEST_SKIP.has(entry.name)) continue;
+      const child = path.join(folder, entry.name);
+      const manifest = path.join(child, "imsmanifest.xml");
+      if (fs.existsSync(manifest)) found.push(manifest);
+      else if (left > 1) walk(child, left - 1);
+    }
+  };
+  walk(dir, depth);
+  return found;
+}
+
+/**
+ * Which package to open: the one `pkg` names (its folder, the end of its folder path, or part of
+ * its title), otherwise the first. Null when there is none.
+ *
+ * @returns {{ manifestPath: string, name: string, packages: { name: string, title: string }[] } | null}
+ */
+export function choosePackage(dir, { pkg = null } = {}) {
+  const manifests = findManifests(dir);
+  if (!manifests.length) return null;
+  const packages = manifests.map((file) => ({
+    name: path.relative(dir, path.dirname(file)).split(path.sep).join("/") || ".",
+    title: quickTitle(file),
+  }));
+  let index = 0;
+  if (pkg) {
+    const wanted = String(pkg).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    index = packages.findIndex((item) => item.name.toLowerCase() === wanted);
+    if (index < 0) index = packages.findIndex((item) => item.name.toLowerCase().endsWith(`/${wanted}`));
+    if (index < 0) index = packages.findIndex((item) => item.title.toLowerCase().includes(wanted));
+    if (index < 0) throw new UserError(`No package "${pkg}" here. It holds: ${packages.map((item) => `${item.name} (${item.title})`).join(", ")}.`);
+  }
+  return { manifestPath: manifests[index], name: packages[index].name, packages };
+}
+
+/** The first package's manifest (see findManifests), or null. */
+export function findManifest(dir, { required = true } = {}) {
+  const manifest = findManifests(dir)[0] ?? null;
+  if (!manifest && required) throw new UserError(`No imsmanifest.xml in ${dir}.`);
+  return manifest;
+}
+
+function quickTitle(file) {
+  try { return parseManifestXml(fs.readFileSync(file, "utf8")).title; }
+  catch { return path.basename(path.dirname(file)); }
 }
 
 /** Title, SCORM version and launch path (relative to the served root) from the manifest. */
-export function readManifest(root) {
-  const manifestPath = findManifest(root);
+export function readManifest(root, manifestPath = findManifest(root)) {
   const xml = fs.readFileSync(manifestPath, "utf8");
   const parsed = parseManifestXml(xml);
   const wrapper = path.relative(root, path.dirname(manifestPath)).split(path.sep).join("/");

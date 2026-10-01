@@ -9,7 +9,7 @@ import { parseManifestXml, resolveCourse, UserError } from "../server/course.mjs
 import { createPinStore } from "../server/pins.mjs";
 import { findSourceText } from "../server/source-match.mjs";
 import { startPlayer } from "../server/index.mjs";
-import { MANIFEST_12, MANIFEST_2004, multiScoZip, scorm12Zip, scorm2004Zip, traversalZip } from "./fixtures.mjs";
+import { MANIFEST_12, MANIFEST_2004, bundleZip, multiScoZip, scorm12Zip, scorm2004Zip, traversalZip } from "./fixtures.mjs";
 
 const BIN = fileURLToPath(new URL("../bin/scormplayer.mjs", import.meta.url));
 // Keep the players these tests start out of the real registry of running players.
@@ -578,6 +578,66 @@ test("running players: registry, reuse, ps and stop, and stopping when idle", as
   const idle = spawn(process.execPath, [BIN, zipPath, "--json", "--no-open", "--port", "0", "--idle", "0.02"], { env });
   children.push(idle);
   assert.match((await lines(idle)("stopped")).reason, /nobody has used the player/);
+});
+
+test("several packages in one zip or folder: first by default, pick by name, own pins and progress", async () => {
+  const dir = tempDir();
+  const cacheDir = path.join(dir, "cache");
+  const zipPath = path.join(dir, "bundle.zip");
+  fs.writeFileSync(zipPath, bundleZip());
+
+  // A zip of two packages opens the first, lists both, and keeps pins per package.
+  const first = resolveCourse(zipPath, { cacheDir });
+  assert.equal(first.title, "Lesson one");
+  assert.equal(first.package, "lesson-1");
+  assert.deepEqual(first.packages, [{ name: "lesson-1", title: "Lesson one" }, { name: "more/lesson-2", title: "Lesson two" }]);
+  assert.equal(first.pinsFile, path.join(dir, "bundle.lesson-1.pins.json"));
+  // By folder, by the end of its folder path, or by part of its title.
+  for (const pkg of ["more/lesson-2", "lesson-2", "two"]) assert.equal(resolveCourse(zipPath, { cacheDir, pkg }).title, "Lesson two");
+  assert.throws(() => resolveCourse(zipPath, { cacheDir, pkg: "nope" }), /No package "nope"[\s\S]*lesson-1 \(Lesson one\)/);
+  // One package nested three folders down is found too.
+  const deep = path.join(dir, "deep.zip");
+  fs.writeFileSync(deep, bundleZip({ "export/scorm/package": "Deep lesson" }));
+  assert.equal(resolveCourse(deep, { cacheDir }).title, "Deep lesson");
+  assert.equal(resolveCourse(deep, { cacheDir }).packages, undefined);
+
+  // A folder of two course folders is a list to pick from, not one broken course.
+  const { findCourses, isCourseFolder } = await import("../server/finder.mjs");
+  const lessons = path.join(dir, "lessons");
+  for (const [name, title] of [["a", "Lesson A"], ["b", "Lesson B"]]) {
+    fs.mkdirSync(path.join(lessons, name), { recursive: true });
+    fs.writeFileSync(path.join(lessons, name, "imsmanifest.xml"), MANIFEST_12(title));
+    fs.writeFileSync(path.join(lessons, name, "index.html"), "<!doctype html><title>x</title>");
+  }
+  assert.equal(isCourseFolder(lessons), false);
+  assert.deepEqual(findCourses(lessons).map((course) => course.title), ["Lesson A", "Lesson B"]);
+  // Pointed at directly, it still opens (the first), rather than refusing.
+  assert.equal(resolveCourse(lessons, { cacheDir }).title, "Lesson A");
+
+  // The player switches packages, each with its own progress key and pins.
+  const clientDir = path.join(dir, "client");
+  fs.mkdirSync(clientDir);
+  fs.writeFileSync(path.join(clientDir, "index.html"), "<!doctype html><title>player</title>");
+  const player = await startPlayer({ input: zipPath, cacheDir, port: 0, clientDir, registryDir: null });
+  try {
+    const one = await (await fetch(`${player.url}api/course`)).json();
+    assert.equal(one.package, "lesson-1");
+    assert.equal(one.packages.length, 2);
+    await fetch(`${player.url}api/package`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "more/lesson-2" }) });
+    const two = await (await fetch(`${player.url}api/course`)).json();
+    assert.equal(two.title, "Lesson two");
+    assert.notEqual(two.courseKey, one.courseKey);
+    assert.equal(two.pinsFile, path.join(dir, "bundle.more-lesson-2.pins.json"));
+    assert.match(await (await fetch(new URL(two.launchUrl, player.url))).text(), /Lesson two/);
+  } finally {
+    await player.close();
+  }
+
+  // The CLI: --package picks, and agent output lists the packages.
+  const env = { ...process.env, XDG_CACHE_HOME: cacheDir };
+  const report = JSON.parse(execFileSync(process.execPath, [BIN, "pins", zipPath, "--package", "lesson-2", "--json"], { encoding: "utf8", env }));
+  assert.equal(report.course.title, "Lesson two");
+  assert.equal(report.course.packages.length, 2);
 });
 
 test("multi-SCO packages list every module in manifest order", async () => {

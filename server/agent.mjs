@@ -95,6 +95,8 @@ function describeCourse(course) {
     // A zip plays from a copy in the cache: unzip it (scormplayer unzip) before editing.
     editable: course.kind !== "package",
     ...(course.scos?.length > 1 ? { scos: course.scos.map((sco) => ({ id: sco.id, title: sco.title })) } : {}),
+    // A zip or folder holding several courses: the one open, and all of them (open another with --package).
+    ...(course.packages ? { package: course.package, packages: course.packages } : {}),
   };
 }
 

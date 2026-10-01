@@ -372,3 +372,6 @@ kbd {
 .sp-closed .sp-dialog p code { font: 12px var(--mono); word-break: break-all; }
 .sp-closed__command { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line); }
 .sp-closed__command code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font: 13px var(--mono); }
+.sp-menu button.is-current { font-weight: 650; color: var(--pin); }
+.sp-menu__rule { margin: 6px 4px; border: 0; border-top: 1px solid var(--line); }
+.sp-menu > .sp-menu__meta:first-child { margin-top: 0; padding-top: 4px; border-top: 0; }

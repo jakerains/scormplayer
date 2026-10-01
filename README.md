@@ -145,6 +145,21 @@ waited. While a tour is open the bar also shows its step and Back/Next.
 newest first, with a filter, a *writes only* switch and **Copy JSON**. It's the quickest way to
 see why a course doesn't complete, score or resume.
 
+### Zips and folders holding several courses
+
+Some exports and hand-made bundles put several SCORM packages in one zip or folder, each with its
+own `imsmanifest.xml` (scormplayer looks at the root and up to three folders down). In a terminal
+it asks which to open; elsewhere it opens the first and says how to open the others. Pick one
+directly with `--package`, by its folder or part of its title:
+
+```sh
+scormplayer ./bundle.zip --package lesson-2
+```
+
+In the player, **More** lists the courses in the zip to switch between. Each keeps its own pins
+(`bundle.lesson-2.pins.json`) and its own progress. Bare `scormplayer` in a folder of course
+folders lists each course to pick from.
+
 ### Packages with several modules
 
 When a manifest lists several SCOs, a **Module** switcher appears in the bar. Each module keeps

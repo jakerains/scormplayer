@@ -16,6 +16,9 @@ export type Course = {
   editable: boolean;
   /** For a zip: where it unzips to by default, and a folder it was unzipped to before. */
   unzip?: { folder: string; existing: string | null };
+  /** A zip or folder holding several courses: the one open, and all of them. */
+  package?: string;
+  packages?: { name: string; title: string }[];
   /** Packages with several SCOs. */
   scos?: { id: string; title: string; launchUrl: string }[];
 };
@@ -61,6 +64,7 @@ export const api = {
   idleClose: () => request<{ closed: boolean }>("/api/idle-close", { method: "POST" }),
   player: () => request<{ pid: number }>("/api/player"),
   update: () => request<{ update: { latest: string; command: string } | null }>("/api/update").then((body) => body.update),
+  openPackage: (name: string) => request<{ ok: true; title: string }>("/api/package", json("POST", { name })),
   unzip: (folder: string) => request<{ ok: true; folder: string; pinsFile: string; reused: boolean; movedPins: number }>("/api/unzip", json("POST", { folder })),
   brief: (status: "open" | "all" = "open") => request<string>(`/api/brief?status=${status}`),
   reportProgress: (progress: { completion: string; success: string; score: string; location: string; progressMeasure: string }) =>

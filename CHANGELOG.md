@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7] - October 1, 2026
+
+### Fixed
+- A zip or folder holding several courses (several `imsmanifest.xml` files) opens instead of
+  failing with "Found 2 imsmanifest.xml files; expected one". A terminal asks which to open;
+  elsewhere the first opens and the others are listed. `--package <folder or title>` picks one,
+  and **More** in the player switches between them. Each keeps its own pins and progress.
+- Bare `scormplayer` in a folder of course folders lists them to pick from, instead of trying
+  to open the folder itself as one course.
+
+### Changed
+- The manifest is found up to three folders deep (it was one), for exports that nest it.
+
 ## [0.8.6] - October 1, 2026
 
 ### Changed
