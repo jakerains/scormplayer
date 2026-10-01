@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] - October 1, 2026
+
+### Added
+- "Still there?": a background player left open in a tab nobody touches asks after its idle time
+  (30 minutes by default) and closes if nobody answers within 2 minutes. An open tab no longer
+  keeps a forgotten player running forever. Clicks, typing, scrolling and narration count as
+  someone being there.
+- When a player closes or is stopped, its tab says so, where the pins are, and the command to
+  reopen the course.
+
+### Fixed
+- The running-players registry follows `XDG_CACHE_HOME` on every system when it's set.
+- Tests stop the players they start even when they fail, so a failure can't hang CI.
+
 ## [0.8.4] - October 1, 2026
 
 ### Added

@@ -301,10 +301,16 @@ scormplayer stop --all         # stop them all
 ```
 
 Players use ports 4620–4639, 20 at most. One started in the background (by an agent, a script
-or CI, with no terminal) stops by itself after 30 minutes with no browser looking at it, or when
-the program that started it exits; `--idle <minutes>` changes that and `--idle 0` turns it off.
-A dashboard in your terminal runs until you quit it. If all 20 ports are ever taken,
-scormplayer says which players hold them.
+or CI, with no terminal) closes itself when it's been left behind:
+
+- no browser has it open for 30 minutes;
+- it's open in a tab nobody has touched for 30 minutes: the page asks **Still there?** and closes
+  the player if nobody answers within 2 minutes (the tab then says how to reopen it);
+- the program that started it exits.
+
+`--idle <minutes>` changes the 30 minutes and `--idle 0` turns all of this off. A dashboard in
+your terminal runs until you quit it. If all 20 ports are ever taken, scormplayer says which
+players hold them.
 
 ### Cache and updates
 

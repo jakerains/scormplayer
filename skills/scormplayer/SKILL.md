@@ -104,8 +104,9 @@ deleted), `progress` (the course's SCORM status), `source` (a file changed in Li
 - **Stop what you start.** When you're done, run `scormplayer stop <port>` (or `--json`). Players
   use 20 ports (4620–4639), and leftovers fill them.
 - **It stops itself when abandoned:** a background player stops after 30 minutes with no browser
-  looking at it, or when the program that started it exits. Don't rely on that instead of
-  stopping it.
+  looking at it, when an open tab goes untouched that long (the page asks "Still there?" and
+  closes if nobody answers; if you're driving the page, click **I'm still here**), or when the
+  program that started it exits. Don't rely on that instead of stopping it.
 
 Don't start it unless you need it; the reviewer usually has it open already.
 

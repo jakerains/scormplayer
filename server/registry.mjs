@@ -10,10 +10,14 @@ import { execFileSync } from "node:child_process";
  * (killed outright, a crash) is cleaned up the next time anyone lists the players.
  */
 
-/** Per user, whatever cache folder a player was started with: %LOCALAPPDATA% or XDG_CACHE_HOME/~/.cache. */
+/**
+ * Per user, whatever cache folder a player was started with: XDG_CACHE_HOME when it's set (on
+ * any system), otherwise %LOCALAPPDATA% on Windows and ~/.cache elsewhere.
+ */
 export function defaultRegistryDir() {
+  if (process.env.XDG_CACHE_HOME) return path.join(process.env.XDG_CACHE_HOME, "scormplayer", "players");
   if (process.platform === "win32" && process.env.LOCALAPPDATA) return path.join(process.env.LOCALAPPDATA, "scormplayer", "Cache", "players");
-  return path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "scormplayer", "players");
+  return path.join(os.homedir(), ".cache", "scormplayer", "players");
 }
 
 /**

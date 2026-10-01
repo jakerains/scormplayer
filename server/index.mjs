@@ -47,6 +47,9 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
   let progress = null;
   let current = null;
   let lastActivity = Date.now();
+  // When a person last did something in an open page (clicked, typed, scrolled, listened). The
+  // page's own polling keeps lastActivity fresh, so a forgotten tab is told apart by this.
+  let lastInteraction = Date.now();
   let registration = null;
   // A newer published scormplayer, when the CLI finds one, for the page's More menu.
   let update = null;
@@ -92,7 +95,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
 
   // Any request counts as someone using the player: the open page asks for its pins every few seconds.
   app.use((req, _res, next) => {
-    // ps asking about a player isn't someone using it.
+    // ps asking about a player (or the page checking it's still up) isn't someone using it.
     if (req.path !== "/api/player") lastActivity = Date.now();
     next();
   });
@@ -101,6 +104,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
 
   app.get("/api/course", (_req, res) => {
     events.emit("browser");
+    lastInteraction = Date.now();
     if (!current) return res.json({ empty: true });
     const { course } = current;
     res.json({
@@ -111,6 +115,8 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       launchUrl: course.kind === "live" ? LIVE_BASE : `/course/${encodePath(course.launch)}`,
       courseKey: course.sha256 ?? course.source,
       pinsFile: course.pinsFile,
+      // After this many minutes without anyone using the page it asks "Still there?" (null: never).
+      idleMinutes,
       // A zip plays from a copy in the cache, so it can't be edited until it is unzipped.
       editable: course.kind !== "package",
       ...(course.kind === "package" ? { unzip: { folder: defaultUnzipFolder(course), existing: existingUnzip(course) } } : {}),
@@ -140,6 +146,17 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
   }));
 
   app.get("/api/update", (_req, res) => res.json({ update }));
+
+  // The page reports a person using it (throttled), and, when nobody answered "Still there?",
+  // asks to close. The close is refused if anyone used any tab of this player in the meantime.
+  app.post("/api/active", (_req, res) => { lastInteraction = Date.now(); res.status(204).end(); });
+  app.post("/api/idle-close", (_req, res) => {
+    const quiet = Date.now() - lastInteraction;
+    // A little slack for the page's clock and throttling: 5 s, or a tenth of very short idle times.
+    if (!idleMinutes || quiet < idleMinutes * 60_000 - Math.min(5_000, idleMinutes * 6_000)) return res.json({ closed: false });
+    res.json({ closed: true });
+    events.emit("idle-close");
+  });
 
   // For `scormplayer ps`: who this is and how long since a browser last asked for anything.
   app.get("/api/player", (_req, res) => res.json({ pid: process.pid, mode, idleMinutes, idleSeconds: Math.round((Date.now() - lastActivity) / 1000) }));

@@ -259,12 +259,15 @@ function quote(value) {
 }
 
 /**
- * Stop a player that has been left behind: nobody has asked it for anything in `idleMinutes`
- * (an open page asks every few seconds), or the program that started it has exited, which on
- * macOS and Linux shows as a new parent process (whoever adopted it). 0 minutes turns both off.
+ * Stop a player that has been left behind: no page has asked it for anything in `idleMinutes`
+ * (an open page asks every few seconds), an open page asked "Still there?" and nobody answered,
+ * or the program that started it has exited, which on macOS and Linux shows as a new parent
+ * process (whoever adopted it). 0 minutes turns all three off.
  */
 function watchForAbandonment(player, idleMinutes, stop) {
   if (!idleMinutes) return;
+  // An open page asked "Still there?" and nobody answered.
+  player.events.once("idle-close", () => stop("nobody answered \"Still there?\" in the browser"));
   const timer = setInterval(() => {
     if (player.idleFor() > idleMinutes * 60_000) {
       clearInterval(timer);

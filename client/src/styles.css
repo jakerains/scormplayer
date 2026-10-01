@@ -367,3 +367,12 @@ kbd {
 .sp-dialog .sp-dialog__error { margin: 12px 0 0; color: var(--bad); }
 .sp-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .sp-menu button.sp-menu__update { color: var(--pin); font-weight: 650; }
+
+/* "Still there?" before an idle player closes, and the screen once it has. */
+.sp-still h2 { font-size: 18px; }
+.sp-still b { font-variant-numeric: tabular-nums; color: var(--ink); }
+.sp-closed { display: grid; place-items: center; height: 100%; padding: 16px; background: var(--bar); }
+.sp-closed .sp-dialog { width: min(560px, 100%); }
+.sp-closed .sp-dialog p code { font: 12px var(--mono); word-break: break-all; }
+.sp-closed__command { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line); }
+.sp-closed__command code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font: 13px var(--mono); }

@@ -247,3 +247,24 @@ test("WebMCP tools drive the player for a browser agent", async () => {
     await player.close();
   }
 });
+
+test("an idle player asks \"Still there?\", stays when answered and closes when not", async () => {
+  const { player, page } = await open({ input: navCourse(), idleMinutes: 0.05, registryDir: null });
+  let closeAsked = 0;
+  player.events.on("idle-close", () => { closeAsked += 1; });
+  try {
+    const prompt = page.getByRole("alertdialog", { name: "Still there?" });
+    await prompt.waitFor({ timeout: 10_000 });
+    await page.getByRole("button", { name: "I'm still here" }).click();
+    await prompt.waitFor({ state: "hidden" });
+    assert.equal(closeAsked, 0);
+    // Nobody answers the next one: the player is asked to close and the tab says so.
+    await prompt.waitFor({ timeout: 10_000 });
+    await page.getByText("This player has closed").waitFor({ timeout: 10_000 });
+    assert.equal(closeAsked, 1);
+    assert.match(await page.locator(".sp-closed__command code").innerText(), /^scormplayer /);
+  } finally {
+    await page.close();
+    await player.close();
+  }
+});

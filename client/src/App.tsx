@@ -9,6 +9,7 @@ import { activeMedia, skipMedia, tourState, watchMedia } from "./media";
 import { DropHome, UploadStatus, ZipInput, useZipOpener } from "./DropHome";
 import { Inspector } from "./Inspector";
 import { UnzipDialog, UnzipNotice, useUnzipNotice } from "./Unzip";
+import { ClosedScreen, StillThereCard, useStillThere } from "./StillThere";
 import { registerWebMcpTools, type PlayerActions } from "./webmcp";
 import type { ScormCall } from "./scorm-api";
 
@@ -141,6 +142,8 @@ export function App() {
   const frameDoc = () => {
     try { return frameRef.current?.contentDocument ?? null; } catch { return null; }
   };
+
+  const { presence, stillHere } = useStillThere({ course, mediaPlaying, frameDoc, frameLoads });
 
   const currentPage = useCallback((): PinPage => {
     const doc = frameDoc();
@@ -635,6 +638,8 @@ export function App() {
   };
   useEffect(() => registerWebMcpTools(() => actionsRef.current!), []);
 
+  if (presence.state === "closed") return <ClosedScreen course={course} why={presence.why} />;
+
   if (empty) return <DropHome />;
 
   if (loadError) return <div className="sp-fatal"><strong>scormplayer could not load the course.</strong><p>{loadError}</p></div>;
@@ -737,6 +742,7 @@ export function App() {
 
           {course && unzipNotice.show && !pinMode ? <UnzipNotice course={course} onUnzip={() => setUnzipOpen(true)} onDismiss={unzipNotice.dismiss} /> : null}
           {course && unzipOpen ? <UnzipDialog course={course} onClose={() => setUnzipOpen(false)} /> : null}
+          {presence.state === "asking" ? <StillThereCard closesAt={presence.closesAt} onStay={stillHere} /> : null}
           {toast ? <div className="sp-toast" role="status">{toast}</div> : null}
         </div>
 

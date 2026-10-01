@@ -139,7 +139,7 @@ test("the CLI prints help, version and a pins hand-off", () => {
   assert.throws(() => execFileSync(process.execPath, [BIN, "frobnicate"], { encoding: "utf8", env, stdio: "pipe", cwd: dir }), /"frobnicate" isn't a command in scormplayer [\d.]+[\s\S]*scormplayer update/);
 });
 
-test("agent mode: --json prints parseable results, errors and player events", async () => {
+test("agent mode: --json prints parseable results, errors and player events", async (t) => {
   const dir = tempDir();
   const zipPath = path.join(dir, "demo.zip");
   fs.writeFileSync(zipPath, scorm12Zip());
@@ -171,6 +171,7 @@ test("agent mode: --json prints parseable results, errors and player events", as
 
   // The player: a "ready" line first, then one event per line, "stopped" on exit.
   const child = spawn(process.execPath, [BIN, zipPath, "--json", "--no-open", "--port", "0"], { env });
+  t.after(() => child.kill("SIGKILL"));
   const lines = [];
   let buffer = "";
   const next = (event) => new Promise((resolve, reject) => {
@@ -494,7 +495,7 @@ test("update: tells how scormplayer was installed, and how to update it", async 
   }
 });
 
-test("running players: registry, reuse, ps and stop, and stopping when idle", async () => {
+test("running players: registry, reuse, ps and stop, and stopping when idle", async (t) => {
   const { registerPlayer, listPlayers, findPlayer } = await import("../server/registry.mjs");
   const dir = tempDir();
   const zipPath = path.join(dir, "demo.zip");
@@ -527,7 +528,11 @@ test("running players: registry, reuse, ps and stop, and stopping when idle", as
     });
   };
 
+  // Whatever happens in the test, don't leave a player running (it would keep the runner waiting).
+  const children = [];
+  t.after(() => children.forEach((child) => child.kill("SIGKILL")));
   const first = spawn(process.execPath, [BIN, zipPath, "--json", "--no-open", "--port", "0"], { env });
+  children.push(first);
   const next = lines(first);
   const ready = await next("ready");
   assert.equal(findPlayer({ input: zipPath }, registry).pid, first.pid);
@@ -547,11 +552,31 @@ test("running players: registry, reuse, ps and stop, and stopping when idle", as
   const port = new URL(ready.url).port;
   const stopped = JSON.parse(execFileSync(process.execPath, [BIN, "stop", port, "--json"], { encoding: "utf8", env }));
   assert.equal(stopped.stopped[0]?.pid, first.pid, JSON.stringify(stopped));
-  assert.match((await next("stopped")).reason, /SIGTERM/);
+  // Windows ends the process outright, so it can't report why.
+  if (process.platform !== "win32") assert.match((await next("stopped")).reason, /SIGTERM/);
   assert.equal(listPlayers(registry).length, 0, "a stopped player leaves the registry");
+
+  // The page's "Still there?" close is refused while someone is using the player, accepted after.
+  const clientDir = path.join(dir, "client");
+  fs.mkdirSync(clientDir);
+  fs.writeFileSync(path.join(clientDir, "index.html"), "<!doctype html><title>player</title>");
+  const quiet = await startPlayer({ input: zipPath, cacheDir: path.join(dir, "cache2"), port: 0, clientDir, idleMinutes: 0.01, registryDir: null });
+  try {
+    let closes = 0;
+    quiet.events.on("idle-close", () => { closes += 1; });
+    await fetch(`${quiet.url}api/active`, { method: "POST" });
+    assert.deepEqual(await (await fetch(`${quiet.url}api/idle-close`, { method: "POST" })).json(), { closed: false });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    assert.deepEqual(await (await fetch(`${quiet.url}api/idle-close`, { method: "POST" })).json(), { closed: true });
+    assert.equal(closes, 1);
+    assert.equal((await (await fetch(`${quiet.url}api/course`)).json()).idleMinutes, 0.01);
+  } finally {
+    await quiet.close();
+  }
 
   // A background player nobody uses stops by itself.
   const idle = spawn(process.execPath, [BIN, zipPath, "--json", "--no-open", "--port", "0", "--idle", "0.02"], { env });
+  children.push(idle);
   assert.match((await lines(idle)("stopped")).reason, /nobody has used the player/);
 });
 

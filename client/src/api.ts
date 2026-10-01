@@ -10,6 +10,8 @@ export type Course = {
   launchUrl: string;
   courseKey: string;
   pinsFile: string;
+  /** Minutes without anyone using the page before it asks "Still there?"; null never asks. */
+  idleMinutes: number | null;
   /** False for a zip: it plays from a copy in the cache until it is unzipped to a folder. */
   editable: boolean;
   /** For a zip: where it unzips to by default, and a folder it was unzipped to before. */
@@ -55,6 +57,9 @@ export const api = {
   updatePin: (id: string, changes: Partial<Pick<Pin, "note" | "status">> & { resolution?: string }) => request<Pin>(`/api/pins/${id}`, json("PATCH", changes)),
   deletePin: (id: string) => request<Pin>(`/api/pins/${id}`, { method: "DELETE" }),
   saveFrame: (id: string, png: Blob) => request<Pin>(`/api/pins/${id}/frame`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: png }),
+  active: () => fetch("/api/active", { method: "POST" }).catch(() => {}),
+  idleClose: () => request<{ closed: boolean }>("/api/idle-close", { method: "POST" }),
+  player: () => request<{ pid: number }>("/api/player"),
   update: () => request<{ update: { latest: string; command: string } | null }>("/api/update").then((body) => body.update),
   unzip: (folder: string) => request<{ ok: true; folder: string; pinsFile: string; reused: boolean; movedPins: number }>("/api/unzip", json("POST", { folder })),
   brief: (status: "open" | "all" = "open") => request<string>(`/api/brief?status=${status}`),
