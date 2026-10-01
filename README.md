@@ -105,10 +105,10 @@ In the player:
 | Do this | How |
 | --- | --- |
 | Start or stop pinning | **Pin** in the bottom bar, or <kbd>P</kbd> |
-| Pin an element | Click it. The expand button in the note box widens the selection. |
+| Pin an element | Click it (whatever is highlighted). The expand button in the note box widens the selection. |
 | Pin several elements with one note | <kbd>Shift</kbd>-click each one |
-| Pin an area | Switch to **Area** (or press <kbd>R</kbd>) and drag a box |
-| Pin a phrase | Drag across the text |
+| Pin an area | Drag a box, starting anywhere that isn't text (hold <kbd>⌥ Option</kbd> / <kbd>Alt</kbd> to start one on text) |
+| Pin a phrase | Drag across the text, starting on it |
 | Use the course without leaving pin mode | Hold <kbd>Space</kbd> |
 | Save a pin | <kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>Enter</kbd> |
 | See, edit, resolve or delete pins | **Pins** |

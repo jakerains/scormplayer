@@ -285,10 +285,6 @@ kbd {
 .sp-dropzone span { color: var(--bar-muted); font-size: 13.5px; }
 .sp-dropzone.is-busy { border-style: solid; }
 
-.sp-hint__tools { flex: none; display: flex; gap: 2px; padding: 2px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); }
-.sp-hint__tools button { padding: 4px 10px; border: 0; border-radius: 999px; background: transparent; color: var(--bar-muted); font-size: 12px; font-weight: 600; cursor: pointer; }
-.sp-hint__tools button[aria-pressed="true"] { background: var(--pin); color: #fff; }
-.sp-hint__tools kbd { margin-left: 3px; font-size: 10px; }
 .sp-hint > span { overflow: hidden; text-overflow: ellipsis; }
 .sp-pin__edit { display: flex; gap: 10px; padding: 10px 10px 6px; }
 .sp-pin__edit textarea { flex: 1; min-height: 64px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: 13.5px/1.45 var(--font); resize: vertical; }

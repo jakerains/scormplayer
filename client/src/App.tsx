@@ -39,7 +39,6 @@ export function App() {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [selectionRect, setSelectionRect] = useState<Rect | null>(null);
   const [groupRects, setGroupRects] = useState<Rect[]>([]);
-  const [pinTool, setPinTool] = useState<"element" | "region">("element");
   const [band, setBand] = useState<Rect | null>(null);
   const selectionRef = useRef<Selection | null>(null);
   const [draft, setDraft] = useState("");
@@ -204,12 +203,16 @@ export function App() {
   }, []);
 
   // Picking happens inside the course frame (same origin), so the course itself is untouched.
+  // One gesture does everything: click pins the highlighted element, dragging draws a box around
+  // an area, and dragging that starts on text selects a phrase (⌥/Alt-drag always draws a box).
   useEffect(() => {
     const doc = frameDoc();
     if (!doc || !pinMode) { setHover(null); return; }
     let frame = 0;
     let suppressClick = false;
+    // Where a box drag started; `drawing` once it has moved far enough to be a drag, not a click.
     let start: { x: number; y: number } | null = null;
+    let drawing = false;
     const active = () => !passthrough;
     const bandFrom = (event: MouseEvent): Rect => ({
       x: Math.min(start!.x, event.clientX),
@@ -221,16 +224,24 @@ export function App() {
     const onMouseDown = (event: MouseEvent) => {
       if (!active()) return;
       event.stopPropagation();
-      if (pinTool !== "region" || event.button !== 0) return;
+      if (event.button !== 0) return;
+      // On text, let the browser select it (a phrase pin); anywhere else, a drag draws a box.
+      if (!event.altKey && startsOnText(doc, event.clientX, event.clientY)) return;
       event.preventDefault();
       start = { x: event.clientX, y: event.clientY };
-      setHover(null);
+      drawing = false;
     };
 
     const onMove = (event: MouseEvent) => {
       if (!active()) return;
-      if (start) { setBand(bandFrom(event)); return; }
-      if (pinTool === "region") return;
+      if (start) {
+        if (!drawing && Math.hypot(event.clientX - start.x, event.clientY - start.y) < 5) return;
+        drawing = true;
+        setHover(null);
+        setBand(bandFrom(event));
+        return;
+      }
+      if (event.buttons & 1) return setHover(null);
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         const target = chooseTarget(event.target as Element);
@@ -243,9 +254,11 @@ export function App() {
     const block = (event: Event) => { if (active()) event.stopPropagation(); };
     const onMouseUp = (event: MouseEvent) => {
       if (!active()) return;
-      if (start) {
-        const region = describeRegion(doc, bandFrom(event));
-        start = null;
+      const box = start && drawing ? bandFrom(event) : null;
+      start = null;
+      drawing = false;
+      if (box) {
+        const region = describeRegion(doc, box);
         setBand(null);
         suppressClick = true;
         if (region) openComposer(region.element, region.target);
@@ -268,7 +281,6 @@ export function App() {
       event.preventDefault();
       event.stopPropagation();
       if (suppressClick) { suppressClick = false; return; }
-      if (pinTool === "region") return;
       const element = chooseTarget(event.target as Element);
       if (!element) return;
       // Shift (or ⌘/Ctrl) adds the element to the current selection: one note for several things.
@@ -306,7 +318,7 @@ export function App() {
       doc.removeEventListener("click", onClick, options);
       cursor.remove();
     };
-  }, [pinMode, passthrough, frameLoads, openComposer, pinTool]);
+  }, [pinMode, passthrough, frameLoads, openComposer]);
 
   // Keyboard: P toggles pin mode, Esc backs out, hold Space to use the course while pinning.
   useEffect(() => {
@@ -331,9 +343,6 @@ export function App() {
       } else if (event.key.toLowerCase() === "p" && !selection) {
         event.preventDefault();
         setPinMode((value) => !value);
-      } else if (event.key.toLowerCase() === "r" && pinMode && !selection) {
-        event.preventDefault();
-        setPinTool((tool) => (tool === "region" ? "element" : "region"));
       } else if (event.key === "[" || event.key === "]") {
         event.preventDefault();
         void stepPage(event.key === "]" ? 1 : -1);
@@ -713,16 +722,10 @@ export function App() {
 
           {pinMode && !selection ? (
             <div className="sp-hint" role="status">
-              <div className="sp-hint__tools" role="group" aria-label="Pin tool">
-                <button type="button" aria-pressed={pinTool === "element"} onClick={() => setPinTool("element")}>Element</button>
-                <button type="button" aria-pressed={pinTool === "region"} onClick={() => setPinTool("region")}>Area <kbd>R</kbd></button>
-              </div>
               <span>
                 {passthrough
                   ? "Using the course · release Space to keep pinning"
-                  : pinTool === "region"
-                    ? <>Drag a box around the area · hold <kbd>Space</kbd> to use the course · <kbd>Esc</kbd> to stop</>
-                    : <>Click to pin · <kbd>Shift</kbd>-click to add more · drag across text for a phrase · hold <kbd>Space</kbd> to use the course</>}
+                  : <>Click to pin · drag for an area · drag across text for a phrase · <kbd>Shift</kbd>-click to add more · hold <kbd>Space</kbd> to use the course</>}
               </span>
             </div>
           ) : null}
@@ -977,6 +980,24 @@ function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete, onEdit }: {
 }
 
 /** Is the saved target still the thing on screen? Group pins check their first element; areas their anchor exists. */
+/**
+ * Whether a press lands on readable, selectable text (so a drag from there selects a phrase)
+ * rather than on empty space, an image, or text the course made unselectable.
+ */
+function startsOnText(doc: Document, x: number, y: number) {
+  const caret = (doc as any).caretPositionFromPoint?.(x, y) ?? null;
+  const range: Range | null = caret ? doc.createRange() : (doc as any).caretRangeFromPoint?.(x, y) ?? null;
+  if (caret && range) { range.setStart(caret.offsetNode, caret.offset); range.collapse(true); }
+  const node = range?.startContainer;
+  if (!node || node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) return false;
+  const parent = node.parentElement;
+  if (!parent || doc.defaultView?.getComputedStyle(parent).userSelect === "none") return false;
+  // The caret snaps to the nearest text even from blank space beside it, so check the press is on the glyphs.
+  const glyphs = doc.createRange();
+  glyphs.selectNodeContents(node);
+  return Array.from(glyphs.getClientRects()).some((rect) => x >= rect.left - 2 && x <= rect.right + 2 && y >= rect.top - 2 && y <= rect.bottom + 2);
+}
+
 function sameText(doc: Document, target: PinTarget) {
   if (target.kind === "region") return Boolean(elementFor(doc, target));
   const reference = target.kind === "group" ? target.targets?.[0] : target;

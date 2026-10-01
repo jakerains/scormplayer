@@ -108,8 +108,7 @@ test("element, area and multi-element pins, and editing a note", async () => {
     await page.locator(".sp-composer button", { hasText: "Save pin" }).click();
     await page.locator(".sp-composer").waitFor({ state: "detached" });
 
-    // A drawn area
-    await page.keyboard.press("r");
+    // A drawn area: a drag that starts off text draws a box, no mode to switch
     const a = await box("#a");
     const b = await box("#b");
     await page.mouse.move(a.x - 10, a.y - 10);
@@ -121,8 +120,30 @@ test("element, area and multi-element pins, and editing a note", async () => {
     await page.locator(".sp-composer button", { hasText: "Save pin" }).click();
 
     await page.waitForFunction(() => document.querySelectorAll(".sp-marker").length === 3);
+
+    // A drag across text still pins the phrase; with ⌥/Alt held it draws a box instead
+    const intro = await box("#intro");
+    await page.mouse.move(intro.x + 4, intro.y + intro.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(intro.x + 120, intro.y + intro.height / 2, { steps: 5 });
+    await page.mouse.up();
+    assert.match(await page.locator(".sp-composer__target span").innerText(), /^.?Spot the/);
+    await page.locator(".sp-composer textarea").fill("Reword the opening");
+    await page.locator(".sp-composer button", { hasText: "Save pin" }).click();
+    await page.locator(".sp-composer").waitFor({ state: "detached" });
+    await page.keyboard.down("Alt");
+    await page.mouse.move(intro.x + 4, intro.y + intro.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(intro.x + 200, intro.y + intro.height + 30, { steps: 5 });
+    await page.mouse.up();
+    await page.keyboard.up("Alt");
+    assert.match(await page.locator(".sp-composer__target span").innerText(), /^Area \d+×\d+/);
+    await page.locator(".sp-composer textarea").fill("Tighten this block");
+    await page.locator(".sp-composer button", { hasText: "Save pin" }).click();
+
+    await page.waitForFunction(() => document.querySelectorAll(".sp-marker").length === 5);
     const pins = player.pins.list();
-    assert.deepEqual(pins.map((pin) => pin.target.kind), ["element", "group", "region"]);
+    assert.deepEqual(pins.map((pin) => pin.target.kind), ["element", "group", "region", "text", "region"]);
     assert.equal(pins[1].target.targets.length, 2);
     assert.equal(pins[0].source?.[0]?.file, "index.html");
 

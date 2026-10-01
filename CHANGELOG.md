@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6] - October 1, 2026
+
+### Changed
+- One pin gesture instead of two tools: click pins the highlighted element, dragging draws a box
+  around an area, and a drag that starts on text still pins that phrase. Hold ⌥ Option / Alt to
+  draw a box over text. The Element/Area switch and the R shortcut are gone.
+
 ## [0.8.5] - October 1, 2026
 
 ### Added
