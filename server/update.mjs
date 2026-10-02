@@ -28,7 +28,28 @@ export async function checkForUpdate({ current, cacheDir, now = Date.now(), fetc
       return null;
     }
   }
-  return typeof latest === "string" && isNewer(latest, current) ? latest : null;
+  if (typeof latest !== "string" || !isNewer(latest, current)) return null;
+  // Only announce a version people can actually install (see packageReady).
+  return (await packageReady(latest, { fetchImpl, timeout: 1500 })) ? latest : null;
+}
+
+/** Where npm serves a version's package file. */
+export function tarballUrl(version) {
+  return `https://registry.npmjs.org/${PACKAGE}/-/${PACKAGE.split("/")[1]}-${version}.tgz`;
+}
+
+/**
+ * Whether a version can be downloaded yet. npm publishes in stages: for a while after a release
+ * its "latest" answer already names the new version while the package file still returns 404
+ * (we've seen 20 minutes). Asking for the file itself is the only reliable test.
+ */
+export async function packageReady(version, { fetchImpl = globalThis.fetch, timeout = 5000 } = {}) {
+  try {
+    const response = await fetchImpl(`${tarballUrl(version)}?t=${Date.now()}`, { method: "HEAD", signal: AbortSignal.timeout(timeout) });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 /** The latest published version, asked fresh, and remembered for the daily check. Throws when npm can't be reached. */
@@ -92,7 +113,7 @@ export const NPM_INSTALL = ["npm", "install", "-g", `${PACKAGE}@latest`];
  * "No matching version found" although the package file is already there.
  */
 export function tarballInstall(version) {
-  return ["npm", "install", "-g", `https://registry.npmjs.org/${PACKAGE}/-/${PACKAGE.split("/")[1]}-${version}.tgz`];
+  return ["npm", "install", "-g", tarballUrl(version)];
 }
 
 /**
@@ -119,16 +140,31 @@ export function hasTool(tool) {
 }
 
 /**
- * Run an install command, its output going to `stdout` (stderr in agent mode); `sudo` prefixes
- * it, so sudo asks for the password in the terminal. Resolves to the exit code.
+ * Run an install command quietly: its output is kept (the last 16 KB) rather than shown, so a
+ * failure can be summed up in a line or two. `sudo` prefixes it; sudo asks for the password on
+ * the terminal itself, so that still works. Resolves to `{ code, output }`.
  */
-export function runInstall(command, { stdout = "inherit", sudo = false } = {}) {
+export function runInstall(command, { sudo = false } = {}) {
   const [tool, ...args] = sudo ? ["sudo", ...command] : command;
   return new Promise((resolve, reject) => {
-    const child = spawn(process.platform === "win32" ? `${tool}.cmd` : tool, args, { stdio: [sudo ? "inherit" : "ignore", stdout, "inherit"], shell: process.platform === "win32" });
+    let output = "";
+    const keep = (chunk) => { output = (output + chunk).slice(-16_384); };
+    const child = spawn(process.platform === "win32" ? `${tool}.cmd` : tool, args, { stdio: [sudo ? "inherit" : "ignore", "pipe", "pipe"], shell: process.platform === "win32" });
+    child.stdout.on("data", keep);
+    child.stderr.on("data", keep);
     child.on("error", (error) => reject(new Error(`Could not run ${tool}: ${error.message}`)));
-    child.on("exit", (code) => resolve(code ?? 1));
+    child.on("close", (code) => resolve({ code: code ?? 1, output }));
   });
+}
+
+/** The few lines of npm's output that say what went wrong, and where its full log is. */
+export function summarizeInstallError(output) {
+  const lines = output.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const log = lines.find((line) => /complete log of this run/i.test(line))?.replace(/^npm (error|ERR!)\s*/i, "");
+  const errors = lines.filter((line) => /^npm (error|ERR!)/i.test(line) && !/complete log of this run/i.test(line))
+    .map((line) => line.replace(/^npm (error|ERR!)\s*/i, ""))
+    .filter((line) => line && !/^(code|errno|syscall)\b/i.test(line) && !/^404\s*$/.test(line));
+  return [...new Set(errors)].slice(0, 3).concat(log ? [log] : []).join("\n") || lines.slice(-3).join("\n");
 }
 
 /** The version on disk now, which differs from the running one right after an update. */

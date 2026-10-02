@@ -485,7 +485,13 @@ test("update check: newer versions only, asked at most once a day", async () => 
   assert.equal(isNewer("0.5.9", "0.6.0"), false);
   const cacheDir = tempDir();
   let calls = 0;
-  const fetchImpl = async () => { calls += 1; return { ok: true, json: async () => ({ version: "9.0.0" }) }; };
+  // Count only "what's the latest?" questions; the readiness check asks for the package file.
+  let fileReady = true;
+  const fetchImpl = async (url, options) => {
+    if (options?.method === "HEAD") return { ok: fileReady };
+    calls += 1;
+    return { ok: true, json: async () => ({ version: "9.0.0" }) };
+  };
   const saved = { CI: process.env.CI, OFF: process.env.SCORMPLAYER_NO_UPDATE_CHECK };
   delete process.env.CI;
   delete process.env.SCORMPLAYER_NO_UPDATE_CHECK;
@@ -493,6 +499,10 @@ test("update check: newer versions only, asked at most once a day", async () => 
     assert.equal(await checkForUpdate({ current: "0.6.0", cacheDir, fetchImpl }), "9.0.0");
     assert.equal(await checkForUpdate({ current: "0.6.0", cacheDir, fetchImpl }), "9.0.0");
     assert.equal(calls, 1, "the second check uses the saved answer");
+    // Published but not downloadable yet (npm can take minutes): not announced until it is.
+    fileReady = false;
+    assert.equal(await checkForUpdate({ current: "0.6.0", cacheDir, fetchImpl }), null);
+    fileReady = true;
     assert.equal(await checkForUpdate({ current: "9.0.0", cacheDir, fetchImpl }), null);
     // Upgraded by hand past the saved answer: that answer is stale, so it asks npm again.
     assert.equal(await checkForUpdate({ current: "9.5.0", cacheDir, fetchImpl }), null);
@@ -527,7 +537,24 @@ test("update: tells how scormplayer was installed, and how to update it", async 
   assert.equal(kind(at("home/.bun/install/global/node_modules/@jakerains/scormplayer")), "bun");
   assert.equal(kind(at("home/.config/yarn/global/node_modules/@jakerains/scormplayer")), "yarn");
   assert.equal(kind(at("src/scormplayer")), "source");
-  const { tarballInstall } = await import("../server/update.mjs");
+  const { tarballInstall, summarizeInstallError, packageReady } = await import("../server/update.mjs");
+  assert.equal(await packageReady("1.2.3", { fetchImpl: async (url, options) => ({ ok: options.method === "HEAD" && url.includes("scormplayer-1.2.3.tgz") }) }), true);
+  assert.equal(await packageReady("1.2.3", { fetchImpl: async () => ({ ok: false }) }), false);
+  assert.equal(await packageReady("1.2.3", { fetchImpl: async () => { throw new Error("offline"); } }), false);
+  // npm's wall of errors comes down to what went wrong and where the log is.
+  const npmOutput = [
+    "npm error code E404",
+    "npm error 404 Not Found - GET https://registry.npmjs.org/@jakerains/scormplayer/-/scormplayer-0.8.9.tgz - Not found",
+    "npm error 404",
+    "npm error 404  The requested resource '@jakerains/scormplayer@0.8.9' could not be found or you do not have permission to access it.",
+    "npm error 404",
+    "npm error 404 Note that you can also install from a",
+    "npm error A complete log of this run can be found in: /Users/x/.npm/_logs/debug-0.log",
+  ].join("\n");
+  const summary = summarizeInstallError(npmOutput).split("\n");
+  assert.ok(summary.length <= 4);
+  assert.match(summary[0], /^404 Not Found - GET .*scormplayer-0\.8\.9\.tgz/);
+  assert.match(summary.at(-1), /^A complete log of this run can be found in: /);
   assert.deepEqual(tarballInstall("1.2.3"), ["npm", "install", "-g", "https://registry.npmjs.org/@jakerains/scormplayer/-/scormplayer-1.2.3.tgz"]);
 
   // The update asks npm fresh and remembers the answer for the daily check.

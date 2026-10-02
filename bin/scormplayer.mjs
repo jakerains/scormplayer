@@ -10,7 +10,7 @@ import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere, 
 import { findConfig, configuredPinsFile, startSync } from "../server/config.mjs";
 import { findCourses, isCourseFolder } from "../server/finder.mjs";
 import { cacheEntries, clearCache, formatBytes, MAX_AGE_DAYS, MAX_ENTRIES } from "../server/cache.mjs";
-import { checkForUpdate, fetchLatest, hasTool, installMethod, installedVersion, isNewer, npmNeedsSudo, NPM_INSTALL, runInstall, tarballInstall, updateHint } from "../server/update.mjs";
+import { checkForUpdate, fetchLatest, hasTool, installMethod, installedVersion, isNewer, npmNeedsSudo, NPM_INSTALL, packageReady, runInstall, summarizeInstallError, tarballInstall, updateHint } from "../server/update.mjs";
 import { pickCourse, pickFromList, DROP_PAGE } from "../server/tui.mjs";
 import { pinsReport, createJsonReporter, jsonError } from "../server/agent.mjs";
 
@@ -471,11 +471,16 @@ async function runUpdate({ cacheDir, check, json }) {
   catch (error) { throw new UserError(`Couldn't reach the npm registry to check for updates (${error.message}).`); }
   const updateAvailable = isNewer(latest, VERSION);
   const method = installMethod();
+  // Just after a release npm names the new version before its file can be downloaded.
+  const ready = updateAvailable ? await packageReady(latest) : true;
+  const stillProcessing = `Version ${latest} is published, but npm is still getting it ready to download (usually a few minutes, now and then up to 20).`;
   if (check || !updateAvailable) {
-    if (json) return void console.log(JSON.stringify({ ok: true, current: VERSION, latest, updateAvailable, method: method.kind }));
+    if (json) return void console.log(JSON.stringify({ ok: true, current: VERSION, latest, updateAvailable, ready, method: method.kind }));
     if (!updateAvailable) return say(`scormplayer ${VERSION} is the latest version.`);
+    if (!ready) return say(`${stillProcessing} You have ${VERSION}; check again shortly.`);
     return say(`scormplayer ${latest} is available (you have ${VERSION}). Update with: ${method.hint}`);
   }
+  if (!ready) throw Object.assign(new UserError(`${stillProcessing} Try \`scormplayer update\` again shortly.`), { code: "not_ready" });
   if (!method.command) {
     if (method.kind === "npx") throw new UserError(`You're running scormplayer through npx, so there's nothing to install. Run it as: ${method.hint}`);
     if (method.kind === "source") throw new UserError(`This scormplayer runs from a source checkout. Update it there: ${method.hint}`);
@@ -499,31 +504,28 @@ async function runUpdate({ cacheDir, check, json }) {
 
   say(`Updating scormplayer ${VERSION} → ${latest} with ${tool}…`);
   if (sudo) say("npm needs admin rights to update global packages here, so this runs with sudo. Enter your Mac password if asked.");
-  // In agent mode the installer's output goes to stderr, keeping stdout to the one JSON answer.
-  const output = json ? process.stderr : "inherit";
-  let code = await runInstall(command, { stdout: output, sudo });
-  if (code !== 0 && tool === "npm") {
-    // Just after a release npm can know the new version before it can install it by name.
-    say(`npm couldn't install ${latest} by name (its servers can lag just after a release). Trying the package file directly…`);
+  let result = await runInstall(command, { sudo });
+  if (result.code !== 0 && tool === "npm") {
+    // npm's full version list can lag its "latest" answer; the package file itself is there (checked above).
     command = tarballInstall(latest);
-    code = await runInstall(command, { stdout: output, sudo });
+    result = await runInstall(command, { sudo });
   }
-  if (code !== 0) throw new UserError(`${sudo ? "sudo " : ""}${command.join(" ")} failed (exit ${code}). Its output above says why.`);
+  if (result.code !== 0) {
+    throw new UserError(`The update didn't install. npm said:\n${summarizeInstallError(result.output)}\nTo try it by hand: ${sudo ? "sudo " : ""}${NPM_INSTALL.join(" ")}`);
+  }
   const now = installedVersion();
 
-  // Refresh the agent skill in each scope it's installed in, so it describes this version.
-  const scopes = skillScopes();
-  const skill = { global: scopes.global ? "updated" : "not installed", project: scopes.project ? "updated" : "not installed" };
-  for (const scope of ["global", "project"]) {
-    if (!scopes[scope]) continue;
-    say(`Updating the agent skill (${scope})…`);
-    const skillCode = await runSkills(skillsArgs("update", { global: scope === "global" }), { stdout: output }).catch(() => 1);
-    if (skillCode !== 0) skill[scope] = "failed";
+  // Bring the agent skill up to this version wherever it's installed (it only changes when it's behind).
+  const before = skillStatus();
+  let skill = before.state === "missing" ? "not installed" : "current";
+  if (before.state === "outdated") {
+    say("Updating the agent skill…");
+    skill = (await updateSkills().catch(() => ({ state: "outdated" }))).state === "outdated" ? "failed" : "updated";
   }
 
   if (json) return void console.log(JSON.stringify({ ok: true, from: VERSION, to: now, method: tool, skill }));
-  say(`scormplayer is now ${now}.`);
-  if (Object.values(skill).includes("failed")) say("The agent skill didn't update; run: npx skills update scormplayer");
+  say(`scormplayer is now ${now}.${skill === "updated" ? " The agent skill is updated too." : ""}`);
+  if (skill === "failed") say("The agent skill didn't update; run: scormplayer skill");
 }
 
 /** One line on the installed skill against this scormplayer's. */
@@ -579,7 +581,7 @@ const ARGV = process.argv.slice(2);
 main(ARGV).catch((error) => {
   if (ARGV.includes("--json")) {
     const user = error instanceof UserError || error?.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" || error?.statusCode === 404;
-    process.stdout.write(jsonError(error?.message ?? String(error), user ? "user_error" : "internal_error"));
+    process.stdout.write(jsonError(error?.message ?? String(error), error?.code === "not_ready" ? "not_ready" : user ? "user_error" : "internal_error"));
   } else {
     console.error(`scormplayer: ${error instanceof UserError ? error.message : error?.stack ?? error}`);
   }

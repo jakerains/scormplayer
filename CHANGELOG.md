@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.10] - October 2, 2026
+
+### Fixed
+- `scormplayer update` right after a release no longer fails with screens of npm 404 errors. npm
+  names a new version minutes before its package can be downloaded; `update` now checks the
+  package is there first and, if not, says npm is still getting it ready and to try again
+  shortly (`--json`: `code: "not_ready"`). The update notice waits for it too.
+- npm's own output is kept out of the way: a successful update prints a line, a failed one the
+  few lines that say why and where npm's full log is. The agent skill is refreshed only when
+  it's behind the new version.
+
 ## [0.8.9] - October 1, 2026
 
 ### Added
