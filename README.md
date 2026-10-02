@@ -74,6 +74,7 @@ saved and resolved, files edited, the course completing).
 | <kbd>o</kbd> | Open the player in your browser |
 | <kbd>c</kbd> | Copy the open pins as a hand-off for an agent |
 | <kbd>p</kbd> | Show the hand-off in the terminal (<kbd>↑</kbd>/<kbd>↓</kbd> to scroll, <kbd>esc</kbd> to go back) |
+| <kbd>l</kbd> | Switch to another course: the list comes back, type to filter, <kbd>enter</kbd> to open it (the browser tab follows) |
 | <kbd>u</kbd> | Unzip a zipped course to a folder you can edit (shown only for a zip) |
 | <kbd>s</kbd> | Install the agent skill, or update it (shown only when it's missing or out of date) |
 | <kbd>q</kbd> | Quit, with a summary of what's still open |
@@ -92,7 +93,7 @@ next to where you started scormplayer, named after the zip.
 ## Use
 
 ```sh
-scormplayer                        # pick from the courses found here (or open this folder)
+scormplayer                        # pick from the courses found here: type to filter, ↑↓, enter
 scormplayer ./course.zip           # a SCORM zip
 scormplayer ./course-folder        # an unzipped SCORM package (imsmanifest.xml inside)
 scormplayer ./my-vite-course       # a Vite project: live source with hot reload

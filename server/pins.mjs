@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { withFileLock } from "./file-lock.mjs";
 
 /**
  * Pins live in one JSON file beside the course (or inside a live project's .scormplayer/),
@@ -19,10 +20,12 @@ export function createPinStore(pinsFile, course) {
 
   function write(data) {
     fs.mkdirSync(path.dirname(pinsFile), { recursive: true });
-    const temp = `${pinsFile}.${process.pid}.tmp`;
+    const temp = `${pinsFile}.${randomUUID()}.tmp`;
     fs.writeFileSync(temp, `${JSON.stringify({ ...data, course: describe(course) }, null, 2)}\n`);
     fs.renameSync(temp, pinsFile);
   }
+
+  const transaction = (fn) => withFileLock(pinsFile, fn);
 
   function find(data, idOrNumber) {
     const key = String(idOrNumber);
@@ -43,64 +46,72 @@ export function createPinStore(pinsFile, course) {
     create(input) {
       const note = String(input?.note ?? "").trim();
       if (!note) throw Object.assign(new Error("A pin needs a note."), { statusCode: 400 });
-      const data = read();
-      const now = new Date().toISOString();
-      const pin = {
-        id: randomUUID(),
-        number: data.pins.reduce((max, item) => Math.max(max, item.number || 0), 0) + 1,
-        status: "open",
-        note,
-        page: clean(input.page),
-        target: clean(input.target),
-        source: Array.isArray(input.source) ? input.source.slice(0, 5) : undefined,
-        createdAt: now,
-        updatedAt: now,
-      };
-      data.pins.push(pin);
-      write(data);
-      return pin;
+      return transaction(() => {
+        const data = read();
+        const now = new Date().toISOString();
+        const pin = {
+          id: randomUUID(),
+          number: data.pins.reduce((max, item) => Math.max(max, item.number || 0), 0) + 1,
+          status: "open",
+          note,
+          page: clean(input.page),
+          target: clean(input.target),
+          source: Array.isArray(input.source) ? input.source.slice(0, 5) : undefined,
+          createdAt: now,
+          updatedAt: now,
+        };
+        data.pins.push(pin);
+        write(data);
+        return pin;
+      });
     },
 
     update(idOrNumber, changes) {
-      const data = read();
-      const pin = find(data, idOrNumber);
-      if (changes.note !== undefined) {
-        const note = String(changes.note).trim();
-        if (!note) throw Object.assign(new Error("A pin needs a note."), { statusCode: 400 });
-        pin.note = note;
-      }
-      if (changes.status !== undefined) {
-        if (!["open", "resolved"].includes(changes.status)) throw Object.assign(new Error("Status must be open or resolved."), { statusCode: 400 });
-        pin.status = changes.status;
-        if (changes.resolution) pin.resolution = String(changes.resolution).slice(0, 2000);
-      }
-      pin.updatedAt = new Date().toISOString();
-      write(data);
-      return pin;
+      return transaction(() => {
+        const data = read();
+        const pin = find(data, idOrNumber);
+        if (changes.note !== undefined) {
+          const note = String(changes.note).trim();
+          if (!note) throw Object.assign(new Error("A pin needs a note."), { statusCode: 400 });
+          pin.note = note;
+        }
+        if (changes.status !== undefined) {
+          if (!["open", "resolved"].includes(changes.status)) throw Object.assign(new Error("Status must be open or resolved."), { statusCode: 400 });
+          pin.status = changes.status;
+          if (changes.resolution) pin.resolution = String(changes.resolution).slice(0, 2000);
+        }
+        pin.updatedAt = new Date().toISOString();
+        write(data);
+        return pin;
+      });
     },
 
     remove(idOrNumber) {
-      const data = read();
-      const pin = find(data, idOrNumber);
-      data.pins = data.pins.filter((item) => item !== pin);
-      write(data);
-      if (pin.frame) fs.rmSync(path.join(path.dirname(pinsFile), pin.frame), { force: true });
-      return pin;
+      return transaction(() => {
+        const data = read();
+        const pin = find(data, idOrNumber);
+        data.pins = data.pins.filter((item) => item !== pin);
+        write(data);
+        if (pin.frame) fs.rmSync(path.join(path.dirname(pinsFile), pin.frame), { force: true });
+        return pin;
+      });
     },
 
     saveFrame(idOrNumber, png) {
       if (!png?.length || !png.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
         throw Object.assign(new Error("The screenshot must be a PNG."), { statusCode: 400 });
       }
-      const data = read();
-      const pin = find(data, idOrNumber);
-      fs.mkdirSync(framesDir, { recursive: true });
-      const file = path.join(framesDir, `pin-${pin.number}.png`);
-      fs.writeFileSync(file, png);
-      pin.frame = path.relative(path.dirname(pinsFile), file).split(path.sep).join("/");
-      pin.updatedAt = new Date().toISOString();
-      write(data);
-      return pin;
+      return transaction(() => {
+        const data = read();
+        const pin = find(data, idOrNumber);
+        fs.mkdirSync(framesDir, { recursive: true });
+        const file = path.join(framesDir, `pin-${pin.number}.png`);
+        fs.writeFileSync(file, png);
+        pin.frame = path.relative(path.dirname(pinsFile), file).split(path.sep).join("/");
+        pin.updatedAt = new Date().toISOString();
+        write(data);
+        return pin;
+      });
     },
 
     frameFile(idOrNumber) {

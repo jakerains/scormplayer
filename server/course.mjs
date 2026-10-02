@@ -3,7 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import AdmZip from "adm-zip";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
-import { touchCacheEntry } from "./cache.mjs";
+import { touchCacheEntry, withCacheLock } from "./cache.mjs";
 
 const VITE_CONFIGS = ["vite.config.ts", "vite.config.mts", "vite.config.js", "vite.config.mjs", "vite.config.cjs"];
 
@@ -21,7 +21,11 @@ const VITE_CONFIGS = ["vite.config.ts", "vite.config.mts", "vite.config.js", "vi
  * @param {string} input
  * @param {{ cacheDir: string, live?: boolean, pinsFile?: string | null, pkg?: string | null }} options
  */
-export function resolveCourse(input, { cacheDir, live = false, pinsFile = null, pkg = null }) {
+export function resolveCourse(input, options) {
+  return withCacheLock(options.cacheDir, () => resolveUnlocked(input, options));
+}
+
+function resolveUnlocked(input, { cacheDir, live = false, pinsFile = null, pkg = null }) {
   const target = path.resolve(input);
   if (!fs.existsSync(target)) throw new UserError(`Nothing found at ${target}.`);
   const stat = fs.statSync(target);
@@ -169,7 +173,7 @@ export function readManifest(root, manifestPath = findManifest(root)) {
   const parsed = parseManifestXml(xml);
   const wrapper = path.relative(root, path.dirname(manifestPath)).split(path.sep).join("/");
   const launch = [wrapper, parsed.href].filter(Boolean).join("/");
-  const launchFile = path.resolve(root, launch.split(/[?#]/)[0]);
+  const launchFile = path.resolve(root, decodeLaunch(launch));
   if (!isInside(root, launchFile) || !fs.existsSync(launchFile)) {
     throw new UserError(`The manifest launches ${parsed.href}, but that file is not in the package.`);
   }
@@ -177,7 +181,7 @@ export function readManifest(root, manifestPath = findManifest(root)) {
   const scos = parsed.items
     .map((item) => ({ ...item, launch: [wrapper, item.href].filter(Boolean).join("/") }))
     .filter((item) => {
-      const file = path.resolve(root, item.launch.split(/[?#]/)[0]);
+      const file = path.resolve(root, decodeLaunch(item.launch));
       return isInside(root, file) && fs.existsSync(file);
     });
   return { root, title: parsed.title, scormVersion: parsed.scormVersion, launch, identifier: parsed.identifier, scos };
@@ -296,4 +300,9 @@ export function extractZip(bytes, destination) {
 export function isInside(parent, child) {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function decodeLaunch(launch) {
+  try { return decodeURIComponent(launch.split(/[?#]/)[0]); }
+  catch { throw new UserError(`Invalid encoded launch path: ${launch}`); }
 }

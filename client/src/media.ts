@@ -17,7 +17,16 @@ export function watchMedia(frame: HTMLIFrameElement) {
   const proto = win.HTMLMediaElement.prototype;
   const play = proto.play;
   proto.play = function patchedPlay(this: HTMLMediaElement, ...args: []) {
-    seen.add(this);
+    if (!seen.has(this)) {
+      seen.add(this);
+      const forget = () => {
+        seen.delete(this);
+        this.removeEventListener("ended", forget);
+        this.removeEventListener("error", forget);
+      };
+      this.addEventListener("ended", forget, { once: true });
+      this.addEventListener("error", forget, { once: true });
+    }
     return play.apply(this, args);
   };
 }

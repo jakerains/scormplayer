@@ -1,8 +1,9 @@
 import type { PinTarget } from "./picker";
 
-export type CourseResponse = Course | { empty: true };
+export type CourseResponse = Course | { empty: true; revision: string };
 
 export type Course = {
+  revision: string;
   title: string;
   kind: "package" | "folder" | "live";
   scormVersion: "1.2" | "2004" | "both" | null;
@@ -38,12 +39,30 @@ export type Pin = {
   updatedAt: string;
 };
 
+let revision = "";
+const courseHeaders = (): Record<string, string> => revision ? { "X-Scormplayer-Revision": revision } : {};
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { cache: "no-store", ...init });
+  const headers = new Headers(init?.headers);
+  if (revision && !["/api/course", "/api/player"].includes(url)) headers.set("X-Scormplayer-Revision", revision);
+  const response = await fetch(url, { cache: "no-store", ...init, headers });
   const type = response.headers.get("content-type") ?? "";
   const body = type.includes("application/json") ? await response.json() : await response.text();
   if (!response.ok) throw new Error(typeof body === "object" && body?.error ? body.error : `Request failed (${response.status}).`);
   return body as T;
+}
+
+let pinsCache: { revision: string; etag: string; pins: Pin[] } | null = null;
+async function fetchPins(): Promise<Pin[]> {
+  const key = revision;
+  const headers = new Headers(courseHeaders());
+  if (pinsCache?.revision === key) headers.set("If-None-Match", pinsCache.etag);
+  const response = await fetch("/api/pins", { cache: "no-store", headers });
+  if (response.status === 304 && pinsCache?.revision === key) return pinsCache.pins;
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error ?? "Could not load pins.");
+  pinsCache = { revision: key, etag: response.headers.get("etag") ?? "", pins: body.pins };
+  return body.pins;
 }
 
 const json = (method: string, body: unknown): RequestInit => ({
@@ -53,23 +72,25 @@ const json = (method: string, body: unknown): RequestInit => ({
 });
 
 export const api = {
-  course: () => request<CourseResponse>("/api/course"),
+  course: () => request<CourseResponse>("/api/course").then((course) => { revision = course.revision; return course; }),
   status: () => request<{ lastChangeAt: string | null }>("/api/status"),
-  pins: () => request<{ pins: Pin[] }>("/api/pins").then((body) => body.pins),
+  pins: () => fetchPins(),
   createPin: (input: { note: string; page: PinPage; target: PinTarget }) => request<Pin>("/api/pins", json("POST", input)),
   updatePin: (id: string, changes: Partial<Pick<Pin, "note" | "status">> & { resolution?: string }) => request<Pin>(`/api/pins/${id}`, json("PATCH", changes)),
   deletePin: (id: string) => request<Pin>(`/api/pins/${id}`, { method: "DELETE" }),
   saveFrame: (id: string, png: Blob) => request<Pin>(`/api/pins/${id}/frame`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: png }),
   active: () => fetch("/api/active", { method: "POST" }).catch(() => {}),
   idleClose: () => request<{ closed: boolean }>("/api/idle-close", { method: "POST" }),
-  player: () => request<{ pid: number }>("/api/player"),
+  player: () => request<{ pid: number; courseVersion: number; revision: string }>("/api/player"),
+  courses: () => request<{ courses: { path: string; kind: "zip" | "folder" | "live"; title: string; current: boolean }[] }>("/api/courses").then((body) => body.courses),
+  switchCourse: (path: string) => request<{ ok: true; title: string }>("/api/switch", json("POST", { path })),
   update: () => request<{ update: { latest: string; command: string } | null }>("/api/update").then((body) => body.update),
   skill: () => request<{ state: "missing" | "current" | "outdated" | "newer" | "unknown"; version: string | null; installedVersion: string | null }>("/api/skill"),
   openPackage: (name: string) => request<{ ok: true; title: string }>("/api/package", json("POST", { name })),
   unzip: (folder: string) => request<{ ok: true; folder: string; pinsFile: string; reused: boolean; movedPins: number }>("/api/unzip", json("POST", { folder })),
   brief: (status: "open" | "all" = "open") => request<string>(`/api/brief?status=${status}`),
   reportProgress: (progress: { completion: string; success: string; score: string; location: string; progressMeasure: string }) =>
-    fetch("/api/progress", json("POST", progress)).catch(() => {}),
+    fetch("/api/progress", { ...json("POST", progress), headers: { "Content-Type": "application/json", ...courseHeaders() } }).catch(() => {}),
 };
 
 /** Send a SCORM zip to the player to open it, reporting upload progress (0–1). */
@@ -77,6 +98,7 @@ export function openZip(file: File, onProgress: (fraction: number) => void): Pro
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/open");
+    if (revision) xhr.setRequestHeader("X-Scormplayer-Revision", revision);
     xhr.setRequestHeader("Content-Type", "application/zip");
     xhr.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
     xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(event.loaded / event.total); };

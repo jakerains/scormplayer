@@ -142,9 +142,7 @@ export function describeGroup(elements: Element[]): PinTarget {
 }
 
 /** The current on-screen box for a saved pin's target, if it is on this page and visible. */
-export function locateTarget(doc: Document, target: PinTarget): Rect | null {
-  let element: Element | null = null;
-  try { element = doc.querySelector(target.selector); } catch { return null; }
+export function locateTarget(doc: Document, target: PinTarget, element = elementFor(doc, target)): Rect | null {
   if (!element) return null;
   if (target.kind === "region" && target.offset) {
     const anchor = element.getBoundingClientRect();

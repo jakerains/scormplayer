@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.9] - October 1, 2026
+
+### Added
+- Switch to another course without restarting: press `l` in the dashboard to bring the course
+  list back, or use **More → Switch course…** in the player. The player and its browser tab move
+  to the chosen course; its pins follow the project's config, and so do its sync commands.
+
+### Changed
+- The course lists have no number keys (they stopped at 9). Type to filter by title or folder
+  instead, then ↑↓ and Enter; Esc clears the filter, then leaves. The course choice for a zip
+  holding several courses drops its numbers too.
+
+### Fixed
+- No pin is lost when several players, agents or `scormplayer pins --resolve` change the same
+  pins file at once: each change locks the file, re-reads it and writes it whole. A lock left by a
+  process that crashed is cleared after 10 seconds.
+- Clearing or tidying the cache never removes a course another running player is using.
+- A tab left open on the previous course can't save pins or progress into the course the player
+  has since switched to; it reloads onto the new one instead.
+- A course whose text holds a malformed character reference no longer stops pins from saving,
+  and launch files with spaces or accented names in their path open.
+- Paused narration no longer keeps "Still there?" from appearing, and Skip stays available while
+  it's paused.
+- Switching courses stops the old course's sync commands cleanly, in agent mode too.
+- Two scormplayers opening courses at the same moment wait for each other (up to two minutes
+  while a large zip unpacks) instead of failing.
+
+### Performance
+- Pin source lookup reads each course file once, in the background, so a big course doesn't
+  slow the player while a pin saves.
+- The player page loads faster: its scripts are served compressed and cached by the browser,
+  while course files and live data always come fresh.
+- Background checks never pile up, slow down in hidden tabs, and skip re-sending pins that
+  haven't changed.
+- Pin markers stop re-measuring while the tab is hidden and remember which elements they belong
+  to; tidying the cache no longer measures every course's size.
+
 ## [0.8.8] - October 1, 2026
 
 ### Added

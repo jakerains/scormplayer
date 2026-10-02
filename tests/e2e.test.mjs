@@ -289,3 +289,45 @@ test("an idle player asks \"Still there?\", stays when answered and closes when 
     await player.close();
   }
 });
+
+test("paused narration remains skippable but lets an idle player ask", async () => {
+  const { player, page } = await open({ input: navCourse(), idleMinutes: 0.05, registryDir: null });
+  try {
+    await page.locator(".sp-nav__page").waitFor();
+    await page.frames()[1].evaluate(() => window.startNarration());
+    await page.waitForTimeout(600);
+    await page.frames()[1].evaluate(() => {
+      for (const media of window.__scormplayerMedia) media.pause();
+    });
+    await page.waitForFunction(() => document.querySelector(".sp-tour .sp-skip")?.textContent?.includes("Skip"));
+    await page.getByRole("alertdialog", { name: "Still there?" }).waitFor({ timeout: 7000 });
+    assert.equal(player.pins.list().length, 0);
+  } finally { await page.close(); await player.close(); }
+});
+
+test("a stale browser tab cannot save its draft into the newly switched course", async () => {
+  const a = navCourse();
+  const b = navCourse();
+  const { player, page } = await open({ input: a, registryDir: null, courseList: () => [{ path: a, kind: "folder", title: "A" }, { path: b, kind: "folder", title: "B" }] });
+  const other = await browser.newPage({ viewport: { width: 1400, height: 820 } });
+  try {
+    await page.locator(".sp-nav__page").waitFor();
+    const initial = await (await fetch(`${player.url}api/player`)).json();
+    await page.route("**/api/player", (route) => route.fulfill({ json: initial }));
+    await page.keyboard.press("p");
+    await page.frameLocator("iframe.sp-frame").locator("#intro").click();
+    await page.locator(".sp-composer textarea").fill("A draft belongs to A");
+    await other.goto(player.url);
+    await other.getByRole("button", { name: "More", exact: true }).click();
+    await other.getByRole("menuitem", { name: "Switch course…", exact: true }).click();
+    await other.locator(".sp-switcher__list button").filter({ hasText: /^B/ }).click();
+    await other.locator(".sp-switcher").waitFor({ state: "detached" });
+    const response = page.waitForResponse((response) => response.url().endsWith("/api/pins") && response.request().method() === "POST");
+    await page.getByRole("button", { name: "Save pin", exact: true }).click();
+    assert.equal((await response).status(), 409);
+    assert.equal(await page.locator(".sp-composer textarea").inputValue(), "A draft belongs to A");
+    assert.equal(player.pins.list().length, 0);
+    await other.getByRole("button", { name: "Tablet", exact: true }).click();
+    assert.equal(await other.frames()[1].evaluate(() => innerWidth), 1024);
+  } finally { await other.close(); await page.close(); await player.close(); }
+});

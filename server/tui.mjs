@@ -13,11 +13,13 @@ import { spawn, spawnSync } from "node:child_process";
  *   plain?: boolean,
  *   pinsHint?: (entry) => string,
  *   onQuit: () => void | Promise<void>,
+ *   courses?: () => { path: string, kind: string, title: string }[],
+ *   switchCourse?: (path: string) => Promise<unknown>,
  *   skill?: { status: () => { state: string, version: string, installed: { version: string | null }[] },
  *     install: () => Promise<{ installed: boolean, output: string }>, update: () => Promise<{ state: string, output: string }> },
  * }} options
  */
-export function createDashboard({ version, entries, plain = false, pinsHint, onQuit, skill = null, stdout = process.stdout, stdin = process.stdin }) {
+export function createDashboard({ version, entries, plain = false, pinsHint, onQuit, skill = null, courses = null, switchCourse = null, stdout = process.stdout, stdin = process.stdin }) {
   const interactive = !plain && stdout.isTTY && stdin.isTTY && !process.env.CI;
   const paint = createPaint(stdout);
   const state = entries.map((entry) => ({
@@ -29,6 +31,8 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
   }));
   const activity = [];
   let view = "home";
+  // The course list for switching to another course without restarting (the l key).
+  let courseList = null;
   let briefLines = [];
   let briefScroll = 0;
   let flash = "";
@@ -128,6 +132,36 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     say(method ? `Copied ${open} open ${open === 1 ? "pin" : "pins"} for your agent` : "Couldn't reach the clipboard; press p to see the pins");
   }
 
+  function canSwitch() {
+    return Boolean(courses && switchCourse && state.length === 1);
+  }
+
+  function showCourses() {
+    const found = courses();
+    if (!found.length) return say("No other courses found here");
+    courseList = createCourseList({ courses: found, current: state[0].player.course?.source ?? null });
+    view = "courses";
+    render();
+  }
+
+  async function chooseCourse(target) {
+    view = "home";
+    courseList = null;
+    if (target === state[0].player.course?.source) return render();
+    say("Opening…");
+    try { await switchCourse(target); }
+    catch (error) { say(error.message); }
+  }
+
+  function renderCourses(width, height) {
+    const p = paint;
+    const lines = ["", `  ${p.pin("◉")} ${p.bold("Switch course")} ${p.dim("· the player and its browser tab move to the one you choose")}`, ""];
+    lines.push(...courseList.lines({ p, width, room: height - lines.length - 2 }));
+    while (lines.length < height - 1) lines.push("");
+    lines.push(courseListKeys(p, courseList, "back"));
+    return lines;
+  }
+
   function showPins() {
     briefLines = handOff().trimEnd().split("\n");
     briefScroll = 0;
@@ -191,7 +225,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     if (!interactive || closed) return;
     const width = Math.max(56, Math.min(stdout.columns || 80, 112));
     const height = stdout.rows || 30;
-    const lines = view === "brief" ? renderBrief(width, height) : renderHome(width, height);
+    const lines = view === "brief" ? renderBrief(width, height) : view === "courses" ? renderCourses(width, height) : renderHome(width, height);
     stdout.write(`\x1b[H${lines.slice(0, height).map((line) => `${line}\x1b[K`).join("\n")}\x1b[J`);
   }
 
@@ -302,6 +336,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       ...(entries.length > 1 ? [[`1–${Math.min(9, entries.length)}`, "open one"]] : []),
       ["c", "copy pins"],
       ["p", "show pins"],
+      ...(canSwitch() ? [["l", "switch course"]] : []),
       ...(canUnzip() ? [["u", "unzip to edit"]] : []),
       ...(skillState === "missing" ? [["s", "install agent skill"]] : skillState === "outdated" ? [["s", "update agent skill"]] : []),
       ["q", "quit"],
@@ -421,6 +456,12 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     stdin.resume();
     onKeys(stdin, (key) => {
       if (key === "ctrl-c" || (view === "home" && (key === "q" || key === "Q"))) return void quit();
+      if (view === "courses") {
+        const result = courseList.key(key);
+        if (result?.cancel) { view = "home"; courseList = null; }
+        else if (result?.choose) return void chooseCourse(result.choose);
+        return render();
+      }
       if (view === "brief") {
         if (key === "escape" || key === "q" || key === "p") { view = "home"; render(); }
         else if (key === "up" || key === "k") { briefScroll -= 1; render(); }
@@ -434,6 +475,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       else if (/^[1-9]$/.test(key) && state[Number(key) - 1]) openUrl(state[Number(key) - 1]);
       else if (key === "c") copyPins();
       else if (key === "p") showPins();
+      else if (key === "l" && canSwitch()) showCourses();
       else if (key === "u" && canUnzip()) void unzip(state[0]);
       else if (key === "s" && (skillState === "missing" || skillState === "outdated")) void installSkill();
     });
@@ -661,6 +703,77 @@ export function tildify(file) {
 
 const KIND_LABEL = { zip: "SCORM zip", folder: "SCORM folder", live: "Live source" };
 
+/**
+ * The course list both pickers use (the startup screen and the dashboard's switcher): type to
+ * filter by title or folder, ↑↓ to move, Enter to choose, Esc to clear the filter (or leave when
+ * it's empty). No number keys, since a folder can hold any number of courses.
+ */
+export function createCourseList({ courses, empty = false, current = null }) {
+  let query = "";
+  const all = empty ? [...courses, { path: DROP_PAGE, kind: "drop", title: "Empty player" }] : courses;
+  const matches = () => {
+    const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return all;
+    return all.filter((course) => course.kind !== "drop" && words.every((word) => `${course.title} ${displayPath(course.path)}`.toLowerCase().includes(word)));
+  };
+  let index = Math.max(0, current ? all.findIndex((course) => course.path === current) : 0);
+  const kindColor = (p, kind) => ({ zip: p.green, folder: p.blue, live: p.amber })[kind] ?? p.dim;
+  return {
+    get query() { return query; },
+    get count() { return matches().length; },
+    /** Handle a key: `{ choose: path }`, `{ cancel: true }`, or null when it only changed the list. */
+    key(key) {
+      const rows = matches();
+      if (key === "escape") {
+        if (!query) return { cancel: true };
+        query = "";
+        index = 0;
+        return null;
+      }
+      if (key === "enter") return rows[index] ? { choose: rows[index].path } : null;
+      if (key === "up") index = rows.length ? (index - 1 + rows.length) % rows.length : 0;
+      else if (key === "down") index = rows.length ? (index + 1) % rows.length : 0;
+      else if (key === "pageup") index = Math.max(0, index - 10);
+      else if (key === "pagedown") index = Math.min(rows.length - 1, index + 10);
+      else if (key === "home") index = 0;
+      else if (key === "end") index = rows.length - 1;
+      else if (key === "\x7f" || key === "\b") { query = query.slice(0, -1); index = 0; }
+      else if (key.length === 1 && key >= " ") { query += key; index = 0; }
+      index = Math.max(0, Math.min(index, matches().length - 1));
+      return null;
+    },
+    lines({ p, width, room }) {
+      const rows = matches();
+      const out = [query
+        ? `  ${p.pin("⌕")} ${p.bold(query)}${p.pin("▌")}  ${p.dim(`${rows.filter((row) => row.kind !== "drop").length} of ${courses.length}`)}`
+        : `  ${p.dim(`⌕ type to filter ${courses.length} ${courses.length === 1 ? "course" : "courses"}`)}`, ""];
+      if (!rows.length) return [...out, `    ${p.dim("No course matches. Esc clears the filter.")}`];
+      const height = Math.max(3, room - 3);
+      const start = Math.max(0, Math.min(index - Math.floor(height / 2), rows.length - height));
+      const nameWidth = Math.min(46, Math.max(...rows.map((course) => visible(course.title))) + 2);
+      rows.slice(start, start + height).forEach((course, offset) => {
+        const active = start + offset === index;
+        const marker = active ? p.pin("❯") : " ";
+        if (course.kind === "drop") {
+          out.push(`  ${marker} ${p.pin("+")} ${padVisible(active ? p.bold("Empty player") : "Empty player", nameWidth + 1)}${p.dim("drop or choose a SCORM zip in the browser")}`);
+          return;
+        }
+        const title = truncate(course.title, nameWidth);
+        const kind = KIND_LABEL[course.kind] ?? course.kind;
+        const where = truncateStart(displayPath(course.path), width - nameWidth - 30);
+        const open = current && course.path === current ? p.pin(" · open") : "";
+        out.push(`  ${marker}   ${padVisible(active ? p.bold(title) : title, nameWidth + 1)}${padVisible(active ? kindColor(p, course.kind)(kind) : p.dim(kind), 14)}${p.dim(where)}${open}`);
+      });
+      if (rows.length > height) out.push(`      ${p.dim(`${index + 1} of ${rows.length} · ↑ ↓ to scroll`)}`);
+      return out;
+    },
+  };
+}
+
+function courseListKeys(p, list, leave) {
+  return `  ${p.key(" type ")} ${p.dim("filter")}   ${p.key(" ↑↓ ")} ${p.dim("choose")}   ${p.key(" enter ")} ${p.dim("open")}   ${p.key(" esc ")} ${p.dim(list.query ? "clear filter" : leave)}`;
+}
+
 /** What pickCourse returns when the user wants to drop or choose a zip in the browser. */
 export const DROP_PAGE = Symbol("drop page");
 
@@ -671,8 +784,7 @@ export const DROP_PAGE = Symbol("drop page");
  */
 export function pickCourse({ version, courses, cwd = process.cwd(), stdout = process.stdout, stdin = process.stdin }) {
   const p = createPaint(stdout);
-  let index = 0;
-  const rows = courses.length ? [...courses, { path: DROP_PAGE, kind: "drop", title: "Empty player" }] : [];
+  const list = createCourseList({ courses, empty: true });
   const here = displayPath(cwd) === "." || !displayPath(cwd) ? "this folder" : displayPath(cwd);
   return new Promise((resolve) => {
     const logo = logoLines(p);
@@ -707,33 +819,12 @@ export function pickCourse({ version, courses, cwd = process.cwd(), stdout = pro
         lines.push("");
         lines.push(`  ${p.key(" enter ")} ${p.dim("open the drop page")}   ${p.key(" q ")} ${p.dim("quit")}`);
       } else {
-        const room = Math.max(3, height - lines.length - 4);
-        const start = Math.max(0, Math.min(index - Math.floor(room / 2), rows.length - room));
-        const nameWidth = Math.min(46, Math.max(...rows.map((course) => visible(course.title))) + 2);
-        rows.slice(start, start + room).forEach((course, offset) => {
-          const i = start + offset;
-          const active = i === index;
-          const marker = active ? p.pin("❯") : " ";
-          if (course.kind === "drop") {
-            const label = `${active ? p.bold("Empty player") : "Empty player"}`;
-            lines.push(`  ${marker} ${p.pin("+")}  ${padVisible(label, nameWidth + 1)}${p.dim("drop or choose a SCORM zip in the browser")}`);
-            return;
-          }
-          const number = i < 9 ? p.dim(String(i + 1)) : " ";
-          const title = truncate(course.title, nameWidth);
-          const kind = KIND_LABEL[course.kind] ?? course.kind;
-          const where = truncateStart(displayPath(course.path), width - nameWidth - 30);
-          const row = `${padVisible(active ? p.bold(title) : title, nameWidth + 1)}${padVisible(active ? kindColor(course.kind)(kind) : p.dim(kind), 14)}${p.dim(where)}`;
-          lines.push(`  ${marker} ${number}  ${row}`);
-        });
-        if (rows.length > room) lines.push(`      ${p.dim(`${courses.length} courses · scroll with ↑ ↓`)}`);
+        lines.push(...list.lines({ p, width, room: Math.max(3, height - lines.length - 3) }));
         while (lines.length < height - 2) lines.push("");
-        lines.push(`  ${p.key(" ↑↓ ")} ${p.dim("choose")}   ${p.key(" enter ")} ${p.dim("open")}   ${p.key(" 1–9 ")} ${p.dim("open that one")}   ${p.key(" d ")} ${p.dim("empty player")}   ${p.key(" q ")} ${p.dim("quit")}`);
+        lines.push(courseListKeys(p, list, "quit"));
       }
       stdout.write(`\x1b[H${lines.slice(0, height).map((line) => `${line}\x1b[K`).join("\n")}\x1b[J`);
     };
-
-    const kindColor = (kind) => ({ zip: p.green, folder: p.blue, live: p.amber })[kind] ?? p.dim;
 
     let stopKeys = () => {};
     const finish = (choice) => {
@@ -745,15 +836,15 @@ export function pickCourse({ version, courses, cwd = process.cwd(), stdout = pro
       resolve(choice);
     };
     const onKey = (key) => {
-      if (key === "ctrl-c" || key === "q" || key === "escape") return finish(null);
-      if (key === "d" || (!courses.length && key === "enter")) return finish(DROP_PAGE);
-      if (!courses.length) return;
-      if (key === "up" || key === "k") index = (index - 1 + rows.length) % rows.length;
-      else if (key === "down" || key === "j") index = (index + 1) % rows.length;
-      else if (key === "home") index = 0;
-      else if (key === "end") index = rows.length - 1;
-      else if (key === "enter" || key === " ") return finish(rows[index].path);
-      else if (/^[1-9]$/.test(key) && courses[Number(key) - 1]) return finish(courses[Number(key) - 1].path);
+      if (key === "ctrl-c") return finish(null);
+      if (!courses.length) {
+        if (key === "q" || key === "escape") return finish(null);
+        if (key === "enter") return finish(DROP_PAGE);
+        return;
+      }
+      const result = list.key(key);
+      if (result?.cancel) return finish(null);
+      if (result?.choose) return finish(result.choose);
       render();
     };
 
@@ -786,7 +877,7 @@ export function pickFromList({ title, items, stdout = process.stdout, stdin = pr
         ...items.map((item, i) => {
           const active = i === index;
           const label = truncate(item.label, Math.max(10, width - 14 - visible(item.note ?? "")));
-          return `${active ? p.pin("❯") : " "} ${i < 9 ? p.dim(String(i + 1)) : " "}  ${active ? p.bold(label) : label}${item.note ? `  ${p.dim(item.note)}` : ""}`;
+          return `${active ? p.pin("❯") : " "} ${active ? p.bold(label) : label}${item.note ? `  ${p.dim(item.note)}` : ""}`;
         }),
         `${p.key(" ↑↓ ")} ${p.dim("choose")}   ${p.key(" enter ")} ${p.dim("open")}   ${p.key(" q ")} ${p.dim("cancel")}`,
       ];
@@ -813,7 +904,6 @@ export function pickFromList({ title, items, stdout = process.stdout, stdin = pr
       else if (key === "home") index = 0;
       else if (key === "end") index = items.length - 1;
       else if (key === "enter" || key === " ") return finish(index);
-      else if (/^[1-9]$/.test(key) && items[Number(key) - 1]) return finish(Number(key) - 1);
       render();
     });
     render();

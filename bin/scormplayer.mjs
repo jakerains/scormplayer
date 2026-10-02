@@ -136,7 +136,10 @@ async function main(argv) {
   if (positionals.length === 0 && !values.drop && json) {
     throw new UserError("Pass a course (a SCORM .zip, a SCORM folder or a Vite project), or --drop to start empty.");
   }
+  // Picked from the list of courses here: switching later shows that same list.
+  let listHome = null;
   if (positionals.length === 0 && !values.drop) {
+    listHome = process.cwd();
     const interactive = process.stdout.isTTY && process.stdin.isTTY && !values.plain;
     if (!interactive) return void console.log(HELP);
     const here = process.cwd();
@@ -227,20 +230,34 @@ async function main(argv) {
 
   let player;
   try {
-    player = await startPlayer({ input, cacheDir, host: values.host, port, live: values.live, pinsFile, mode, idleMinutes: idleMinutes || null, pkg });
+    player = await startPlayer({
+      input, cacheDir, host: values.host, port, live: values.live, pinsFile, mode, idleMinutes: idleMinutes || null, pkg,
+      // Switching courses while it runs: the ones in this project (or beside this course), with
+      // each one's pins where the project config says.
+      courseList: () => findCourses(listHome ?? courseHome(input)),
+      pinsFor: (course) => values.pins ? null : configuredPinsFile(findConfig(course), course),
+    });
   } catch (error) {
     if (error.code === "PORTS_FULL") throw new UserError(await portsFullMessage(error.firstPort, values.host));
     throw error;
   }
   let stopSync = () => {};
+  let reportSync = () => {};
+  const moveSync = (course) => {
+    stopSync();
+    stopSync = startSync(findConfig(course.source), course.source, (message) => reportSync(message));
+  };
+  player.events.on("course", moveSync);
   const onQuit = async () => {
     stopSync();
+    player.events.off("course", moveSync);
     await player.close();
     process.exit(0);
   };
   if (json) {
     const reporter = createJsonReporter({ player, onQuit });
-    if (input) stopSync = startSync(config, input, reporter.log);
+    reportSync = reporter.log;
+    if (player.course) moveSync(player.course);
     watchForAbandonment(player, idleMinutes, (reason) => reporter.quit(reason));
     if (!values["no-open"]) openBrowser(player.url);
     return;
@@ -254,8 +271,11 @@ async function main(argv) {
       : `scormplayer pins ${quote(player.course?.source ?? "")} --pins ${quote(player.course?.pinsFile ?? "")}`),
     onQuit,
     skill: { status: () => skillStatus(), install: () => installSkill(), update: () => updateSkills() },
+    courses: () => findCourses(listHome ?? courseHome(input)),
+    switchCourse: (course) => player.switchCourse(course),
   });
-  if (input) stopSync = startSync(config, input, (message) => dashboard.log(message));
+  reportSync = (message) => dashboard.log(message);
+  if (player.course) moveSync(player.course);
   watchForAbandonment(player, idleMinutes, (reason) => { dashboard.log(`Stopping: ${reason}`); void dashboard.quit(); });
   void checkForUpdate({ current: VERSION, cacheDir }).then((latest) => {
     if (!latest) return;
@@ -302,6 +322,17 @@ function watchForAbandonment(player, idleMinutes, stop) {
     }
   }, Math.min(5_000, idleMinutes * 60_000));
   timer.unref();
+}
+
+/**
+ * Where to look for courses to switch to: the project root when the course has a
+ * scormplayer.config.json, otherwise the folder holding it (its siblings), or here.
+ */
+function courseHome(input) {
+  if (!input) return process.cwd();
+  const config = fs.existsSync(input) ? findConfig(input) : null;
+  if (config) return config.root;
+  return path.resolve(input) === process.cwd() ? process.cwd() : path.dirname(path.resolve(input));
 }
 
 /** Several courses in one zip or folder: choose one with the arrow keys. Null when cancelled. */

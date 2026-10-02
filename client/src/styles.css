@@ -387,3 +387,15 @@ kbd {
 .sp-skill__alt { display: block; margin-top: 6px; font-size: 11.5px; color: var(--ink-muted); }
 .sp-skill__alt kbd { color: var(--ink); }
 .sp-skill__close { position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; }
+
+/* Switch course: a filterable list of the courses beside this one. */
+.sp-switcher { width: min(620px, 100%); }
+.sp-switcher input { width: 100%; height: 38px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink); font: 14px var(--font); }
+.sp-switcher input:focus { outline: 2px solid var(--pin); outline-offset: 1px; }
+.sp-switcher__list { list-style: none; margin: 10px 0 0; padding: 0; max-height: min(52vh, 420px); overflow-y: auto; }
+.sp-switcher__list button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; }
+.sp-switcher__list button.is-active { background: var(--surface-2); }
+.sp-switcher__title { font-size: 13.5px; font-weight: 600; }
+.sp-switcher__meta { font-size: 12px; color: var(--ink-muted); }
+.sp-switcher__meta b { color: var(--pin); font-weight: 650; }
+.sp-switcher__hint { margin-right: auto; align-self: center; font-size: 12px; color: var(--ink-muted); }

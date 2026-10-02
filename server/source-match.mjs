@@ -22,25 +22,23 @@ export function findSourceText(root, text) {
   const needles = candidateNeedles(text);
   if (!needles.length) return [];
   const files = listFiles(root);
-  for (const needle of needles) {
-    const matches = [];
-    for (const file of files) {
-      const raw = fs.readFileSync(file, "utf8");
-      const normalized = normalize(decodeEscapes(raw));
-      if (!normalized.includes(needle)) continue;
-      const lines = raw.split("\n");
-      const lineIndex = lines.findIndex((line) => normalize(decodeEscapes(line)).includes(needle));
-      // A hit on a minified line is a compiled bundle, not something a person edits.
+  const matches = needles.map(() => []);
+  for (const file of files) {
+    let raw;
+    try { raw = fs.readFileSync(file, "utf8"); } catch { continue; }
+    const normalized = normalize(decodeEscapes(raw));
+    let lines;
+    for (let i = 0; i < needles.length; i += 1) {
+      if (matches[i].length >= 5 || !normalized.includes(needles[i])) continue;
+      lines ??= raw.split("\n");
+      const lineIndex = lines.findIndex((line) => normalize(decodeEscapes(line)).includes(needles[i]));
       if (lineIndex < 0 || lines[lineIndex].length > MAX_LINE) continue;
-      matches.push({
-        file: path.relative(root, file).split(path.sep).join("/"),
-        line: lineIndex + 1,
-        preview: lines[lineIndex].trim().slice(0, 160),
-      });
-      if (matches.length >= 5) break;
+      matches[i].push({ file: path.relative(root, file).split(path.sep).join("/"), line: lineIndex + 1, preview: lines[lineIndex].trim().slice(0, 160) });
     }
-    if (matches.length) return rank(matches);
+    if (matches[0].length >= 5) break;
   }
+  const found = matches.find((items) => items.length);
+  if (found) return rank(found);
   return [];
 }
 
@@ -66,12 +64,14 @@ function listFiles(root) {
   const out = [];
   const walk = (dir) => {
     if (out.length >= MAX_FILES) return;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
       if (entry.name.startsWith(".") && entry.name !== ".") continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) walk(full);
-      } else if (TEXT_FILES.test(entry.name) && !HASHED_BUNDLE.test(entry.name) && !/\.min\.(js|css)$/.test(entry.name) && fs.statSync(full).size <= MAX_FILE_BYTES) {
+      } else if (TEXT_FILES.test(entry.name) && !HASHED_BUNDLE.test(entry.name) && !/\.min\.(js|css)$/.test(entry.name) && safeSize(full) <= MAX_FILE_BYTES) {
         out.push(full);
         if (out.length >= MAX_FILES) return;
       }
@@ -94,7 +94,7 @@ const ENTITIES = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&apos
 function decodeNumeric(entity) {
   const body = entity.slice(2, -1);
   const code = body.startsWith("x") || body.startsWith("X") ? parseInt(body.slice(1), 16) : parseInt(body, 10);
-  return Number.isFinite(code) ? String.fromCodePoint(code) : entity;
+  return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
 }
 
 /** Fold the differences between rendered text and source text: quotes, dashes, spacing. */
@@ -107,4 +107,8 @@ export function normalize(value) {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function safeSize(file) {
+  try { return fs.statSync(file).size; } catch { return Infinity; }
 }

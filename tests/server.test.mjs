@@ -131,7 +131,8 @@ test("only the player's own page can make changes; it reports the agent skill", 
   fs.writeFileSync(path.join(clientDir, "index.html"), "<!doctype html><title>player</title>");
   const player = await startPlayer({ input: zipPath, cacheDir: path.join(dir, "cache"), port: 0, clientDir, registryDir: null });
   try {
-    const post = (origin) => fetch(`${player.url}api/pins`, { method: "POST", headers: { "content-type": "application/json", ...(origin ? { origin } : {}) }, body: JSON.stringify({ note: "Hello" }) });
+    const revision = (await (await fetch(`${player.url}api/course`)).json()).revision;
+    const post = (origin) => fetch(`${player.url}api/pins`, { method: "POST", headers: { "content-type": "application/json", "x-scormplayer-revision": revision, ...(origin ? { origin } : {}) }, body: JSON.stringify({ note: "Hello" }) });
     assert.equal((await post("https://evil.example")).status, 403, "another website can't save pins");
     assert.equal((await post(new URL(player.url).origin)).status, 201, "the player's own page can");
     assert.equal((await post(null)).status, 201, "and so can local tools that send no origin");
@@ -423,7 +424,9 @@ test("starts empty and opens zips sent from the browser", async () => {
   const opened = [];
   player.events.on("course", (course) => opened.push(course.title));
   try {
-    assert.deepEqual(await (await fetch(`${player.url}api/course`)).json(), { empty: true });
+    const initial = await (await fetch(`${player.url}api/course`)).json();
+    assert.equal(initial.empty, true);
+    assert.equal(typeof initial.revision, "string");
     assert.equal(player.course, null);
 
     const send = (name, body) => fetch(`${player.url}api/open`, { method: "POST", headers: { "Content-Type": "application/zip", "X-File-Name": encodeURIComponent(name) }, body });
@@ -694,6 +697,51 @@ test("several packages in one zip or folder: first by default, pick by name, own
   const report = JSON.parse(execFileSync(process.execPath, [BIN, "pins", zipPath, "--package", "lesson-2", "--json"], { encoding: "utf8", env }));
   assert.equal(report.course.title, "Lesson two");
   assert.equal(report.course.packages.length, 2);
+});
+
+test("switching courses: a filterable list, only listed courses, and open pages follow", async () => {
+  const { createCourseList } = await import("../server/tui.mjs");
+  const courses = ["Welcome", "Shape how Mira talks", "Build and test your Mira", "Follow the phone route"].map((title, i) => ({ path: `/c/m0${i}`, kind: "folder", title }));
+  const list = createCourseList({ courses, current: "/c/m02" });
+  for (const key of "mira") list.key(key);
+  assert.equal(list.count, 2, "typing filters by title");
+  assert.deepEqual(list.key("enter"), { choose: "/c/m01" });
+  list.key("down");
+  assert.deepEqual(list.key("enter"), { choose: "/c/m02" });
+  assert.equal(list.key("escape"), null, "Esc first clears the filter");
+  assert.equal(list.count, 4);
+  assert.deepEqual(list.key("escape"), { cancel: true }, "then leaves");
+  for (const key of "zzz") list.key(key);
+  assert.equal(list.key("enter"), null, "nothing to open when nothing matches");
+  ["\x7f", "\x7f", "\x7f"].forEach((key) => list.key(key));
+  assert.equal(list.query, "");
+
+  const dir = tempDir();
+  const lessons = ["a", "b"].map((name) => {
+    const folder = path.join(dir, "lessons", name);
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, "imsmanifest.xml"), MANIFEST_12(`Lesson ${name.toUpperCase()}`));
+    fs.writeFileSync(path.join(folder, "index.html"), "<!doctype html><title>x</title>");
+    return folder;
+  });
+  const clientDir = path.join(dir, "client");
+  fs.mkdirSync(clientDir);
+  fs.writeFileSync(path.join(clientDir, "index.html"), "<!doctype html><title>player</title>");
+  const { findCourses } = await import("../server/finder.mjs");
+  const player = await startPlayer({ input: lessons[0], cacheDir: path.join(dir, "cache"), port: 0, clientDir, registryDir: null, courseList: () => findCourses(dir), pinsFor: (course) => path.join(dir, "pins", `${path.basename(course)}.json`) });
+  try {
+    const listed = await (await fetch(`${player.url}api/courses`)).json();
+    assert.deepEqual(listed.courses.map((course) => [course.title, course.current]), [["Lesson A", true], ["Lesson B", false]]);
+    const before = (await (await fetch(`${player.url}api/player`)).json()).courseVersion;
+    const post = (target) => fetch(`${player.url}api/switch`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: target }) });
+    assert.equal((await post(path.join(dir, "elsewhere"))).status, 400, "only courses in the list can be opened");
+    assert.equal((await post(lessons[1])).status, 200);
+    assert.equal(player.course.title, "Lesson B");
+    assert.equal(player.course.pinsFile, path.join(dir, "pins", "b.json"), "the switched-to course keeps its pins where pinsFor says");
+    assert.equal((await (await fetch(`${player.url}api/player`)).json()).courseVersion, before + 1, "open pages see the change and reload");
+  } finally {
+    await player.close();
+  }
 });
 
 test("multi-SCO packages list every module in manifest order", async () => {

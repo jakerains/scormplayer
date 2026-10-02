@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, copyText, type Course } from "./api";
+import { pollWhileVisible } from "./polling";
 import { Icon } from "./icons";
 
 /**
@@ -51,7 +52,13 @@ export function useStillThere({ course, mediaPlaying, frameDoc, frameLoads }: {
   useEffect(() => {
     if (!idleMs) return;
     const tick = async () => {
-      if (mediaPlaying) lastInteraction.current = Date.now();
+      if (mediaPlaying) {
+        lastInteraction.current = Date.now();
+        if (Date.now() - lastReported.current > Math.min(30_000, idleMs / 3)) {
+          lastReported.current = Date.now();
+          void api.active();
+        }
+      }
       const quiet = Date.now() - lastInteraction.current;
       setPresence((current) => {
         if (current.state === "here" && quiet >= idleMs) return { state: "asking", closesAt: Date.now() + graceMs };
@@ -82,13 +89,16 @@ export function useStillThere({ course, mediaPlaying, frameDoc, frameLoads }: {
   useEffect(() => {
     if (!course) return;
     let misses = 0;
-    const timer = window.setInterval(() => {
-      api.player().then(() => { misses = 0; }, () => {
+    return pollWhileVisible(async () => {
+      try {
+        const player = await api.player();
+        misses = 0;
+        if (player.revision !== course.revision) window.location.reload();
+      } catch {
         misses += 1;
         if (misses >= 2) setPresence((current) => (current.state === "closed" ? current : { state: "closed", why: "stopped" }));
-      });
-    }, 10_000);
-    return () => window.clearInterval(timer);
+      }
+    }, 2000, 10_000);
   }, [course]);
 
   const stillHere = () => {

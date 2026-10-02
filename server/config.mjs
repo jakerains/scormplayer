@@ -82,30 +82,47 @@ export function startSync(config, source, report = () => {}) {
     if (!rule?.run || !Array.isArray(rule.files)) continue;
     const command = fill(rule.run, name);
     const files = rule.files.map((file) => path.resolve(config.root, fill(file, name))).filter((file) => fs.existsSync(file));
+    let stopped = false;
     let timer = null;
     let running = false;
     let again = false;
     const run = () => {
+      if (stopped) return;
       if (running) { again = true; return; }
       running = true;
       const child = spawn(command, { cwd: config.root, shell: true, stdio: ["ignore", "pipe", "pipe"] });
       let output = "";
-      child.stdout.on("data", (chunk) => { output += chunk; });
-      child.stderr.on("data", (chunk) => { output += chunk; });
-      child.on("exit", (code) => {
+      child.stdout.on("data", (chunk) => { output = (output + chunk).slice(-8192); });
+      child.stderr.on("data", (chunk) => { output = (output + chunk).slice(-8192); });
+      let finished = false;
+      const finish = (code) => {
+        if (finished) return;
+        finished = true;
         running = false;
+        if (stopped) return;
         report(code === 0 ? `Synced: ${command}` : `Sync failed (${code}): ${output.trim().split("\n").pop() ?? command}`);
         if (again) { again = false; run(); }
-      });
+      };
+      child.once("error", (error) => { output = error.message; finish("spawn"); });
+      child.once("close", finish);
     };
+    const listeners = [];
     for (const file of files) {
-      fs.watchFile(file, { interval: 300 }, (current, previous) => {
+      const listener = (current, previous) => {
+        if (stopped) return;
         if (current.mtimeMs === previous.mtimeMs) return;
         clearTimeout(timer);
         timer = setTimeout(run, 150);
-      });
+      };
+      listeners.push([file, listener]);
+      fs.watchFile(file, { interval: 300 }, listener);
     }
-    stops.push(() => files.forEach((file) => fs.unwatchFile(file)));
+    stops.push(() => {
+      stopped = true;
+      again = false;
+      clearTimeout(timer);
+      listeners.forEach(([file, listener]) => fs.unwatchFile(file, listener));
+    });
   }
   return () => stops.forEach((stop) => stop());
 }

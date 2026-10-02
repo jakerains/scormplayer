@@ -11,6 +11,8 @@ import { Inspector } from "./Inspector";
 import { UnzipDialog, UnzipNotice, useUnzipNotice } from "./Unzip";
 import { ClosedScreen, StillThereCard, useStillThere } from "./StillThere";
 import { SkillCard, useAgentSkill } from "./SkillOffer";
+import { pollWhileVisible } from "./polling";
+import { CourseSwitcher } from "./CourseSwitcher";
 import { registerWebMcpTools, type PlayerActions } from "./webmcp";
 import type { ScormCall } from "./scorm-api";
 
@@ -53,6 +55,7 @@ export function App() {
   const [toast, setToast] = useState("");
   const [unzipOpen, setUnzipOpen] = useState(false);
   const skillOffer = useAgentSkill();
+  const [switcherOpen, setSwitcherOpen] = useState(false);
   // A newer scormplayer, when the terminal found one; asked again each time More opens.
   const [update, setUpdate] = useState<{ latest: string; command: string } | null>(null);
   useEffect(() => { if (menuOpen) api.update().then(setUpdate, () => {}); }, [menuOpen]);
@@ -62,6 +65,7 @@ export function App() {
   const [navBusy, setNavBusy] = useState(false);
   const [tour, setTour] = useState<{ title: string; progress: string; canNext: boolean; canPrev: boolean } | null>(null);
   const [mediaPlaying, setMediaPlaying] = useState(false);
+  const [mediaAvailable, setMediaAvailable] = useState(false);
   const navigatorRef = useRef<ReturnType<typeof createNavigator> | null>(null);
   const [lastChangeAt, setLastChangeAt] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -126,18 +130,13 @@ export function App() {
 
   const refreshPins = useCallback(() => api.pins().then(setPins).catch(() => {}), []);
   useEffect(() => {
-    void refreshPins();
-    // Pins can change from the command line (an agent resolving one); keep the list current.
-    const timer = window.setInterval(() => void refreshPins(), 4000);
-    return () => window.clearInterval(timer);
+    return pollWhileVisible(refreshPins, 4000, 15_000);
   }, [refreshPins]);
 
   useEffect(() => {
     if (course?.kind !== "live") return;
     const poll = () => api.status().then((status) => setLastChangeAt(status.lastChangeAt)).catch(() => {});
-    poll();
-    const timer = window.setInterval(() => { poll(); setNow(Date.now()); }, 2000);
-    return () => window.clearInterval(timer);
+    return pollWhileVisible(async () => { await poll(); setNow(Date.now()); }, 2000, 10_000);
   }, [course?.kind]);
 
   const frameDoc = () => {
@@ -181,7 +180,9 @@ export function App() {
       const next = tourState(frame);
       const summary = next ? { title: next.title, progress: next.progress, canNext: next.canNext, canPrev: next.canPrev } : null;
       setTour((previous) => (JSON.stringify(previous) === JSON.stringify(summary) ? previous : summary));
-      const playing = Boolean(activeMedia(frame));
+      const media = activeMedia(frame);
+      setMediaAvailable(Boolean(media));
+      const playing = Boolean(media && !media.paused);
       setMediaPlaying((previous) => (previous === playing ? previous : playing));
     }, 250);
     return () => window.clearInterval(timer);
@@ -361,9 +362,32 @@ export function App() {
     return () => docs.forEach((doc) => { doc.removeEventListener("keydown", onKeyDown, true); doc.removeEventListener("keyup", onKeyUp, true); });
   }, [pinMode, selection, menuOpen, panelOpen, pagesOpen, frameLoads, closeComposer, nav, navBusy]);
 
+  const targetCache = useRef<{ doc: Document; elements: Map<string, Element>; observer: MutationObserver } | null>(null);
+  useEffect(() => {
+    targetCache.current?.observer.disconnect();
+    targetCache.current = null;
+    return () => { targetCache.current?.observer.disconnect(); targetCache.current = null; };
+  }, [frameLoads]);
+  const cachedElement = (doc: Document, target: PinTarget) => {
+    if (targetCache.current?.doc !== doc) {
+      targetCache.current?.observer.disconnect();
+      const elements = new Map<string, Element>();
+      const observer = new MutationObserver(() => elements.clear());
+      observer.observe(doc, { subtree: true, childList: true, attributes: true });
+      targetCache.current = { doc, elements, observer };
+    }
+    const cache = targetCache.current.elements;
+    const existing = cache.get(target.selector);
+    if (existing?.isConnected) return existing;
+    const found = elementFor(doc, target);
+    if (found) cache.set(target.selector, found);
+    return found;
+  };
+
   // Keep pin markers and the selection box on their elements as the course scrolls and changes.
   useEffect(() => {
     const tick = () => {
+      if (document.hidden || (!pins.length && !selection)) return;
       const doc = frameDoc();
       if (!doc) return;
       const page = currentPage();
@@ -373,8 +397,9 @@ export function App() {
         if (pin.page?.scoId && page.scoId && pin.page.scoId !== page.scoId) continue;
         const pinNav = (pin.page as { navId?: string } | undefined)?.navId;
         if (pinNav && page.navId && pinNav !== page.navId) continue;
-        const rect = locateTarget(doc, pin.target);
-        if (!rect || !sameText(doc, pin.target)) continue;
+        const element = cachedElement(doc, pin.target);
+        const rect = locateTarget(doc, pin.target, element);
+        if (!rect || !sameText(doc, pin.target, cachedElement)) continue;
         next.push({ id: pin.id, number: pin.number, rect });
       }
       setMarkers((previous) => (JSON.stringify(previous) === JSON.stringify(next) ? previous : next));
@@ -747,6 +772,7 @@ export function App() {
 
           {course && unzipNotice.show && !pinMode ? <UnzipNotice course={course} onUnzip={() => setUnzipOpen(true)} onDismiss={unzipNotice.dismiss} /> : null}
           {course && unzipOpen ? <UnzipDialog course={course} onClose={() => setUnzipOpen(false)} /> : null}
+          {switcherOpen ? <CourseSwitcher onClose={() => setSwitcherOpen(false)} /> : null}
           {presence.state === "asking" ? <StillThereCard closesAt={presence.closesAt} onStay={stillHere} /> : null}
           {toast ? <div className="sp-toast" role="status">{toast}</div> : null}
         </div>
@@ -818,11 +844,11 @@ export function App() {
             <div className="sp-tour" aria-label="Guided tour">
               <span className="sp-tour__label" title={tour.title}>Tour{tour.progress ? ` · ${tour.progress}` : ""}</span>
               <button type="button" className="sp-nav__step" disabled={!tour.canPrev} onClick={() => tourStep("prev")} title="Previous tour step" aria-label="Previous tour step"><Icon name="chevronLeft" /></button>
-              <button type="button" className="sp-skip" disabled={!mediaPlaying && !tour.canNext} onClick={() => tourStep("next")} title={mediaPlaying && !tour.canNext ? "Skip the narration (.)" : "Next tour step (.)"}>
-                {mediaPlaying && !tour.canNext ? <><Icon name="skip" size={16} /> Skip</> : <>Next <Icon name="chevronRight" size={16} /></>}
+              <button type="button" className="sp-skip" disabled={!mediaAvailable && !tour.canNext} onClick={() => tourStep("next")} title={mediaAvailable && !tour.canNext ? "Skip the narration (.)" : "Next tour step (.)"}>
+                {mediaAvailable && !tour.canNext ? <><Icon name="skip" size={16} /> Skip</> : <>Next <Icon name="chevronRight" size={16} /></>}
               </button>
             </div>
-          ) : mediaPlaying ? (
+          ) : mediaAvailable ? (
             <button type="button" className="sp-skip" onClick={skipAhead} title="Skip to the end of the playing audio or video (.)"><Icon name="skip" size={16} /> Skip media</button>
           ) : null}
 
@@ -881,6 +907,9 @@ export function App() {
                       <Icon name="folder" size={16} /> Unzip to edit…
                     </button>
                   ) : null}
+                  <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setSwitcherOpen(true); }}>
+                    <Icon name="list" size={16} /> Switch course…
+                  </button>
                   <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); zipInputRef.current?.click(); }}>
                     <Icon name="file" size={16} /> Open another course…
                   </button>
@@ -1014,11 +1043,11 @@ function startsOnText(doc: Document, x: number, y: number) {
   return Array.from(glyphs.getClientRects()).some((rect) => x >= rect.left - 2 && x <= rect.right + 2 && y >= rect.top - 2 && y <= rect.bottom + 2);
 }
 
-function sameText(doc: Document, target: PinTarget) {
-  if (target.kind === "region") return Boolean(elementFor(doc, target));
+function sameText(doc: Document, target: PinTarget, resolve = elementFor) {
+  if (target.kind === "region") return Boolean(resolve(doc, target));
   const reference = target.kind === "group" ? target.targets?.[0] : target;
   if (!reference?.text) return true;
-  const element = elementFor(doc, reference);
+  const element = resolve(doc, reference);
   if (!element) return false;
   const fold = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase().slice(0, 40);
   return visibleText(element).toLowerCase().replace(/\s+/g, " ").includes(fold(reference.text));
