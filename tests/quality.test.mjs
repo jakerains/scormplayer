@@ -142,7 +142,13 @@ test("launch filenames decode spaces and Unicode without admitting traversal", (
   assert.throws(() => resolveCourse(folder, { cacheDir: root }), /not in the package/);
 });
 
-test("stopping sync cancels a pending debounce without stopping another watcher", async () => {
+// File watchers poll every 300 ms and take their first reading in the background, so a change
+// made straight after watching starts can be taken as the starting state and never noticed.
+// These tests let the watchers settle first, and give up instead of hanging.
+const SETTLE = 700;
+const within = (promise, ms, what) => Promise.race([promise, pause(ms).then(() => { throw new Error(`Timed out waiting for ${what}`); })]);
+
+test("stopping sync cancels a pending debounce without stopping another watcher", { timeout: 20_000 }, async () => {
   const folder = path.join(root, "sync-stop");
   fs.mkdirSync(folder);
   const input = path.join(folder, "input.txt");
@@ -157,8 +163,9 @@ test("stopping sync cancels a pending debounce without stopping another watcher"
   fs.watchFile(input, { interval: 300 }, observer);
   const config = { root: folder, data: { sync: [{ files: ["input.txt"], run: `"${process.execPath}" "${script}"` }] } };
   const stop = startSync(config, folder);
+  await pause(SETTLE);
   fs.writeFileSync(input, "changed");
-  await noticed;
+  await within(noticed, 5000, "the watcher to notice the change");
   stop();
   await pause(500);
   try {
@@ -169,7 +176,7 @@ test("stopping sync cancels a pending debounce without stopping another watcher"
   } finally { fs.unwatchFile(input, observer); }
 });
 
-test("agent mode switches configured sync rules with the course", async () => {
+test("agent mode switches configured sync rules with the course", { timeout: 30_000 }, async () => {
   const folder = path.join(root, "agent-sync");
   fs.mkdirSync(path.join(folder, "source"), { recursive: true });
   const courses = ["a", "b"].map((name) => {
@@ -196,14 +203,15 @@ test("agent mode switches configured sync rules with the course", async () => {
     assert.ok(ready, stderr);
     const switched = await fetch(`${ready.url}api/switch`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: courses[1] }) });
     assert.equal(switched.status, 200);
+    await pause(SETTLE);
     fs.writeFileSync(path.join(folder, "source", "b.txt"), "B edited");
-    await pause(900);
+    for (let i = 0; i < 50 && !fs.existsSync(output); i += 1) await pause(100);
     assert.equal(fs.existsSync(output), true, "B sync runs after switching");
     assert.equal(fs.readFileSync(output, "utf8").trim(), "b");
     fs.writeFileSync(path.join(folder, "source", "a.txt"), "A edited");
     await pause(700);
     assert.equal(fs.readFileSync(output, "utf8").trim(), "b", "A is no longer watched");
-  } finally { child.kill("SIGTERM"); await exited; }
+  } finally { child.kill("SIGTERM"); await within(exited, 5000, "the player to stop").catch(() => child.kill("SIGKILL")); }
 });
 
 test("hashed UI assets negotiate compression and cache safely", async () => {
