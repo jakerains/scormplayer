@@ -585,7 +585,7 @@ test("update: tells how scormplayer was installed, and how to update it", async 
   const kind = (dir) => installMethod({ packageRoot: dir }).kind;
   const globalNpm = at("usr/local/lib/node_modules/@jakerains/scormplayer");
   assert.equal(kind(globalNpm), "npm");
-  assert.deepEqual(installMethod({ packageRoot: globalNpm }).command, ["npm", "install", "-g", "@jakerains/scormplayer@latest"]);
+  assert.deepEqual(installMethod({ packageRoot: globalNpm }).command, ["npm", "install", "-g", "--prefix", path.join(base, process.platform === "win32" ? "usr/local/lib" : "usr/local"), "@jakerains/scormplayer@latest"]);
   assert.equal(updateHint(globalNpm), "scormplayer update");
   assert.equal(kind(at("proj/node_modules/@jakerains/scormplayer", "proj/package.json")), "project");
   assert.equal(kind(at("home/.npm/_npx/1a2b/node_modules/@jakerains/scormplayer")), "npx");

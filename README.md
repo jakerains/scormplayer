@@ -69,9 +69,15 @@ Your first interactive player launch offers setup; press Enter to skip. You can 
 needs Node.js 22.22.2+; Codex setup also needs its CLI. MCP setup stays local. An existing
 SCORM Player host plugin is reused and refreshed when its bundled version is older.
 
-For scripts, use `scormplayer setup --app codex --app cursor`. If MCP is unavailable, use
-`--skills-only` for filesystem skills. Use `--with-skills` to add native filesystem discovery
-alongside MCP, with the same app selection and no second picker. These optional installs use
+To install **MCP and separate skill files together**, run:
+
+```sh
+scormplayer setup --with-skills
+```
+
+Choose your apps once; setup installs both for those apps. Restart your AI app afterward.
+For scripts, name the apps directly: `scormplayer setup --with-skills --app codex --app cursor`.
+If MCP is unavailable, run `scormplayer setup --skills-only` instead. These optional skill installs use
 the [Vercel skills CLI](https://github.com/vercel-labs/skills) and require internet access;
 Claude Desktop has no filesystem skill target. `--mcp-only` is an alias for the default.
 `scormplayer skill install` remains available for custom skill scope and agent choices.
@@ -81,6 +87,10 @@ Claude Desktop has no filesystem skill target. `--mcp-only` is an alias for the 
 ```sh
 scormplayer update
 ```
+
+For npm installs, update downloads the exact release it checked, replaces the copy you ran,
+and verifies the new CLI starts with that version.
+You can keep using `scormplayer` in the same terminal; no shell refresh is needed.
 
 The terminal alerts you when a downloadable update is available, and the browser marks
 **More** with an **Update** badge. Open it to copy the update command. Bash installs are

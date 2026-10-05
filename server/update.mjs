@@ -95,7 +95,7 @@ export function installMethod({ packageRoot = PACKAGE_ROOT } = {}) {
   // A project keeps a package.json beside its node_modules; npm's global folder (/usr/local/lib,
   // /opt/homebrew/lib, ~/.nvm/…/lib, %APPDATA%\npm) doesn't. Worked out from the path rather than
   // by asking npm, which is slower and can mask parts of the path in its output.
-  if (!fs.existsSync(path.join(path.dirname(nodeModulesDir(packageRoot)), "package.json"))) return install("npm", ["install", "-g", `${PACKAGE}@latest`]);
+  if (!fs.existsSync(path.join(path.dirname(nodeModulesDir(packageRoot)), "package.json"))) return install("npm", ["install", "-g", "--prefix", npmPrefix(packageRoot), `${PACKAGE}@latest`]);
   return { kind: "project", command: null, hint: `npm install ${PACKAGE}@latest (in the project that depends on it)` };
 }
 
@@ -109,12 +109,29 @@ export function updateHint(packageRoot = PACKAGE_ROOT) {
 export const NPM_INSTALL = ["npm", "install", "-g", `${PACKAGE}@latest`];
 
 /**
- * Install one version from its package file. Right after a release, npm's full version list
- * can lag the "latest" answer by an hour, and `npm install -g …@latest` then fails with
- * "No matching version found" although the package file is already there.
+ * Install one exact version from its package file. Right after a release, npm's cached
+ * version list can lag the fresh "latest" answer and install an older release or fail
+ * with "No matching version found" although the package file is already there.
  */
-export function tarballInstall(version) {
-  return ["npm", "install", "-g", tarballUrl(version)];
+export function tarballInstall(version, { prefix } = {}) {
+  return ["npm", "install", "-g", ...(prefix ? ["--prefix", prefix] : []), tarballUrl(version)];
+}
+
+/** Update the installation being run, even if npm's configured prefix has changed. */
+function npmPrefix(packageRoot) {
+  const parent = path.dirname(nodeModulesDir(packageRoot));
+  return process.platform !== "win32" && path.basename(parent) === "lib" ? path.dirname(parent) : parent;
+}
+
+/** A new process reads the replaced CLI, without the updater's old module cache. */
+export function verifyUpdatedCli(expected, { entry = process.argv[1] } = {}) {
+  const result = spawnSync(process.execPath, [entry, "--version", "--json"], { encoding: "utf8", timeout: 10000 });
+  let version;
+  try { version = JSON.parse(result.stdout).version; } catch { /* report a failed launch below */ }
+  if (result.status !== 0 || version !== expected) {
+    throw new Error(`The installation finished, but ${entry} ${version ? `still runs ${version}` : "could not start"} (expected ${expected}). Check for multiple installations with ${process.platform === "win32" ? "where scormplayer" : "type -a scormplayer"}.`);
+  }
+  return version;
 }
 
 /**

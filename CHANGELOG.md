@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - October 5, 2026
+
+- `scormplayer update` downloads the exact npm release it just checked, so stale npm
+  `@latest` metadata cannot silently reinstall an older version.
+- npm updates target the installation you launched, even when npm's configured global
+  prefix has changed. The command verifies the replaced CLI in a fresh process before
+  reporting success; it works immediately in the same terminal.
+- `scormplayer --help` puts MCP and skills setup commands near the top, including
+  `scormplayer setup --with-skills` to install both with one app selection. The README
+  includes the same examples.
+- Regression checks cover cached commands in Bash and Zsh, stale npm release metadata,
+  changed global prefixes, and installers that report success without updating the CLI.
+
 ## [0.9.0] - October 5, 2026
 
 ### Added

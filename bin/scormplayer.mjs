@@ -10,7 +10,7 @@ import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere, 
 import { findConfig, configuredPinsFile, startSync } from "../server/config.mjs";
 import { findCourses, isCourseFolder } from "../server/finder.mjs";
 import { cacheEntries, clearCache, formatBytes, MAX_AGE_DAYS, MAX_ENTRIES } from "../server/cache.mjs";
-import { checkForUpdate, fetchLatest, hasTool, installMethod, installedVersion, isNewer, npmNeedsSudo, NPM_INSTALL, packageReady, runInstall, summarizeInstallError, tarballInstall, updateHint } from "../server/update.mjs";
+import { checkForUpdate, fetchLatest, hasTool, installMethod, isNewer, npmNeedsSudo, NPM_INSTALL, packageReady, runInstall, summarizeInstallError, tarballInstall, updateHint, verifyUpdatedCli } from "../server/update.mjs";
 import { pickCourse, pickFromList, DROP_PAGE } from "../server/tui.mjs";
 import { pinsReport, createJsonReporter, jsonError } from "../server/agent.mjs";
 import { managePlugins } from "../server/plugins.mjs";
@@ -24,6 +24,16 @@ const HELP = `scormplayer ${VERSION}
 
 Open a SCORM course in your browser and leave pinned notes on it.
 
+Install MCP and skills into your AI apps
+  scormplayer setup --with-skills  Install MCP and separate skill files; pick your apps once
+  scormplayer setup               Install MCP with built-in review guides (no separate skills needed)
+  scormplayer setup --skills-only  Install only skills if your app cannot use MCP
+  scormplayer setup --with-skills --app codex --app cursor
+                                  Install both for named apps without the app picker
+  Apps: codex, claude-code, cursor, claude-desktop, gemini-cli, windsurf.
+  Claude Desktop supports MCP; it has no separate skill-file installation.
+  MCP needs Node.js 22.22.2+. Restart your AI app after setup.
+
 Usage
   scormplayer                     Pick a course found in this folder (or open this folder);
                                   with none, open the player to drop or choose a SCORM zip
@@ -31,9 +41,9 @@ Usage
   scormplayer pins <course>       Print the open pins as a hand-off for a teammate or an agent
   scormplayer unzip <zip>         Unzip a course to a folder you can edit (beside the zip, or
                                   --to <folder>); its pins move with it
-  scormplayer setup               Pick apps once for MCP with bundled review guidance
+  scormplayer setup               Install MCP and optional skills (commands above)
   scormplayer skill               Install the agent skill, or update it if it's out of date
-  scormplayer mcp                 Run the normal stdio MCP server (Node.js 22.22.2+)
+  scormplayer mcp                 Run the MCP server for an AI app; use setup to install it
   scormplayer plugin install <codex|claude|cursor|all>
                                   Install normal MCP tools, pin checklist UI and skills
   scormplayer plugin status      Check installed integrations (optional: codex, claude or cursor)
@@ -78,9 +88,9 @@ skill commands (run through the open skills CLI: npx skills, 75+ agents)
 
 setup options
   --app <name>      Select an app (repeatable); omit to choose interactively
-  --with-skills     Also install filesystem skills using the same app selection
-  --skills-only     Install filesystem skills without MCP (fallback)
-  --mcp-only        Alias for the default MCP with bundled guidance
+  --with-skills     Also install separate skill files using the same app selection
+  --skills-only     Install only skill files, without MCP (fallback)
+  --mcp-only        Alias for the default MCP with built-in review guides
   Supported apps: codex, claude-code, cursor, claude-desktop, gemini-cli, windsurf
 
 For agents (--json)
@@ -548,6 +558,10 @@ async function runUpdate({ cacheDir, check, json }) {
     command = NPM_INSTALL;
     tool = "npm";
   }
+  // Install the exact download we just checked. npm's cached @latest metadata can lag
+  // the registry and otherwise reinstall an older release while reporting success.
+  if (tool === "npm") command = tarballInstall(latest, { prefix: command.includes("--prefix") ? command[command.indexOf("--prefix") + 1] : undefined });
+  else command = command.map((arg) => arg === "@jakerains/scormplayer@latest" ? `@jakerains/scormplayer@${latest}` : arg);
   // Node from the nodejs.org installer keeps global packages in /usr/local, which needs admin rights.
   const sudo = tool === "npm" && npmNeedsSudo();
   const interactive = process.stdin.isTTY && process.stdout.isTTY && !json;
@@ -557,16 +571,13 @@ async function runUpdate({ cacheDir, check, json }) {
 
   say(`Updating scormplayer ${VERSION} → ${latest} with ${tool}…`);
   if (sudo) say("npm needs admin rights to update global packages here, so this runs with sudo. Enter your Mac password if asked.");
-  let result = await runInstall(command, { sudo });
-  if (result.code !== 0 && tool === "npm") {
-    // npm's full version list can lag its "latest" answer; the package file itself is there (checked above).
-    command = tarballInstall(latest);
-    result = await runInstall(command, { sudo });
-  }
+  const result = await runInstall(command, { sudo });
   if (result.code !== 0) {
-    throw new UserError(`The update didn't install. npm said:\n${summarizeInstallError(result.output)}\nTo try it by hand: ${sudo ? "sudo " : ""}${NPM_INSTALL.join(" ")}`);
+    throw new UserError(`The update didn't install. ${tool} said:\n${summarizeInstallError(result.output)}\nYour current install has not been verified as updated. Try scormplayer update again after fixing the error above.`);
   }
-  const now = installedVersion();
+  let now;
+  try { now = verifyUpdatedCli(latest); }
+  catch (error) { throw new UserError(error.message); }
 
   // Bring the agent skill up to this version wherever it's installed (it only changes when it's behind).
   const before = skillStatus();
@@ -578,6 +589,7 @@ async function runUpdate({ cacheDir, check, json }) {
 
   if (json) return void console.log(JSON.stringify({ ok: true, from: VERSION, to: now, method: tool, skill }));
   say(`scormplayer is now ${now}.${skill === "updated" ? " The agent skill is updated too." : ""}`);
+  say("Ready in this terminal; no shell refresh needed.");
   if (skill === "failed") say("The agent skill didn't update; run: scormplayer skill");
 }
 
