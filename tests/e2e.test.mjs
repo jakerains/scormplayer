@@ -432,6 +432,13 @@ test("WebMCP tools drive the player for a browser agent", async () => {
       return { error: Boolean(result.isError), text: result.content[0].text };
     }, [name, input]);
 
+    // React can paint the page label before the tool action snapshot updates.
+    // Use the same readiness signal an agent should check before navigation.
+    await page.waitForFunction(async () => {
+      const result = await window.__tools.scormplayer_status.execute({});
+      const status = JSON.parse(result.content[0].text);
+      return status.readiness?.navigationAvailable && status.page?.of === 3;
+    });
     const status = JSON.parse((await call("scormplayer_status")).text);
     assert.equal(status.page.of, 3);
     assert.match((await call("scormplayer_go_to_page", { page: "hazards" })).text, /page 2: Spot the hazards/);
