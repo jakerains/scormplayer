@@ -1,4 +1,5 @@
 import type { PinTarget } from "./picker";
+import type { ScormState, ScormWrite } from "./scorm-state";
 
 export type CourseResponse = Course | { empty: true; revision: string };
 
@@ -72,6 +73,8 @@ const json = (method: string, body: unknown): RequestInit => ({
 });
 
 export const api = {
+  scormState: () => request<ScormState>("/api/scorm"),
+  saveScormState: (patch: ScormWrite, keepalive = false) => request<ScormState>("/api/scorm", { ...json("PUT", patch), keepalive }),
   course: () => request<CourseResponse>("/api/course").then((course) => { revision = course.revision; return course; }),
   status: () => request<{ lastChangeAt: string | null }>("/api/status"),
   pins: () => fetchPins(),

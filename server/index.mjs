@@ -14,6 +14,7 @@ import { pruneCache, createCacheLease, withCacheLock } from "./cache.mjs";
 import { defaultUnzipFolder, existingUnzip, unzipCourse } from "./unzip.mjs";
 import { defaultRegistryDir, registerPlayer } from "./registry.mjs";
 import { skillStatus } from "./skill.mjs";
+import { courseKey, createScormStore } from "./scorm-state.mjs";
 
 export { resolveCourse, UserError } from "./course.mjs";
 export { createPinStore } from "./pins.mjs";
@@ -105,7 +106,8 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     // (and after the package, when it holds several).
     if (options.pinsBeside) {
       const chosen = course.packages ? { name: course.package, packages: course.packages } : null;
-      course.pinsFile = siblingPinsFile(path.join(options.pinsBeside, course.displayName ?? path.basename(target)), chosen);
+      const name = (course.displayName ?? path.basename(target)).replace(/\.zip$/i, `-${course.sha256.slice(0, 12)}.zip`);
+      course.pinsFile = siblingPinsFile(path.join(options.pinsBeside, name), chosen);
     }
     const pins = createPinStore(course.pinsFile, course);
     let liveCourse;
@@ -117,7 +119,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     catch (error) { lease.update([current?.course.root, current?.target]); throw error; }
     const previous = current;
     // Pins kept somewhere chosen on purpose (--pins, a project config) stay there after unzipping.
-    current = { course, pins, liveCourse, keepPinsFile: Boolean(options.keepPinsFile), target, options };
+    current = { course, pins, scorm: createScormStore(cacheDir, course), liveCourse, keepPinsFile: Boolean(options.keepPinsFile), target, options };
     progress = null;
     courseVersion += 1;
     await previous?.liveCourse?.close();
@@ -180,7 +182,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     app.use(express.json({ limit: "1mb" }));
     app.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
-    const scoped = /^\/api\/(pins(?:\/|$)|brief$|progress$|open$|switch$|package$|unzip$)/;
+    const scoped = /^\/api\/(pins(?:\/|$)|brief$|progress$|scorm$|open$|switch$|package$|unzip$)/;
     function checkRevision(req) {
       const expected = req.get("x-scormplayer-revision");
       if (expected && expected !== revision()) throw Object.assign(new Error("The course changed in another tab. Reload before saving this note."), { statusCode: 409 });
@@ -204,8 +206,8 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
         scormVersion: course.scormVersion,
         source: course.displayName ?? course.source,
         launchUrl: course.kind === "live" ? LIVE_BASE : `/course/${encodePath(course.launch)}`,
-        // Each package keeps its own SCORM progress in the browser.
-        courseKey: `${course.sha256 ?? course.source}${course.package ? `:${course.package}` : ""}`,
+        // Each package keeps its own durable SCORM progress.
+        courseKey: courseKey(course),
         ...(course.packages ? { package: course.package, packages: course.packages } : {}),
         pinsFile: course.pinsFile,
         // After this many minutes without anyone using the page it asks "Still there?" (null: never).
@@ -280,6 +282,9 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     });
 
     app.get("/api/status", (_req, res) => res.json(current?.liveCourse?.status() ?? { lastChangeAt: null }));
+
+    app.get("/api/scorm", handle(async (_req, res) => res.json(requireCourse().scorm.read())));
+    app.put("/api/scorm", handle(async (req, res) => res.json(requireCourse().scorm.update(req.body ?? {}))));
 
     // The player page reports the course's SCORM status so the terminal can show it.
     app.post("/api/progress", (req, res) => {
@@ -369,7 +374,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     app.use((req, res, next) => {
       if (!["GET", "HEAD"].includes(req.method) || !/^\/assets\/[\w.-]+[-.][\w-]{8,}\.(js|css)$/.test(req.path)) return next();
       const file = path.join(clientDir, req.path.slice(1));
-      if (!fs.existsSync(file)) return next();
+      if (!fs.existsSync(file)) return res.set("Cache-Control", "no-store").status(404).type("text").send("Player asset not found. Reload the player.");
       res.vary("Accept-Encoding");
       const encoding = req.acceptsEncodings("br", "gzip", "identity");
       const suffix = encoding === "br" ? ".br" : encoding === "gzip" ? ".gz" : "";
@@ -377,10 +382,19 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       if (!compressed && !req.acceptsEncodings("identity")) return res.status(406).end();
       if (compressed) res.set("Content-Encoding", encoding);
       res.set("Cache-Control", "public, max-age=31536000, immutable");
-      res.type(path.extname(file)).sendFile(compressed ? file + suffix : file);
+      // Installed players/plugins commonly live below .nvm or .codex. These are
+      // known UI files; sendFile's default hidden-path refusal must not block them.
+      res.type(path.extname(file)).sendFile(compressed ? file + suffix : file, { dotfiles: "allow" }, (error) => {
+        if (!error) return;
+        if (res.headersSent) return next(error);
+        res.removeHeader("Content-Encoding");
+        res.set("Cache-Control", "no-store").status(error.statusCode || 500).type("text").send("Player asset could not load. Reload the player.");
+      });
     });
+    // A missing asset must never become an HTML document cached at a CSS/JS URL.
+    app.use("/assets", (req, res) => res.set("Cache-Control", "no-store").status(404).type("text").send("Player asset not found. Reload the player."));
     app.use(express.static(clientDir, { index: "index.html" }));
-    app.use((req, res, next) => (req.method === "GET" ? res.sendFile(path.join(clientDir, "index.html")) : next()));
+    app.use((req, res, next) => (req.method === "GET" ? res.set("Cache-Control", "no-store").sendFile(path.join(clientDir, "index.html"), { dotfiles: "allow" }) : next()));
 
     const actualPort = await listen(httpServer, host, port);
     const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${actualPort}/`;

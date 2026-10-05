@@ -11,7 +11,63 @@ import { findSourceText } from "../server/source-match.mjs";
 import { startPlayer } from "../server/index.mjs";
 import { MANIFEST_12, MANIFEST_2004, bundleZip, multiScoZip, scorm12Zip, scorm2004Zip, traversalZip } from "./fixtures.mjs";
 
+test("dropped ZIPs with the same name keep separate pins through reupload and cache cleanup", async () => {
+  const dir = tempDir();
+  const player = await startPlayer({ cacheDir: path.join(dir, "cache"), pinsDir: dir, port: 0, registryDir: null });
+  const safety = scorm12Zip({ title: "Safety" });
+  const finance = scorm12Zip({ title: "Finance" });
+  const upload = async (body) => {
+    const response = await fetch(`${player.url}api/open`, { method: "POST", headers: { "content-type": "application/zip", "x-file-name": "course.zip" }, body });
+    assert.equal(response.status, 200, await response.text());
+  };
+  try {
+    await upload(safety);
+    const safetyPins = player.course.pinsFile;
+    player.pins.create({ note: "Safety only" });
+    await upload(finance);
+    assert.notEqual(player.course.pinsFile, safetyPins);
+    assert.deepEqual(player.pins.list(), []);
+    player.pins.create({ note: "Finance only" });
+    await upload(safety);
+    assert.equal(player.course.pinsFile, safetyPins);
+    assert.deepEqual(player.pins.list().map((pin) => pin.note), ["Safety only"]);
+    fs.rmSync(path.join(dir, "cache", "uploads"), { recursive: true, force: true });
+    await upload(finance);
+    assert.deepEqual(player.pins.list().map((pin) => pin.note), ["Finance only"]);
+  } finally { await player.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 const BIN = fileURLToPath(new URL("../bin/scormplayer.mjs", import.meta.url));
+
+test("durable progress merges modules, survives cache cleanup, and rejects saves from before reset", async () => {
+  const dir = tempDir();
+  const input = path.join(dir, "modules.zip");
+  const cacheDir = path.join(dir, "cache");
+  fs.writeFileSync(input, multiScoZip());
+  const a = await startPlayer({ input, cacheDir, port: 0, registryDir: null });
+  const b = await startPlayer({ input, cacheDir, port: 0, registryDir: null });
+  const read = async (player) => (await fetch(`${player.url}api/scorm`)).json();
+  const write = (player, data) => fetch(`${player.url}api/scorm`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
+  try {
+    const ids = a.course.scos.map((sco) => sco.id);
+    assert.equal((await read(a)).saved, false);
+    const writes = await Promise.all([
+      write(a, { epoch: 0, selectedSco: ids[0], modules: { [ids[0]]: { "cmi.suspend_data": "one" } } }),
+      write(b, { epoch: 0, selectedSco: ids[1], modules: { [ids[1]]: { "cmi.suspend_data": "two" } } }),
+    ]);
+    assert.deepEqual(writes.map((response) => response.status), [200, 200]);
+    assert.deepEqual((await read(b)).modules, { [ids[0]]: { "cmi.suspend_data": "one" }, [ids[1]]: { "cmi.suspend_data": "two" } });
+    const { clearCache } = await import("../server/cache.mjs");
+    clearCache(cacheDir);
+    assert.equal((await read(a)).modules[ids[1]]["cmi.suspend_data"], "two");
+    assert.equal((await write(a, { epoch: 0, selectedSco: ids[0], reset: true })).status, 200);
+    assert.equal((await write(b, { epoch: 0, selectedSco: ids[1], modules: { [ids[1]]: { "cmi.suspend_data": "old tab" } } })).status, 409);
+    assert.deepEqual(await read(b), { saved: true, epoch: 1, selectedSco: ids[0], modules: {} });
+    for (const invalid of [{ epoch: 1, selectedSco: ids[0], modules: [] }, { epoch: 1, selectedSco: "missing" }, { epoch: 1, selectedSco: ids[0], modules: { [ids[0]]: { score: 1 } } }]) {
+      assert.equal((await write(a, invalid)).status, 400);
+    }
+  } finally { await a.close(); await b.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
 // Keep the players these tests start out of the real registry of running players.
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "scormplayer-test-cache-"));
 
@@ -435,7 +491,7 @@ test("starts empty and opens zips sent from the browser", async () => {
     const course = await (await fetch(`${player.url}api/course`)).json();
     assert.equal(course.title, "Safety Basics");
     assert.equal(course.source, "Safety Basics.zip");
-    assert.equal(course.pinsFile, path.join(dir, "Safety Basics.pins.json"));
+    assert.equal(course.pinsFile, path.join(dir, `Safety Basics-${player.course.sha256.slice(0, 12)}.pins.json`));
     assert.match(await (await fetch(new URL(course.launchUrl, player.url))).text(), /Welcome to the demo/);
 
     assert.equal((await send("second.zip", scorm2004Zip({ title: "Second" }))).status, 200);

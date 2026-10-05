@@ -4,3 +4,6 @@ dist/
 *.pins-frames/
 .scormplayer/
 .DS_Store
+artifacts/agent-plugins/
+artifacts/player-qualification/
+artifacts/releases/

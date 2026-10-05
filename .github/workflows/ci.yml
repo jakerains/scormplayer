@@ -4,15 +4,43 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 jobs:
+  plugins:
+    name: Build and test agent plugins
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm ci --prefix integrations/agent
+      - run: npm run build
+      - run: npm run build:plugins
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: npm run test:plugins
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-plugins-${{ matrix.os }}
+          path: |
+            dist/plugins
+            dist/mcp
+          include-hidden-files: true
   test:
+    needs: plugins
     name: ${{ matrix.os }} · Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         node: [20, 22, 24]
     steps:
       - uses: actions/checkout@v5
@@ -24,17 +52,26 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-plugins-ubuntu-latest
+          path: dist
       - name: The packed tarball installs and runs
         shell: bash
         run: |
-          npm pack --pack-destination "$RUNNER_TEMP"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
           npm install -g "$RUNNER_TEMP"/jakerains-scormplayer-*.tgz
           scormplayer --version
           scormplayer --help | head -3
 
   browser:
-    name: Browser tests (Chromium)
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} · ${{ matrix.browser }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        browser: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -42,6 +79,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
       - run: npm run build
       - run: npm run test:e2e
+        env:
+          SCORMPLAYER_BROWSER: ${{ matrix.browser }}

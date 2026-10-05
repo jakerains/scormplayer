@@ -1,16 +1,21 @@
-// Browser tests: the player page itself, driven in headless Chromium against real servers.
-// Needs the built UI (npm run build) and a Chromium for Playwright (npx playwright install chromium).
+// Browser tests against real servers and normal browser autoplay rules.
+// Build first; SCORMPLAYER_BROWSER selects chromium (default), firefox or webkit.
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { chromium } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
 import { startPlayer } from "../server/index.mjs";
-import { multiScoZip, scorm12Zip } from "./fixtures.mjs";
+import { multiScoZip, scorm12Zip, scorm2004Zip } from "./fixtures.mjs";
 
 let browser;
-before(async () => { browser = await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required"] }); });
+before(async () => {
+  const name = process.env.SCORMPLAYER_BROWSER ?? "chromium";
+  const engine = { chromium, firefox, webkit }[name];
+  if (!engine) throw new Error(`Unknown browser: ${name}`);
+  browser = await engine.launch();
+});
 after(async () => { await browser?.close(); });
 
 function tempDir() {
@@ -32,6 +37,7 @@ function navCourse() {
   fs.writeFileSync(path.join(dir, "index.html"), `<!doctype html><title>Nav course</title><body style="font-family:sans-serif;margin:40px">
 <h1 id="title"></h1><p id="intro">Spot the three most common hazards before your first shift.</p>
 <div style="display:flex;gap:20px;margin-top:40px"><button id="a">First card</button><button id="b">Second card</button></div>
+<button id="startNarration">Start narration</button>
 <div class="driver-popover" style="position:fixed;bottom:20px;right:20px;background:#fff;border:1px solid #999;padding:10px">
   <div class="driver-popover-title">Listen first</div><div class="driver-popover-progress-text">1 of 2</div>
   <button class="driver-popover-prev-btn" disabled>Back</button><button class="driver-popover-next-btn" disabled>Next</button></div>
@@ -46,17 +52,177 @@ next.onclick=()=>{document.querySelector('.driver-popover-progress-text').textCo
 const audio=new Audio('narration.wav');
 audio.addEventListener('ended',()=>{next.disabled=false;});
 window.startNarration=()=>audio.play();
+document.getElementById('startNarration').onclick=window.startNarration;
 </script></body>`);
   return dir;
 }
 
-async function open(options) {
+async function open(options, context = null) {
   const dir = tempDir();
   const player = await startPlayer({ cacheDir: path.join(dir, "cache"), port: 0, pinsDir: dir, ...options });
-  const page = await browser.newPage({ viewport: { width: 1400, height: 820 } });
+  const page = context ? await context.newPage() : await browser.newPage({ viewport: { width: 1400, height: 820 } });
   await page.goto(player.url);
   return { player, page, dir };
 }
+
+test("SCORM 1.2 and 2004 resume on another port", async () => {
+  for (const version of ["1.2", "2004"]) {
+    const input = path.join(tempDir(), "resume.zip");
+    fs.writeFileSync(input, version === "1.2" ? scorm12Zip() : scorm2004Zip());
+    const context = await browser.newContext();
+    const { player, page, dir } = await open({ input, registryDir: null }, context);
+    let next;
+    try {
+      await page.frameLocator("iframe.sp-frame").locator("h1").waitFor();
+      await page.evaluate((version) => {
+        const api = version === "1.2" ? window.API : window.API_1484_11;
+        api[version === "1.2" ? "LMSInitialize" : "Initialize"]("");
+        api[version === "1.2" ? "LMSSetValue" : "SetValue"]("cmi.suspend_data", "saved-review");
+        api[version === "1.2" ? "LMSSetValue" : "SetValue"](version === "1.2" ? "cmi.core.lesson_location" : "cmi.location", "page-3");
+        api[version === "1.2" ? "LMSCommit" : "Commit"]("");
+      }, version);
+      await page.waitForTimeout(300);
+      next = await startPlayer({ input, cacheDir: path.join(dir, "cache"), port: 0, registryDir: null });
+      await page.goto(next.url);
+      await page.frameLocator("iframe.sp-frame").locator("h1").waitFor();
+      const state = await page.evaluate((version) => {
+        const api = version === "1.2" ? window.API : window.API_1484_11;
+        api[version === "1.2" ? "LMSInitialize" : "Initialize"]("");
+        const get = (key) => api[version === "1.2" ? "LMSGetValue" : "GetValue"](key);
+        return { data: get("cmi.suspend_data"), entry: get(version === "1.2" ? "cmi.core.entry" : "cmi.entry") };
+      }, version);
+      assert.deepEqual(state, { data: "saved-review", entry: "resume" });
+    } finally { await context.close(); await next?.close(); await player.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("legacy module progress migrates once and cannot return after reset", async () => {
+  const dir = tempDir();
+  const input = path.join(dir, "legacy.zip");
+  fs.writeFileSync(input, multiScoZip());
+  const player = await startPlayer({ input, cacheDir: path.join(dir, "cache"), port: 0, registryDir: null });
+  const course = await (await fetch(`${player.url}api/course`)).json();
+  const context = await browser.newContext();
+  await context.addInitScript(({ key, ids }) => {
+    ids.forEach((id, index) => localStorage.setItem(`scormplayer:${key}:${id}`, JSON.stringify({ "cmi.suspend_data": `legacy-${index}` })));
+    localStorage.setItem(`scormplayer:sco:${key}`, "1");
+  }, { key: course.courseKey, ids: course.scos.map((sco) => sco.id) });
+  const page = await context.newPage();
+  try {
+    await page.goto(player.url);
+    await page.frameLocator("iframe.sp-frame").locator("h1").filter({ hasText: "Module 2" }).waitFor();
+    assert.equal(await page.evaluate(() => window.API_1484_11.GetValue("cmi.suspend_data")), "legacy-1");
+    await page.waitForFunction(async () => (await (await fetch("/api/scorm")).json()).saved);
+    const saved = await (await fetch(`${player.url}api/scorm`)).json();
+    assert.equal(saved.modules[course.scos[0].id]["cmi.suspend_data"], "legacy-0");
+    await page.locator(".sp-tab").filter({ hasText: "More" }).click();
+    await page.getByRole("menuitem", { name: "Reset progress", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Click again to clear progress", exact: true }).click();
+    await page.frameLocator("iframe.sp-frame").locator("h1").filter({ hasText: "Module 1" }).waitFor();
+    await page.reload(); // The init script deliberately recreates the old browser cache.
+    await page.frameLocator("iframe.sp-frame").locator("h1").filter({ hasText: "Module 1" }).waitFor();
+    assert.equal(await page.evaluate(() => window.API_1484_11.GetValue("cmi.suspend_data")), "");
+  } finally { await context.close(); await player.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("failed progress writes keep the learner state and offer a working retry", async () => {
+  const { player, page } = await open({ input: navCourse(), registryDir: null });
+  try {
+    await page.frameLocator("iframe.sp-frame").locator("h1").waitFor();
+    await page.route("**/api/scorm", (route) => route.request().method() === "PUT"
+      ? route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "Progress disk unavailable" }) }) : route.continue());
+    await page.evaluate(() => { window.API_1484_11.SetValue("cmi.suspend_data", "retry-me"); window.API_1484_11.Commit(""); });
+    const alert = page.locator(".sp-save-error");
+    await alert.filter({ hasText: "Progress disk unavailable" }).waitFor();
+    assert.equal(await page.evaluate(() => window.API_1484_11.GetValue("cmi.suspend_data")), "retry-me");
+    await page.unroute("**/api/scorm");
+    await alert.getByRole("button", { name: "Retry", exact: true }).click();
+    await alert.waitFor({ state: "detached" });
+    const saved = await (await fetch(`${player.url}api/scorm`)).json();
+    assert.equal(saved.modules[""]["cmi.suspend_data"], "retry-me");
+  } finally { await page.close(); await player.close(); }
+});
+
+test("reset progress clears every SCO and restarts at the first module", async () => {
+  const input = path.join(tempDir(), "modules.zip");
+  fs.writeFileSync(input, multiScoZip());
+  const { player, page } = await open({ input, registryDir: null });
+  try {
+    await page.frameLocator("iframe.sp-frame").locator("h1").waitFor();
+    await page.evaluate(() => { window.API_1484_11.SetValue("cmi.suspend_data", "module-one-saved"); window.API_1484_11.Commit(""); });
+    await page.getByRole("button", { name: "Next module", exact: true }).click();
+    await page.frameLocator("iframe.sp-frame").locator("h1").filter({ hasText: "Module 2" }).waitFor();
+    await page.evaluate(() => { window.API_1484_11.SetValue("cmi.suspend_data", "module-two-saved"); window.API_1484_11.Commit(""); });
+    await page.locator(".sp-tab").filter({ hasText: "More" }).click();
+    await page.getByRole("menuitem", { name: "Reset progress", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Click again to clear progress", exact: true }).click();
+    await page.frameLocator("iframe.sp-frame").locator("h1").filter({ hasText: "Module 1" }).waitFor({ timeout: 3000 });
+    assert.equal(await page.evaluate(() => window.API_1484_11.GetValue("cmi.suspend_data")), "");
+    await page.getByRole("button", { name: "Next module", exact: true }).click();
+    await page.frameLocator("iframe.sp-frame").locator("h1").filter({ hasText: "Module 2" }).waitFor();
+    assert.equal(await page.evaluate(() => window.API_1484_11.GetValue("cmi.suspend_data")), "");
+  } finally { await page.close(); await player.close(); }
+});
+
+test("a course's unload save cannot bring progress back after Reset", async () => {
+  const input = navCourse();
+  fs.appendFileSync(path.join(input, "index.html"), `<script>
+const closingApi = parent.API_1484_11;
+addEventListener('pagehide', () => { closingApi.SetValue('cmi.suspend_data', 'old-unload-state'); closingApi.Commit(''); });
+</script>`);
+  const { player, page } = await open({ input, registryDir: null });
+  try {
+    await page.frameLocator("iframe.sp-frame").locator("h1").waitFor();
+    await page.evaluate(() => { window.API_1484_11.SetValue("cmi.suspend_data", "before-reset"); window.API_1484_11.Commit(""); });
+    await page.locator(".sp-tab").filter({ hasText: "More" }).click();
+    await page.getByRole("menuitem", { name: "Reset progress", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Click again to clear progress", exact: true }).click();
+    await page.locator(".sp-toast").filter({ hasText: "Progress cleared" }).waitFor();
+    await page.frameLocator("iframe.sp-frame").locator("h1").waitFor();
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => window.API_1484_11.GetValue("cmi.suspend_data")), "");
+    const state = await (await fetch(`${player.url}api/scorm`)).json();
+    assert.equal(state.modules[""]?.["cmi.suspend_data"] ?? "", "");
+  } finally { await page.close(); await player.close(); }
+});
+
+test("failed pin edits, resolution and deletion show errors and permit retry", async () => {
+  const { player, page } = await open({ input: navCourse() });
+  try {
+    player.pins.create({ note: "Original note" });
+    await page.locator(".sp-tab").filter({ hasText: "Pins" }).click();
+    await page.locator(".sp-pin__note").waitFor();
+    await page.route("**/api/pins/*", (route) => ["PATCH", "DELETE"].includes(route.request().method())
+      ? route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "Disk is read-only" }) }) : route.continue());
+    const row = page.locator(".sp-pin").first();
+    await row.getByRole("button", { name: "Resolve", exact: true }).click();
+    await row.getByRole("alert").filter({ hasText: "Disk is read-only" }).waitFor({ timeout: 2000 });
+    assert.equal(player.pins.list()[0].status, "open");
+    await row.getByRole("button", { name: "Edit", exact: true }).click();
+    await row.locator("textarea").fill("Edited draft");
+    await row.getByRole("button", { name: "Save", exact: true }).click();
+    await row.getByRole("alert").filter({ hasText: "Disk is read-only" }).waitFor();
+    assert.equal(await row.locator("textarea").inputValue(), "Edited draft");
+    await row.getByRole("button", { name: "Cancel", exact: true }).click();
+    await row.getByRole("button", { name: "Delete", exact: true }).click();
+    await row.getByRole("button", { name: "Confirm delete", exact: true }).click();
+    await row.getByRole("alert").filter({ hasText: "Disk is read-only" }).waitFor();
+    assert.equal(player.pins.list().length, 1);
+    await row.getByRole("button", { name: "Edit", exact: true }).click();
+    await row.locator("textarea").fill("Edited draft");
+    await page.unroute("**/api/pins/*");
+    await row.getByRole("button", { name: "Save", exact: true }).click();
+    await row.locator(".sp-pin__note").filter({ hasText: "Edited draft" }).waitFor();
+    await row.getByRole("button", { name: "Resolve", exact: true }).click();
+    await row.waitFor({ state: "detached" });
+    await page.getByText("Show resolved", { exact: true }).click();
+    await row.waitFor();
+    await row.getByRole("button", { name: "Delete", exact: true }).click();
+    await row.getByRole("button", { name: "Confirm delete", exact: true }).click();
+    await row.waitFor({ state: "detached" });
+    assert.equal(player.pins.list().length, 0);
+  } finally { await page.close(); await player.close(); }
+});
 
 test("pages, tour steps and narration skip", async () => {
   const { player, page } = await open({ input: navCourse() });
@@ -73,7 +239,7 @@ test("pages, tour steps and narration skip", async () => {
     await page.waitForFunction(() => document.querySelector(".sp-nav__page")?.textContent?.includes("Introduction"));
     assert.equal(await page.frameLocator("iframe.sp-frame").locator("#title").innerText(), "Introduction");
 
-    await page.frames()[1].evaluate(() => window.startNarration());
+    await page.frameLocator("iframe.sp-frame").locator("#startNarration").click();
     const tourButton = page.locator(".sp-tour .sp-skip");
     await page.waitForFunction(() => document.querySelector(".sp-tour .sp-skip")?.textContent?.includes("Skip"));
     await tourButton.click();
@@ -104,6 +270,7 @@ test("element, area and multi-element pins, and editing a note", async () => {
     await frame.locator("#a").click();
     await frame.locator("#b").click({ modifiers: ["Shift"] });
     assert.match(await page.locator(".sp-composer__target span").innerText(), /^2 elements/);
+    await page.locator(".sp-composer textarea").click();
     await page.locator(".sp-composer textarea").fill("Make these cards the same width");
     await page.locator(".sp-composer button", { hasText: "Save pin" }).click();
     await page.locator(".sp-composer").waitFor({ state: "detached" });
@@ -258,11 +425,31 @@ test("WebMCP tools drive the player for a browser agent", async () => {
     assert.equal(added.number, 1);
     assert.equal(player.pins.list()[0].page.title, "Spot the hazards");
     assert.match((await call("scormplayer_get_handoff")).text, /Shorten this/);
+    assert.ok(added.id && added.target.selector && added.page.title);
+    await call("scormplayer_edit_pin", { number: 1, note: "Review the shorter explanation" });
+    assert.equal(player.pins.list()[0].note, "Review the shorter explanation");
     assert.match((await call("scormplayer_resolve_pin", { number: 1, note: "Shortened" })).text, /resolved/);
     assert.equal(player.pins.list()[0].status, "resolved");
+    await call("scormplayer_reopen_pin", { number: 1 });
+    assert.equal(player.pins.list()[0].status, "open");
+    player.pins.update(added.id, { note: "Edited outside this tab" });
+    const fresh = JSON.parse((await call("scormplayer_list_pins")).text);
+    assert.equal(fresh[0].note, "Edited outside this tab");
+    assert.equal((await call("scormplayer_go_to_page", { page: " " })).error, true);
+    assert.equal((await call("scormplayer_tour_step", { direction: "bad" })).error, true);
+    assert.equal((await call("scormplayer_add_pin", { note: " " , selector: "#title" })).error, true);
+    assert.equal((await call("scormplayer_add_pin", { note: "two targets", selector: "#title", text: "hazards" })).error, true);
+    const group = JSON.parse((await call("scormplayer_add_pin", { note: "Align these", selectors: ["#title", "#intro"] })).text);
+    assert.equal(group.target.kind, "group");
+    assert.equal(group.target.targets.length, 2);
     assert.equal((await call("scormplayer_add_pin", { note: "x", selector: "#missing" })).error, true);
-    assert.match((await call("scormplayer_set_screen_size", { size: "phone" })).text, /phone/);
-    assert.equal(await page.frames()[1].evaluate(() => window.innerWidth), 390);
+    assert.match((await call("scormplayer_set_screen_size", { size: "tablet" })).text, /tablet/);
+    assert.equal(await page.frames()[1].evaluate(() => window.innerWidth), 1024);
+    const current = JSON.parse((await call("scormplayer_status")).text);
+    assert.equal(current.viewport.width, 1024);
+    assert.ok(current.course.revision && current.course.pinsFile);
+    assert.equal(current.readiness.navigationAvailable, true);
+    assert.equal(current.live.enabled, false);
   } finally {
     await page.close();
     await player.close();
@@ -294,7 +481,7 @@ test("paused narration remains skippable but lets an idle player ask", async () 
   const { player, page } = await open({ input: navCourse(), idleMinutes: 0.05, registryDir: null });
   try {
     await page.locator(".sp-nav__page").waitFor();
-    await page.frames()[1].evaluate(() => window.startNarration());
+    await page.frameLocator("iframe.sp-frame").locator("#startNarration").click();
     await page.waitForTimeout(600);
     await page.frames()[1].evaluate(() => {
       for (const media of window.__scormplayerMedia) media.pause();
@@ -330,4 +517,191 @@ test("a stale browser tab cannot save its draft into the newly switched course",
     await other.getByRole("button", { name: "Tablet", exact: true }).click();
     assert.equal(await other.frames()[1].evaluate(() => innerWidth), 1024);
   } finally { await other.close(); await page.close(); await player.close(); }
+});
+
+test("live source revisions render in the player without rebuilding", async () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, "package.json"), '{"type":"module"}');
+  fs.writeFileSync(path.join(dir, "vite.config.mjs"), "export default {};");
+  fs.writeFileSync(path.join(dir, "index.html"), '<h1 id="live">Loading</h1><script type="module" src="/lesson.js"></script>');
+  fs.writeFileSync(path.join(dir, "lesson.js"), 'document.querySelector("h1").textContent="Before revision";');
+  fs.symlinkSync(path.resolve("node_modules"), path.join(dir, "node_modules"), "junction");
+  const { player, page } = await open({ input: dir, live: true, registryDir: null });
+  try {
+    const lesson = page.frameLocator("iframe.sp-frame").locator("#live");
+    await lesson.filter({ hasText: "Before revision" }).waitFor();
+    fs.writeFileSync(path.join(dir, "lesson.js"), 'document.querySelector("h1").textContent="After revision";');
+    await lesson.filter({ hasText: "After revision" }).waitFor();
+    const state = await (await fetch(`${player.url}api/status`)).json();
+    assert.ok(state.lastChangeAt);
+  } finally { await page.close(); await player.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Opt-in course state plus native DOM state, deliberately remounted on every module update.
+function reviewLesson(revision = "before") {
+  return `
+export const revision = ${JSON.stringify(revision)};
+const review = window.__SCORMPLAYER_REVIEW__;
+let state = review?.read('lesson-view', 1) ?? { page: 0, guide: 0 };
+if (state.guide === 0) sessionStorage.setItem('fixture:guideStarts', String(Number(sessionStorage.getItem('fixture:guideStarts') || 0) + 1));
+window.parent.__academyLiveReviewMemory ??= new Map([['retained', true]]);
+window.learnerActions = 0;
+const root = document.querySelector('#root');
+function render() {
+  root.innerHTML = '<h1 id="revision">' + revision + '</h1><p id="state">Page ' + state.page + ', guide ' + state.guide + '</p>'
+    + '<button id="continue" disabled>Required call before Continue</button>'
+    + '<details id="disclosure"><summary>Reference</summary><p>Open reference</p></details>'
+    + '<div id="pane" style="height:120px;overflow:auto"><div style="height:1200px">Scrollable reference</div></div>'
+    + '<button id="focus">Review target</button><div style="height:2200px">Long page</div>';
+  document.querySelector('#continue').onclick = () => { window.learnerActions++; };
+}
+render();
+review?.register({ id: 'lesson-view', version: 1, capture: () => state, restore: saved => { state = saved; render(); } });
+review?.registerNavigation({
+  nextPage: () => { if (state.page >= 2) return false; state = { ...state, page: state.page + 1 }; render(); return true; },
+  nextGuideStep: () => { if (state.guide >= 2) return false; state = { ...state, guide: state.guide + 1 }; render(); return true; }
+});
+if (import.meta.hot) import.meta.hot.accept();
+`;
+}
+
+function liveReviewCourse() {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, "package.json"), '{"type":"module"}');
+  fs.writeFileSync(path.join(dir, "vite.config.mjs"), "export default {};");
+  fs.writeFileSync(path.join(dir, "index.html"), '<!doctype html><html><head><title>Review fixture</title></head><body><main id="root"></main><script type="module" src="/lesson.js"></script></body></html>');
+  fs.writeFileSync(path.join(dir, "lesson.js"), reviewLesson());
+  fs.symlinkSync(path.resolve("node_modules"), path.join(dir, "node_modules"), "junction");
+  return dir;
+}
+
+async function reviewMenu(page, name) {
+  await page.getByRole("button", { name: "More", exact: true }).click();
+  await page.getByRole("menuitem", { name, exact: true }).click();
+}
+
+test("live review skips, HMR, full reload and player reload retain adapter and native view state", async () => {
+  const input = liveReviewCourse();
+  const { player, page } = await open({ input, live: true, registryDir: null });
+  try {
+    const frame = page.frameLocator("iframe.sp-frame");
+    await frame.locator("#state").filter({ hasText: "Page 0, guide 0" }).waitFor();
+    const progressBefore = await page.evaluate(() => Object.fromEntries(Object.entries(localStorage).filter(([key]) => key.startsWith("scormplayer:"))));
+    await reviewMenu(page, "Skip to next guide step for review");
+    await frame.locator("#state").filter({ hasText: "Page 0, guide 1" }).waitFor();
+    await reviewMenu(page, "Skip to next page for review");
+    await frame.locator("#state").filter({ hasText: "Page 1, guide 1" }).waitFor();
+    const prepare = async () => {
+      await frame.locator("#focus").click();
+      await page.frames()[1].evaluate(async () => {
+        document.querySelector("#disclosure").open = true;
+        document.querySelector("#pane").scrollTop = 230;
+        document.querySelector("#focus").focus({ preventScroll: true });
+        window.scrollTo(0, 510);
+        history.replaceState(null, "", "/course/preview?section=second#reference");
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        window.__SCORMPLAYER_REVIEW__.checkpoint();
+      });
+    };
+    await prepare();
+    const assertView = async (focus = false) => {
+      await page.waitForFunction((focus) => {
+        const win = document.querySelector("iframe.sp-frame")?.contentWindow;
+        const doc = win?.document;
+        return doc?.querySelector("#state")?.textContent === "Page 1, guide 1"
+          && doc.querySelector("#disclosure")?.open && doc.querySelector("#pane")?.scrollTop === 230
+          && Math.abs(win.scrollY - 510) <= 1 && (!focus || doc.activeElement?.id === "focus");
+      }, focus);
+      assert.equal(await page.frames()[1].evaluate(() => window.learnerActions), 0);
+      assert.equal(await page.frames()[1].evaluate(() => sessionStorage.getItem("fixture:guideStarts")), "1");
+      assert.equal(await frame.locator("#continue").isDisabled(), true);
+      assert.equal(await page.evaluate(() => window.__academyLiveReviewMemory.get("retained")), true);
+      assert.deepEqual(await page.evaluate(() => Object.fromEntries(Object.entries(localStorage).filter(([key]) => key.startsWith("scormplayer:")))), progressBefore);
+    };
+
+    fs.writeFileSync(path.join(input, "lesson.js"), reviewLesson("after HMR"));
+    await frame.locator("#revision").filter({ hasText: "after HMR" }).waitFor();
+    await assertView(true);
+    // A changed HTML document causes Vite's real full-reload path.
+    await prepare();
+    const oldDocument = await page.frames()[1].evaluate(() => { window.documentToken = Math.random(); return window.documentToken; });
+    fs.appendFileSync(path.join(input, "index.html"), "<!-- full reload -->");
+    await page.waitForFunction((old) => document.querySelector("iframe.sp-frame")?.contentWindow?.documentToken !== old, oldDocument);
+    await assertView();
+    await prepare();
+    await reviewMenu(page, "Reload course");
+    await assertView();
+    assert.match(page.frames()[1].url(), /\/course\/preview\?section=second#reference$/);
+    await prepare();
+    await page.reload();
+    await frame.locator("#state").waitFor();
+    await assertView();
+    assert.match(page.frames()[1].url(), /\/course\/preview\?section=second#reference$/);
+
+    // Explicit reset discards review memory along with the learner restart.
+    await reviewMenu(page, "Reset progress");
+    await page.getByRole("menuitem", { name: "Click again to clear progress", exact: true }).click();
+    await frame.locator("#state").filter({ hasText: "Page 0, guide 0" }).waitFor();
+    assert.equal(await frame.locator("#disclosure").evaluate((element) => element.open), false);
+    assert.equal(await page.frames()[1].evaluate(() => window.scrollY), 0);
+  } finally { await page.close(); await player.close(); fs.rmSync(input, { recursive: true, force: true }); }
+});
+
+test("live review memory is isolated by tab, course and SCO; unsupported skips leave gates alone", async () => {
+  const input = liveReviewCourse();
+  const otherInput = liveReviewCourse();
+  const context = await browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const { player, page } = await open({ input, live: true, registryDir: null }, context);
+  let other;
+  try {
+    const frame = page.frameLocator("iframe.sp-frame");
+    await frame.locator("#state").waitFor();
+    await reviewMenu(page, "Skip to next page for review");
+    await frame.locator("#state").filter({ hasText: "Page 1, guide 0" }).waitFor();
+    other = await page.context().newPage();
+    await other.goto(player.url);
+    await other.frameLocator("iframe.sp-frame").locator("#state").filter({ hasText: "Page 0, guide 0" }).waitFor();
+
+    // Live projects currently have one SCO; exercise the same scoped frame contract for a second SCO.
+    await page.evaluate(() => {
+      const original = document.querySelector("iframe.sp-frame");
+      const frame = document.createElement("iframe");
+      frame.id = "other-sco";
+      const scope = JSON.parse(original.dataset.reviewScope);
+      scope[1] = "other-sco";
+      frame.dataset.reviewScope = JSON.stringify(scope);
+      frame.src = "/course/";
+      document.body.append(frame);
+    });
+    await page.frameLocator("#other-sco").locator("#state").filter({ hasText: "Page 0, guide 0" }).waitFor();
+    await page.evaluate(() => document.querySelector("#other-sco").remove());
+
+    await player.open(otherInput, { live: true });
+    await page.reload();
+    await frame.locator("#state").filter({ hasText: "Page 0, guide 0" }).waitFor();
+    await page.frames()[1].evaluate(() => window.__SCORMPLAYER_REVIEW__.registerNavigation({}));
+    await reviewMenu(page, "Skip to next guide step for review");
+    await page.locator(".sp-toast").filter({ hasText: "doesn't support skipping guide steps" }).waitFor();
+    assert.equal(await frame.locator("#state").innerText(), "Page 0, guide 0");
+    assert.equal(await frame.locator("#continue").isDisabled(), true);
+    assert.equal(await page.frames()[1].evaluate(() => window.learnerActions), 0);
+    await player.open(input, { live: true });
+    await page.reload();
+    await frame.locator("#state").filter({ hasText: "Page 1, guide 0" }).waitFor();
+  } finally {
+    await other?.close(); await page.close(); await context.close(); await player.close();
+    fs.rmSync(input, { recursive: true, force: true }); fs.rmSync(otherInput, { recursive: true, force: true });
+  }
+});
+
+test("packaged review keeps ordinary learner requirements and receives no live review overrides", async () => {
+  const input = navCourse();
+  const { player, page } = await open({ input, registryDir: null });
+  try {
+    await page.frameLocator("iframe.sp-frame").locator("#title").waitFor();
+    assert.equal(await page.frames()[1].evaluate(() => window.__SCORMPLAYER_REVIEW__), undefined);
+    await page.getByRole("button", { name: "More", exact: true }).click();
+    assert.equal(await page.getByRole("menuitem", { name: /Skip to next .* for review/ }).count(), 0);
+    assert.equal(await page.frameLocator("iframe.sp-frame").locator(".driver-popover-next-btn").isDisabled(), true);
+  } finally { await page.close(); await player.close(); fs.rmSync(path.dirname(input), { recursive: true, force: true }); }
 });

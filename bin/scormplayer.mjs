@@ -13,6 +13,8 @@ import { cacheEntries, clearCache, formatBytes, MAX_AGE_DAYS, MAX_ENTRIES } from
 import { checkForUpdate, fetchLatest, hasTool, installMethod, installedVersion, isNewer, npmNeedsSudo, NPM_INSTALL, packageReady, runInstall, summarizeInstallError, tarballInstall, updateHint } from "../server/update.mjs";
 import { pickCourse, pickFromList, DROP_PAGE } from "../server/tui.mjs";
 import { pinsReport, createJsonReporter, jsonError } from "../server/agent.mjs";
+import { managePlugins } from "../server/plugins.mjs";
+import { runSetup, shouldOfferSetup } from "../server/setup.mjs";
 
 // Who started this process, read first thing: if it exits later, the player has been left behind.
 const STARTED_BY = process.ppid;
@@ -29,7 +31,12 @@ Usage
   scormplayer pins <course>       Print the open pins as a hand-off for a teammate or an agent
   scormplayer unzip <zip>         Unzip a course to a folder you can edit (beside the zip, or
                                   --to <folder>); its pins move with it
+  scormplayer setup               Pick apps once for MCP with bundled review guidance
   scormplayer skill               Install the agent skill, or update it if it's out of date
+  scormplayer mcp                 Run the normal stdio MCP server (Node.js 22.22.2+)
+  scormplayer plugin install <codex|claude|cursor|all>
+                                  Install normal MCP tools, pin checklist UI and skills
+  scormplayer plugin status      Check installed integrations (optional: codex, claude or cursor)
   scormplayer cache [clear]       Show (or empty) the cache of unpacked zips
   scormplayer update              Update scormplayer and its agent skill to the latest version
                                   (--check only reports whether there is a newer one)
@@ -68,6 +75,13 @@ skill commands (run through the open skills CLI: npx skills, 75+ agents)
   skill print       Print the skill to stdout
   Flags passed to skills: -g/--global, -a/--agent <name>, -y/--yes, --copy;
   --local installs the copy bundled with this version instead of the GitHub one
+
+setup options
+  --app <name>      Select an app (repeatable); omit to choose interactively
+  --with-skills     Also install filesystem skills using the same app selection
+  --skills-only     Install filesystem skills without MCP (fallback)
+  --mcp-only        Alias for the default MCP with bundled guidance
+  Supported apps: codex, claude-code, cursor, claude-desktop, gemini-cli, windsurf
 
 For agents (--json)
   scormplayer pins <course> --json              {ok, course, pinsFile, counts, pins[]}
@@ -121,6 +135,10 @@ async function main(argv) {
       package: { type: "string" },
       idle: { type: "string" },
       global: { type: "boolean", short: "g", default: false },
+      app: { type: "string", multiple: true },
+      "mcp-only": { type: "boolean", default: false },
+      "skills-only": { type: "boolean", default: false },
+      "with-skills": { type: "boolean", default: false },
       agent: { type: "string", short: "a", multiple: true },
       yes: { type: "boolean", short: "y", default: false },
       copy: { type: "boolean", default: false },
@@ -133,6 +151,17 @@ async function main(argv) {
   const json = values.json;
   if (values.version) return void console.log(json ? JSON.stringify({ ok: true, version: VERSION }) : VERSION);
   if (values.help) return void console.log(HELP);
+  if (positionals[0] === "setup") {
+    if (positionals.length !== 1 || (values["mcp-only"] && (values["skills-only"] || values["with-skills"])) || (values["with-skills"] && values["skills-only"])) throw new UserError("Usage: scormplayer setup [--app codex --app cursor] [--with-skills | --skills-only]");
+    const result = await runSetup({ ids: values.app, mcp: !values["skills-only"], skills: values["skills-only"] || values["with-skills"], json });
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
+  const commands = ["mcp", "skill", "plugin", "cache", "update", "upgrade", "ps", "stop", "pins", "unzip"];
+  if (!commands.includes(positionals[0]) && (!positionals[0] || fs.existsSync(path.resolve(positionals[0]))) && shouldOfferSetup({ json, plain: values.plain })) {
+    try { await runSetup(); }
+    catch (error) { console.error(`Setup: ${error.message}\nYou can continue using the player and run scormplayer setup later.`); }
+  }
   if (positionals.length === 0 && !values.drop && json) {
     throw new UserError("Pass a course (a SCORM .zip, a SCORM folder or a Vite project), or --drop to start empty.");
   }
@@ -150,7 +179,27 @@ async function main(argv) {
 
   const cacheDir = defaultCacheDir();
 
+  if (positionals[0] === "mcp") {
+    if (positionals.length !== 1) throw new UserError("Usage: scormplayer mcp");
+    const [major, minor, patch] = process.versions.node.split(".").map(Number);
+    if (major < 22 || (major === 22 && (minor < 22 || (minor === 22 && patch < 2)))) throw new UserError("The MCP server requires Node.js 22.22.2 or newer.");
+    const entry = new URL("../dist/mcp/server.mjs", import.meta.url);
+    if (!fs.existsSync(entry)) throw new UserError("The MCP server is not built. Run npm run build:plugins.");
+    await import(entry.href);
+    return;
+  }
   if (positionals[0] === "skill") return runSkill(positionals[1] ?? "auto", values);
+  if (positionals[0] === "plugin") {
+    if (positionals.length > 3 || (positionals[1] === "install" && !positionals[2])) throw new UserError("Usage: scormplayer plugin install <codex|claude|cursor|all>");
+    const result = await managePlugins(positionals[1] ?? "status", positionals[2] ?? "all");
+    if (json) console.log(JSON.stringify(result));
+    else {
+      for (const item of result.results) console.log(`${item.host}: ${item.ok ? item.installed ? `installed (${item.versions.join(", ")}), ${item.enabled === null ? "activation managed in host" : item.enabled ? "enabled" : "disabled"}` : "not installed" : item.error}`);
+      if (result.reload && result.results.some((item) => item.ok)) console.log(result.reload);
+    }
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
   if (positionals[0] === "cache") return runCache(positionals[1] ?? "status", defaultCacheDir(), json);
   if (positionals[0] === "update" || positionals[0] === "upgrade") return runUpdate({ cacheDir, check: values.check, json });
   if (positionals[0] === "ps") return runPs({ json, host: values.host });
@@ -195,7 +244,7 @@ async function main(argv) {
   const word = positionals[0];
   if (word && /^[a-z][a-z-]*$/i.test(word) && !fs.existsSync(path.resolve(word))) {
     throw new UserError(`"${word}" isn't a command in scormplayer ${VERSION}, or a course in this folder. `
-      + `The commands are pins, unzip, update, ps, stop, skill and cache (scormplayer --help). `
+      + `The commands are pins, unzip, update, ps, stop, skill, mcp, plugin, setup and cache (scormplayer --help). `
       + `If "${word}" is newer than this version, update first: scormplayer update`);
   }
 

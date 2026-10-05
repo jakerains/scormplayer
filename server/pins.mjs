@@ -165,7 +165,7 @@ export function formatBrief(course, pins, pinsDir) {
 }
 
 function describe(course) {
-  return { title: course.title, source: course.source, kind: course.kind, scormVersion: course.scormVersion };
+  return { title: course.title, source: course.source, kind: course.kind, scormVersion: course.scormVersion, ...(course.sha256 ? { sha256: course.sha256 } : {}) };
 }
 
 function describeKind(course) {

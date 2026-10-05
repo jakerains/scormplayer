@@ -79,7 +79,8 @@ function framesDir(pinsFile) {
 }
 
 function zipName(course) {
-  return path.basename(course.displayName ?? course.source).replace(/\.zip$/i, "");
+  const name = path.basename(course.displayName ?? course.source).replace(/\.zip$/i, "");
+  return isUpload(course) ? `${name}-${course.sha256.slice(0, 12)}` : name;
 }
 
 function isUpload(course) {

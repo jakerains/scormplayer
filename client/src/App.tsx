@@ -5,6 +5,9 @@ import { Icon } from "./icons";
 import { chooseTarget, describeElement, describeGroup, describeRegion, describeTextSelection, locateTarget, visibleText, elementFor, widenTarget, type PinTarget, type Rect } from "./picker";
 import { installScormApis, progressOf, type ScormData } from "./scorm-api";
 import { createNavigator, type NavState } from "./nav";
+import { checkpointReview, clearCourseReview, reviewLaunchUrl, reviewScope } from "./review-view";
+import { ScormPersistence } from "./scorm-state";
+import { skipForReview } from "./review-navigation";
 import { activeMedia, skipMedia, tourState, watchMedia } from "./media";
 import { DropHome, UploadStatus, ZipInput, useZipOpener } from "./DropHome";
 import { Inspector } from "./Inspector";
@@ -33,6 +36,9 @@ export function App() {
   const [loadError, setLoadError] = useState("");
   const [scorm, setScorm] = useState<ReturnType<typeof installScormApis> | null>(null);
   const [scormData, setScormData] = useState<ScormData>({});
+  const [persistence, setPersistence] = useState<ScormPersistence | null>(null);
+  const [progressError, setProgressError] = useState("");
+  const [resetting, setResetting] = useState(false);
   const [frameKey, setFrameKey] = useState(0);
   const [frameLoads, setFrameLoads] = useState(0);
   const [pins, setPins] = useState<Pin[]>([]);
@@ -63,6 +69,7 @@ export function App() {
   const [nav, setNav] = useState<NavState>(null);
   const [pagesOpen, setPagesOpen] = useState(false);
   const [navBusy, setNavBusy] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
   const [tour, setTour] = useState<{ title: string; progress: string; canNext: boolean; canPrev: boolean } | null>(null);
   const [mediaPlaying, setMediaPlaying] = useState(false);
   const [mediaAvailable, setMediaAvailable] = useState(false);
@@ -96,30 +103,55 @@ export function App() {
 
   // Course, then the SCORM APIs, then the frame: a course looks for its API as it loads.
   useEffect(() => {
-    api.course().then((result) => {
+    api.course().then(async (result) => {
       if ("empty" in result) { setEmpty(true); return; }
-      if (result.scos?.length) {
+      const state = await api.scormState();
+      if (!state.saved) {
         try {
+          const ids = result.scos?.map((sco) => sco.id) ?? [""];
+          for (const id of ids) {
+            const data = JSON.parse(localStorage.getItem(`scormplayer:${result.courseKey}${id ? `:${id}` : ""}`) || "null");
+            if (data && typeof data === "object" && !Array.isArray(data)) state.modules[id] = Object.fromEntries(Object.entries(data).filter(([, value]) => typeof value === "string")) as ScormData;
+          }
           const saved = Number(localStorage.getItem(`scormplayer:sco:${result.courseKey}`));
-          if (Number.isInteger(saved) && saved > 0 && saved < result.scos.length) setScoIndex(saved);
+          if (Number.isInteger(saved) && ids[saved]) state.selectedSco = ids[saved];
         } catch { /* storage blocked */ }
       }
+      if (result.scos) setScoIndex(Math.max(0, result.scos.findIndex((sco) => sco.id === state.selectedSco)));
+      setPersistence(new ScormPersistence(state, api.saveScormState, setProgressError));
       setCourse(result);
-    }, (error) => setLoadError(error.message));
+    }).catch((error) => setLoadError(error.message));
   }, []);
+  useEffect(() => {
+    if (!persistence) return;
+    const flush = () => { void persistence.flush(true); };
+    window.addEventListener("pagehide", flush);
+    return () => { window.removeEventListener("pagehide", flush); void persistence.flush(); };
+  }, [persistence]);
   // Each SCO keeps its own SCORM data, as it would in an LMS.
   const sco = course?.scos?.[scoIndex] ?? null;
   const launchUrl = sco?.launchUrl ?? course?.launchUrl ?? "";
+  const viewScope = course?.kind === "live" ? reviewScope(course.courseKey, sco?.id ?? "", launchUrl) : "";
+  const frameUrl = useMemo(() => viewScope ? reviewLaunchUrl(viewScope, launchUrl) : launchUrl, [viewScope, launchUrl, frameKey]);
   useEffect(() => {
-    if (!course) return;
-    const installed = installScormApis(window, `scormplayer:${course.courseKey}${sco ? `:${sco.id}` : ""}`);
+    const save = () => checkpointReview(frameRef.current, false, true);
+    window.addEventListener("beforeunload", save);
+    return () => window.removeEventListener("beforeunload", save);
+  }, []);
+  useEffect(() => {
+    if (!course || !persistence) return;
+    const id = sco?.id ?? "";
+    persistence.select(id);
+    const installed = installScormApis(window, `scormplayer:${course.courseKey}${sco ? `:${sco.id}` : ""}`, {
+      initialData: persistence.state.modules[id] ?? {}, commit: () => { void persistence.flush(); },
+    });
     setScorm(installed);
-    const unsubscribe = installed.subscribe(setScormData);
+    const unsubscribe = installed.subscribe((data) => { setScormData(data); persistence.update(id, data); });
     const unsubscribeCalls = installed.subscribeCalls(setCalls);
     document.title = `${course.title} · scormplayer`;
     try { if (course.scos) localStorage.setItem(`scormplayer:sco:${course.courseKey}`, String(scoIndex)); } catch { /* storage blocked */ }
     return () => { unsubscribe(); unsubscribeCalls(); installed.uninstall(); };
-  }, [course, scoIndex]);
+  }, [course, scoIndex, persistence, frameKey]);
 
   // Tell the terminal how the course is doing (completion, success, score, location).
   useEffect(() => {
@@ -515,6 +547,7 @@ export function App() {
 
   function switchSco(index: number) {
     if (!course?.scos || index === scoIndex || index < 0 || index >= course.scos.length) return;
+    checkpointReview(frameRef.current, false, true);
     setScosOpen(false);
     setNav(null);
     setScoIndex(index);
@@ -557,13 +590,44 @@ export function App() {
     if (wider) openComposer(wider, describeElement(wider));
   }
 
-  function resetProgress() {
+  async function resetProgress() {
+    if (resetting || !course || !persistence) return;
     if (!confirmReset) { setConfirmReset(true); return; }
-    scorm?.reset();
-    setConfirmReset(false);
-    setMenuOpen(false);
+    setResetting(true);
+    try {
+      await persistence.reset(course.scos?.[0]?.id ?? "");
+      scorm?.reset();
+      try {
+        for (const id of course.scos?.map((sco) => sco.id) ?? [""]) localStorage.removeItem(`scormplayer:${course.courseKey}${id ? `:${id}` : ""}`);
+        localStorage.removeItem(`scormplayer:sco:${course.courseKey}`);
+      } catch { /* storage blocked */ }
+      checkpointReview(frameRef.current, true);
+      clearCourseReview(course.courseKey);
+      setScoIndex(0);
+      setConfirmReset(false);
+      setMenuOpen(false);
+      setFrameKey((key) => key + 1);
+      say("Progress cleared for every module; the course restarted");
+    } catch (error) { say(error instanceof Error ? error.message : "Could not reset progress."); }
+    finally { setResetting(false); }
+  }
+
+  function reloadCourse() {
+    checkpointReview(frameRef.current, false, true);
     setFrameKey((key) => key + 1);
-    say("Progress cleared; the course restarted");
+  }
+
+  async function reviewSkip(kind: "page" | "guide") {
+    if (reviewBusy) return;
+    setReviewBusy(true);
+    setMenuOpen(false);
+    if (await skipForReview(frameRef.current, kind)) {
+      navigatorRef.current?.refresh();
+      say(kind === "page" ? "Moved to the next page for review" : "Moved to the next guide step for review");
+    } else {
+      say(kind === "page" ? "This course doesn't support skipping pages for review" : "This course doesn't support skipping guide steps for review");
+    }
+    setReviewBusy(false);
   }
 
   const openPins = pins.filter((pin) => pin.status === "open");
@@ -591,28 +655,69 @@ export function App() {
 
   // WebMCP: the same actions as the buttons, for an AI agent in the browser. Read through a ref
   // so the registered tools always see the current state.
+  async function freshPins() {
+    const current = await api.pins();
+    setPins(current);
+    return current;
+  }
+  async function findPin(number: number) {
+    const pin = (await freshPins()).find((item) => item.number === number);
+    if (!pin) throw new Error(`No pin ${number} in this course.`);
+    return pin;
+  }
+  function namedIndex(items: { title: string }[], value: number | string, kind: string) {
+    const matches = typeof value === "number" ? [value - 1] : items.map((item, index) => item.title.toLowerCase().includes(value.toLowerCase()) ? index : -1).filter((index) => index >= 0);
+    if (matches.length !== 1 || !items[matches[0]]) throw new Error(`Choose a unique ${kind} number or title. Available: ${items.map((item, index) => `${index + 1}. ${item.title}`).join("; ")}`);
+    return matches[0];
+  }
   const actionsRef = useRef<PlayerActions | null>(null);
   actionsRef.current = {
-    status: () => ({
-      course: course ? { title: course.title, scormVersion: course.scormVersion, kind: course.kind, source: course.source, editable: course.editable, ...(course.unzip ? { unzipTo: course.unzip.existing ?? course.unzip.folder } : {}) } : null,
+    activity: async () => {
+      const player = await api.player();
+      if (course && player.revision !== course.revision) throw new Error("The course changed. Reload the player and rediscover tools before continuing.");
+      stillHere();
+    },
+    courses: () => api.courses(),
+    switchCourse: async (path) => {
+      const result = await api.switchCourse(path);
+      window.setTimeout(() => window.location.reload(), 300);
+      return `Opened ${result.title} on the server; the browser is reloading. Rediscover tools and check status.`;
+    },
+    packages: () => ({ current: course?.package, packages: course?.packages ?? [] }),
+    openPackage: async (name) => {
+      if (!course?.packages?.some((item) => item.name === name)) throw new Error("Choose an exact name returned by list_packages.");
+      const result = await api.openPackage(name);
+      window.setTimeout(() => window.location.reload(), 300);
+      return `Opened ${result.title} on the server; the browser is reloading. Rediscover tools and check status.`;
+    },
+    reload: () => { reloadCourse(); return "Course reload requested. Check status and the rendered page after loading."; },
+    editPin: async (number, note) => { const pin = await findPin(number); const updated = await api.updatePin(pin.id, { note: note.trim() }); await freshPins(); return updated; },
+    reopenPin: async (number) => { const pin = await findPin(number); const updated = await api.updatePin(pin.id, { status: "open" }); await freshPins(); return updated; },
+    openPin: async (number) => { const pin = await findPin(number); await goToPin(pin); return `Navigation to pin ${number} requested. Check the page and target to confirm arrival.`; },
+    status: async () => ({
+      course: course ? { title: course.title, scormVersion: course.scormVersion, kind: course.kind, source: course.source, editable: course.editable, revision: course.revision, pinsFile: course.pinsFile, ...(course.unzip ? { unzipTo: course.unzip.existing ?? course.unzip.folder } : {}) } : null,
       module: sco ? { number: scoIndex + 1, of: course?.scos?.length, title: sco.title } : null,
       page: nav ? { number: nav.index + 1, of: nav.pages.length, title: nav.pages[nav.index]?.title, pages: nav.pages.map((item) => item.title) } : null,
       tour,
       narrationPlaying: mediaPlaying,
       scorm: progressOf(scormData),
       screen: viewport,
-      openPins: pins.filter((pin) => pin.status === "open").length,
+      viewport: { width: frameRef.current?.clientWidth, height: frameRef.current?.clientHeight },
+      readiness: { frameLoaded: Boolean(frameDoc()?.body), navigationAvailable: Boolean(nav), navigationBusy: navBusy },
+      live: { enabled: course?.kind === "live", ...(await api.status()) },
+      openPins: (await freshPins()).filter((pin) => pin.status === "open").length,
     }),
     goToPage: async (page) => {
       if (!nav) throw new Error("This course doesn't offer a page list.");
-      const index = typeof page === "number" ? page - 1 : nav.pages.findIndex((item) => item.title.toLowerCase().includes(String(page).toLowerCase()));
+      const index = namedIndex(nav.pages, page, "page");
       if (index < 0 || index >= nav.pages.length) throw new Error(`No page ${page}. Pages: ${nav.pages.map((item, i) => `${i + 1}. ${item.title}`).join("; ")}`);
       const reached = await goToPage(index);
-      return reached ? `Showing page ${index + 1}: ${nav.pages[index].title}` : "The course didn't move to that page.";
+      if (!reached) throw new Error("The course did not move to that page. Check the rendered page before continuing.");
+      return `Showing page ${index + 1}: ${nav.pages[index].title}`;
     },
     switchModule: (module) => {
       if (!course?.scos) throw new Error("This course has a single module.");
-      const index = typeof module === "number" ? module - 1 : course.scos.findIndex((item) => item.title.toLowerCase().includes(String(module).toLowerCase()));
+      const index = namedIndex(course.scos, module, "module");
       if (index < 0 || index >= course.scos.length) throw new Error(`No module ${module}.`);
       switchSco(index);
       return `Opening module ${index + 1}: ${course.scos[index].title}`;
@@ -628,38 +733,58 @@ export function App() {
       tourStep(direction === "back" ? "prev" : "next");
       return direction === "back" ? "Moved back." : current.canNext ? "Moved to the next step." : "Skipped the narration; the tour can now continue.";
     },
-    listPins: (status) => pins.filter((pin) => status === "all" || pin.status === status).map((pin) => ({
-      number: pin.number,
-      status: pin.status,
-      note: pin.note,
-      page: pin.page?.title,
-      module: pin.page?.scoTitle,
-      target: pin.target?.name,
-      source: pin.source?.[0] ? `${pin.source[0].file}:${pin.source[0].line}` : undefined,
-    })),
-    addPin: async ({ note, selector, text }) => {
+    listPins: async (status) => (await freshPins()).filter((pin) => status === "all" || pin.status === status),
+    addPin: async ({ note, selector, text, selectors, region }) => {
       const doc = frameDoc();
       if (!doc) throw new Error("No course is showing.");
-      let element: Element | null = null;
-      if (selector) {
-        try { element = doc.querySelector(selector); } catch { throw new Error(`Not a valid CSS selector: ${selector}`); }
-      } else if (text) {
-        const wanted = text.replace(/\s+/g, " ").trim().toLowerCase();
-        const matches = Array.from(doc.body.querySelectorAll("*")).filter((candidate) => visibleText(candidate).toLowerCase().includes(wanted));
-        element = matches.sort((a, b) => visibleText(a).length - visibleText(b).length)[0] ?? null;
+      if ([selector, text, selectors, region].filter((value) => value !== undefined).length !== 1) throw new Error("Provide exactly one selector, text, selectors group, or region.");
+      const visible = (candidate: Element) => {
+        const rect = candidate.getBoundingClientRect();
+        const style = doc.defaultView!.getComputedStyle(candidate);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const select = (query: string) => {
+        let matches: Element[];
+        try { matches = Array.from(doc.querySelectorAll(query)).filter(visible); } catch { throw new Error(`Not a valid CSS selector: ${query}`); }
+        if (matches.length !== 1) throw new Error(`Selector must identify one visible element: ${query} (${matches.length} matches).`);
+        return chooseTarget(matches[0]) ?? matches[0];
+      };
+      let element: Element;
+      let target: PinTarget;
+      if (region) {
+        if (region.x < 0 || region.y < 0 || region.width < 8 || region.height < 8 || region.x + region.width > doc.defaultView!.innerWidth || region.y + region.height > doc.defaultView!.innerHeight) throw new Error("Region must fit inside the course viewport and be at least 8×8 pixels.");
+        const area = describeRegion(doc, region);
+        if (!area) throw new Error("Could not describe that region.");
+        ({ element, target } = area);
+      } else if (selectors) {
+        const elements = Array.from(new Set(selectors.map(select)));
+        if (elements.length < 2) throw new Error("A group needs at least two distinct visible elements.");
+        element = elements[0];
+        target = describeGroup(elements);
+      } else {
+        if (selector) element = select(selector);
+        else {
+          const wanted = text!.replace(/\s+/g, " ").trim().toLowerCase();
+          const matches = Array.from(doc.body.querySelectorAll("*")).filter((candidate) => visible(candidate) && visibleText(candidate).toLowerCase().includes(wanted));
+          const smallest = matches.filter((candidate) => !matches.some((other) => other !== candidate && candidate.contains(other)));
+          if (smallest.length !== 1) throw new Error(`Text must identify one visible element (${smallest.length} matches). Use a precise selector.`);
+          element = chooseTarget(smallest[0]) ?? smallest[0];
+        }
+        target = describeElement(element);
       }
-      if (!element) throw new Error("Couldn't find that on the current page.");
-      const target = chooseTarget(element) ?? element;
-      const pin = await api.createPin({ note, page: currentPage(), target: describeElement(target) });
-      setPins((previous) => [...previous, pin]);
-      void captureElement(target).then((png) => (png ? api.saveFrame(pin.id, png).then(refreshPins) : undefined)).catch(() => {});
-      return { number: pin.number, target: pin.target?.name, source: pin.source?.[0] ? `${pin.source[0].file}:${pin.source[0].line}` : undefined };
+      let pin = await api.createPin({ note: note.trim(), page: currentPage(), target });
+      let screenshot = "unavailable";
+      try {
+        const png = region && target.offset ? await captureRegion(element, target.offset, target.rect) : await captureElement(element);
+        if (png) { pin = await api.saveFrame(pin.id, png); screenshot = "saved"; }
+      } catch { /* The durable note survives optional screenshot capture failure. */ }
+      await freshPins();
+      return { ...pin, screenshot };
     },
     resolvePin: async (number, note) => {
-      const pin = pins.find((item) => item.number === number);
-      if (!pin) throw new Error(`No pin ${number}.`);
-      const updated = await api.updatePin(pin.id, { status: "resolved", ...(note ? { resolution: note } : {}) } as Partial<Pin>);
-      setPins((previous) => previous.map((item) => (item.id === pin.id ? updated : item)));
+      const pin = await findPin(number);
+      await api.updatePin(pin.id, { status: "resolved", ...(note ? { resolution: note } : {}) });
+      await freshPins();
       return `Pin ${number} resolved.`;
     },
     handOff: () => api.brief("open"),
@@ -683,6 +808,7 @@ export function App() {
   return (
     <div className={`sp-app ${panelOpen || inspectorOpen ? "has-panel" : ""}`}>
       <div className="sp-main">
+        {progressError && <div className="sp-save-error" role="alert"><span>Progress could not be saved: {progressError}</span><button type="button" onClick={() => void persistence?.flush()}>Retry</button></div>}
         <div className={`sp-stage ${pinMode && !passthrough ? "is-picking" : ""}`} ref={stageRef}>
           <div className={`sp-device sp-device--${viewport}`} ref={deviceRef} style={deviceStyle}>
           {course && scorm ? (
@@ -691,7 +817,8 @@ export function App() {
               ref={frameRef}
               className="sp-frame"
               title={course.title}
-              src={launchUrl}
+              src={frameUrl}
+              data-review-scope={viewScope || undefined}
               allow="autoplay; fullscreen; microphone; camera; clipboard-write"
               onLoad={() => setFrameLoads((count) => count + 1)}
             />
@@ -913,10 +1040,18 @@ export function App() {
                   <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); zipInputRef.current?.click(); }}>
                     <Icon name="file" size={16} /> Open another course…
                   </button>
-                  <button type="button" role="menuitem" onClick={() => { setFrameKey((key) => key + 1); setMenuOpen(false); }}>
+                  <button type="button" role="menuitem" onClick={() => { reloadCourse(); setMenuOpen(false); }}>
                     <Icon name="reload" size={16} /> Reload course
                   </button>
-                  <button type="button" role="menuitem" className={confirmReset ? "is-danger" : ""} onClick={resetProgress}>
+                  {course?.kind === "live" ? <>
+                    <button type="button" role="menuitem" disabled={reviewBusy} onClick={() => void reviewSkip("guide")}>
+                      <Icon name="chevronRight" size={16} /> Skip to next guide step for review
+                    </button>
+                    <button type="button" role="menuitem" disabled={reviewBusy} onClick={() => void reviewSkip("page")}>
+                      <Icon name="chevronRight" size={16} /> Skip to next page for review
+                    </button>
+                  </> : null}
+                  <button type="button" role="menuitem" disabled={resetting} className={confirmReset ? "is-danger" : ""} onClick={() => void resetProgress()}>
                     <Icon name="reset" size={16} /> {confirmReset ? "Click again to clear progress" : "Reset progress"}
                   </button>
                   <button type="button" role="menuitem" onClick={() => { if (course) void copyText(course.pinsFile).then(() => say("Pins file path copied")); setMenuOpen(false); }}>
@@ -955,7 +1090,7 @@ export function App() {
             <ol className="sp-pin-list">
               {listedPins.map((pin) => (
                 <PinRow key={pin.id} pin={pin} active={activePin === pin.id} onPage={markers.some((marker) => marker.id === pin.id)}
-                  onOpen={() => void goToPin(pin)} onStatus={(status) => void setStatus(pin, status)} onDelete={() => void removePin(pin)}
+                  onOpen={() => void goToPin(pin)} onStatus={(status) => setStatus(pin, status)} onDelete={() => removePin(pin)}
                   onEdit={async (note) => { const updated = await api.updatePin(pin.id, { note }); setPins((previous) => previous.map((item) => (item.id === pin.id ? updated : item))); }} />
               ))}
             </ol>
@@ -970,15 +1105,23 @@ export function App() {
 
 function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete, onEdit }: {
   pin: Pin; active: boolean; onPage: boolean;
-  onOpen: () => void; onStatus: (status: Pin["status"]) => void; onDelete: () => void; onEdit: (note: string) => Promise<void>;
+  onOpen: () => void; onStatus: (status: Pin["status"]) => Promise<void>; onDelete: () => Promise<void>; onEdit: (note: string) => Promise<void>;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(pin.note);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const run = async (action: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true); setError("");
+    try { await action(); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : "The pin could not be updated. Try again."); }
+    finally { setBusy(false); }
+  };
   const save = async () => {
     if (!text.trim() || text.trim() === pin.note) { setEditing(false); return; }
-    await onEdit(text.trim());
-    setEditing(false);
+    await run(async () => { await onEdit(text.trim()); setEditing(false); });
   };
   if (editing) {
     return (
@@ -990,9 +1133,10 @@ function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete, onEdit }: {
             if (event.key === "Escape") { event.stopPropagation(); setText(pin.note); setEditing(false); }
           }} />
         </div>
+        {error && <p className="sp-pin__error" role="alert">{error}</p>}
         <div className="sp-pin__actions">
-          <button type="button" onClick={() => void save()}><Icon name="check" size={14} /> Save</button>
-          <button type="button" onClick={() => { setText(pin.note); setEditing(false); }}>Cancel</button>
+          <button type="button" disabled={busy} onClick={() => void save()}><Icon name="check" size={14} /> Save</button>
+          <button type="button" disabled={busy} onClick={() => { setText(pin.note); setEditing(false); setError(""); }}>Cancel</button>
         </div>
       </li>
     );
@@ -1011,12 +1155,13 @@ function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete, onEdit }: {
         </span>
         {pin.frame ? <img src={`/api/pins/${pin.id}/frame?v=${encodeURIComponent(pin.updatedAt)}`} alt="" /> : null}
       </button>
+      {error && <p className="sp-pin__error" role="alert">{error}</p>}
       <div className="sp-pin__actions">
         {pin.status === "open"
-          ? <button type="button" onClick={() => onStatus("resolved")}><Icon name="check" size={14} /> Resolve</button>
-          : <button type="button" onClick={() => onStatus("open")}><Icon name="undo" size={14} /> Reopen</button>}
-        <button type="button" onClick={() => { setText(pin.note); setEditing(true); }}><Icon name="edit" size={14} /> Edit</button>
-        <button type="button" className={confirmDelete ? "is-danger" : ""} onClick={() => (confirmDelete ? onDelete() : setConfirmDelete(true))} onBlur={() => setConfirmDelete(false)}>
+          ? <button type="button" disabled={busy} onClick={() => void run(() => onStatus("resolved"))}><Icon name="check" size={14} /> Resolve</button>
+          : <button type="button" disabled={busy} onClick={() => void run(() => onStatus("open"))}><Icon name="undo" size={14} /> Reopen</button>}
+        <button type="button" disabled={busy} onClick={() => { setText(pin.note); setEditing(true); setError(""); }}><Icon name="edit" size={14} /> Edit</button>
+        <button type="button" disabled={busy} className={confirmDelete ? "is-danger" : ""} onClick={() => (confirmDelete ? void run(onDelete) : setConfirmDelete(true))} onBlur={() => setConfirmDelete(false)}>
           <Icon name="trash" size={14} /> {confirmDelete ? "Confirm delete" : "Delete"}
         </button>
       </div>

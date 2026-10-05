@@ -1,0 +1,10 @@
+---
+description: Use SCORM Player's local MCP tools and Cursor browser for SCORM lesson review, annotation pins, and live source verification.
+alwaysApply: false
+---
+
+When reviewing SCORM lessons or acting on SCORM Player pins, follow the bundled scormplayer-review skill. Prefer MCP tools for player identity, revision and fresh pins, and Cursor's available browser tools for rendered navigation and verification. Discover WebMCP only when the browser advertises it; otherwise use the visible browser controls and DOM. Never pretend server MCP tools can see the active browser page, unsaved SCORM calls, or playback state.
+
+Use the user's authoring source, not a cached ZIP extraction. Keep the selected player ID and observed course revision on scoped calls. Inspect desktop/tablet and larger screens after changes. Resolve pins only after verification within the user's requested scope. The optional MCP Apps pin panel works progressively: use its structured result or copyable request when rich UI or messaging is unavailable.
+
+Prefer the native `scormplayer-cursor` plugin's tools over a separately imported Claude `scormplayer` package, which may be an older version. Use one server's owned session consistently; never start one session through each duplicate provider.

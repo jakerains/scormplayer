@@ -95,6 +95,9 @@ test("stale course revisions reject pin and progress writes", async () => {
     }
     assert.equal(p.pins.list().length, 0);
     assert.equal(p.progress(), null);
+    const stateResponse = await fetch(`${p.url}api/scorm`, { method: "PUT", headers: { "content-type": "application/json", "x-scormplayer-revision": before.revision }, body: JSON.stringify({ epoch: 0, selectedSco: "", modules: { "": { "cmi.suspend_data": "Old A state" } } }) });
+    assert.equal(stateResponse.status, 409);
+    assert.equal((await (await fetch(`${p.url}api/scorm`)).json()).saved, false);
     const current = await (await fetch(`${p.url}api/course`)).json();
     const response = await fetch(`${p.url}api/pins`, { method: "POST", headers: { "content-type": "application/json", "x-scormplayer-revision": current.revision }, body: JSON.stringify({ note: "B note" }) });
     assert.equal(response.status, 201);
@@ -215,7 +218,7 @@ test("agent mode switches configured sync rules with the course", { timeout: 30_
 });
 
 test("hashed UI assets negotiate compression and cache safely", async () => {
-  const clientDir = path.join(root, "client");
+  const clientDir = path.join(root, ".installed", "client");
   fs.mkdirSync(path.join(clientDir, "assets"), { recursive: true });
   fs.writeFileSync(path.join(clientDir, "index.html"), "<title>Player</title>");
   const bytes = Buffer.from("console.log('compressed asset');".repeat(100));
@@ -237,6 +240,13 @@ test("hashed UI assets negotiate compression and cache safely", async () => {
     assert.equal(gzip.headers.get("content-encoding"), "gzip");
     assert.equal(await gzip.text(), bytes.toString());
     assert.equal((await fetch(`${p.url}assets/index-12345678.js`, { headers: { "accept-encoding": "*;q=0" } })).status, 406);
+    for (const name of ["index-missing12.css", "old.css", "index-missing12.js"]) {
+      const missing = await fetch(`${p.url}assets/${name}`);
+      assert.equal(missing.status, 404);
+      assert.equal(missing.headers.get("cache-control"), "no-store");
+      assert.match(missing.headers.get("content-type"), /text\/plain/);
+      assert.doesNotMatch(await missing.text(), /<title>/);
+    }
     assert.equal((await fetch(p.url)).headers.get("cache-control"), "no-store");
     assert.equal((await fetch(`${p.url}api/course`)).headers.get("cache-control"), "no-store");
   } finally { await p.close(); }

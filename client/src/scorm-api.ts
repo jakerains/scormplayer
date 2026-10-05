@@ -1,8 +1,8 @@
 /**
  * A forgiving LMS for review: both SCORM 1.2 (`window.API`) and SCORM 2004
  * (`window.API_1484_11`) are installed on the player window, where a course finds them by
- * walking up its parent frames. Values persist in localStorage per course, so a reload resumes
- * where the reviewer was. It accepts what courses send rather than enforcing the full spec; this
+ * walking up its parent frames. The player persists values per course/module through its server,
+ * with localStorage retained for migration. It accepts what courses send rather than enforcing the full spec; this
  * is a review tool, not a conformance checker.
  */
 
@@ -67,18 +67,20 @@ const ERRORS: Record<string, string> = {
 
 const MAX_CALLS = 400;
 
-export function installScormApis(win: Window, storageKey: string) {
+export function installScormApis(win: Window, storageKey: string, options: { initialData?: ScormData; commit?: () => void } = {}) {
   const listeners = new Set<Listener>();
   const callListeners = new Set<(calls: ScormCall[]) => void>();
   let calls: ScormCall[] = [];
+  let active = true;
   /** Wrap an API method so every call is kept for the inspector. */
   const logged = <T extends (...args: any[]) => string>(api: ScormCall["api"], method: string, fn: T) => ((...args: unknown[]) => {
+    if (!active) { lastError = "301"; return "false"; }
     const result = fn(...(args as Parameters<T>));
     calls = [...calls.slice(-(MAX_CALLS - 1)), { at: Date.now(), api, method, args: args.map((arg) => String(arg ?? "")), result: String(result), error: lastError }];
     callListeners.forEach((listener) => listener(calls));
     return result;
   }) as T;
-  let data: ScormData = { ...load(storageKey) };
+  let data: ScormData = { ...(options.initialData ?? load(storageKey)) };
   let lastError = "0";
 
   const save = () => {
@@ -116,13 +118,14 @@ export function installScormApis(win: Window, storageKey: string) {
     errorString: (code: string) => ERRORS[String(code)] ?? "Unknown error",
     lastError: () => lastError,
   };
+  const commit = () => { save(); options.commit?.(); return "true"; };
 
   const api12 = {
     LMSInitialize: logged("1.2", "LMSInitialize", initialize(DEFAULTS_12, "cmi.core.entry", "cmi.core.lesson_location")),
-    LMSFinish: logged("1.2", "LMSFinish", () => { save(); return "true"; }),
+    LMSFinish: logged("1.2", "LMSFinish", commit),
     LMSGetValue: logged("1.2", "LMSGetValue", getValue(DEFAULTS_12)),
     LMSSetValue: logged("1.2", "LMSSetValue", setValue),
-    LMSCommit: logged("1.2", "LMSCommit", () => { save(); return "true"; }),
+    LMSCommit: logged("1.2", "LMSCommit", commit),
     LMSGetLastError: logged("1.2", "LMSGetLastError", common.lastError),
     LMSGetErrorString: logged("1.2", "LMSGetErrorString", common.errorString),
     LMSGetDiagnostic: logged("1.2", "LMSGetDiagnostic", common.errorString),
@@ -131,10 +134,10 @@ export function installScormApis(win: Window, storageKey: string) {
   const api2004 = {
     version: "1.0",
     Initialize: logged("2004", "Initialize", initialize(DEFAULTS_2004, "cmi.entry", "cmi.location")),
-    Terminate: logged("2004", "Terminate", () => { save(); return "true"; }),
+    Terminate: logged("2004", "Terminate", commit),
     GetValue: logged("2004", "GetValue", getValue(DEFAULTS_2004)),
     SetValue: logged("2004", "SetValue", setValue),
-    Commit: logged("2004", "Commit", () => { save(); return "true"; }),
+    Commit: logged("2004", "Commit", commit),
     GetLastError: logged("2004", "GetLastError", common.lastError),
     GetErrorString: logged("2004", "GetErrorString", common.errorString),
     GetDiagnostic: logged("2004", "GetDiagnostic", common.errorString),
@@ -160,11 +163,13 @@ export function installScormApis(win: Window, storageKey: string) {
       return () => listeners.delete(listener);
     },
     reset() {
+      active = false;
       data = {};
       try { localStorage.removeItem(storageKey); } catch { /* nothing stored */ }
       listeners.forEach((listener) => listener({}));
     },
     uninstall() {
+      active = false;
       const target = win as unknown as Record<string, unknown>;
       if (target.API === api12) delete target.API;
       if (target.API_1484_11 === api2004) delete target.API_1484_11;

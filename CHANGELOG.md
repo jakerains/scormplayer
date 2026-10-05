@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - October 5, 2026
+
+### Added
+- A normal local MCP server for opening lessons, reading pins and screenshots, preparing
+  selected-pin requests, and inspecting saved SCORM progress. Lessons run in the browser.
+- A compact light-mode MCP pin widget: choose open pins and send them to the agent. Hosts
+  without UI or messaging support can use structured pins and copyable requests.
+- `scormplayer setup`: choose apps once to configure MCP with bundled review guidance.
+  Supports Codex, Claude Code, Cursor, Claude Desktop, Gemini CLI and Windsurf. Filesystem
+  skills remain optional through `--skills-only` or `--with-skills`.
+- Native Codex, Claude and Cursor packages; Cursor includes review commands and a rule.
+  Both review guides are also readable as MCP resources. A normal guide tool supports
+  hosts without native skill loading.
+- Live-review view retention across HMR and reloads, with optional lesson adapters for
+  page/guide state and review navigation. Packaged courses retain ordinary learner gates.
+
+### Fixed
+- SCORM 1.2/2004 progress now persists through the server across ports and player restarts,
+  separately for each SCO. Reset clears all modules and rejects late writes from old tabs.
+- Progress and pin write failures show retryable errors instead of silently losing work.
+- Dropped ZIPs with the same filename keep separate pins, and packaged player assets work
+  from hidden installation folders such as `.nvm` and `.codex`.
+- Browser tools report current availability and reject stale lesson revisions.
+
+### Changed
+- Release checks cover Linux and macOS, Node.js 20/22/24, and Chromium, Firefox and WebKit.
+  MCP and native host packages require Node.js 22.22.2+; the browser CLI supports Node.js 20+.
+- Full-player ChatGPT embedding and local certificate setup are retired. The small MCP
+  widget uses bundled resources; the lesson stays in the normal browser.
+
 ## [0.8.10] - October 2, 2026
 
 ### Fixed

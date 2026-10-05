@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import { reviewViewTags } from "./review-view.mjs";
 
 export const LIVE_BASE = "/course/";
 
@@ -40,6 +41,7 @@ export async function startLiveCourse({ root, viteConfig, httpServer, onChange =
       name: "scormplayer-live-base",
       enforce: "post",
       config: () => ({ base: LIVE_BASE }),
+      transformIndexHtml: { order: "pre", handler: () => reviewViewTags },
     }],
   });
 
@@ -67,7 +69,17 @@ export async function startLiveCourse({ root, viteConfig, httpServer, onChange =
         return res.status(500).type("text").send(`Could not render ${root}/index.html: ${error?.message ?? error}`);
       }
     }
-    vite.middlewares(req, res, () => res.status(404).end());
+    vite.middlewares(req, res, async () => {
+      // A client-side route retained by the review snapshot still launches the live app.
+      if (req.method === "GET" && req.get("accept")?.includes("text/html") && !path.extname(pathname) && !pathname.includes("/@")) {
+        try {
+          const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+          res.set("Cache-Control", "no-store");
+          return res.type("html").send(await vite.transformIndexHtml(req.originalUrl, html));
+        } catch { /* use the same not-found result as other unavailable live paths */ }
+      }
+      res.status(404).end();
+    });
   }
 
   return {

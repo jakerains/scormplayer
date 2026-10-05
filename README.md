@@ -23,11 +23,29 @@ scormplayer ./my-course.zip
 Or run `scormplayer` on its own in a folder of courses to pick one, or to get a page where you
 can drop a zip.
 
-**3. Optional: let your AI coding agent work through your pins**
+**3. Optional: connect your AI apps**
 
 ```sh
-scormplayer skill
+scormplayer setup
 ```
+
+Pick your apps once. Setup configures MCP with the review guides included, for all projects.
+Choices include Codex, Claude Code, Cursor, Claude Desktop, Gemini CLI and Windsurf. No
+separate skill installation is needed to read the guidance: the connection exposes skill
+resources and a normal `scormplayer_get_review_guide` tool. Native skill loading depends
+on the host; essential safeguards are also included in MCP instructions.
+
+Your first interactive player launch offers setup; press Enter to skip. You can also run
+`scormplayer setup` any time. CI, scripts and MCP hosts never receive that prompt. MCP setup
+needs Node.js 22.22.2+; Codex setup also needs its CLI. MCP setup stays local. An existing
+SCORM Player host plugin is reused and refreshed when its bundled version is older.
+
+For scripts, use `scormplayer setup --app codex --app cursor`. If MCP is unavailable, use
+`--skills-only` for filesystem skills. Use `--with-skills` to add native filesystem discovery
+alongside MCP, with the same app selection and no second picker. These optional installs use
+the [Vercel skills CLI](https://github.com/vercel-labs/skills) and require internet access;
+Claude Desktop has no filesystem skill target. `--mcp-only` is an alias for the default.
+`scormplayer skill install` remains available for custom skill scope and agent choices.
 
 **Just trying it out?** Run it once without installing anything:
 
@@ -43,12 +61,13 @@ scormplayer update
 
 Needs [Node.js](https://nodejs.org) 20 or newer, which includes npm. No Node yet? On a Mac, the
 installer from [nodejs.org](https://nodejs.org) works, or `brew install node` with Homebrew.
-Works on macOS, Windows and Linux.
+macOS and Linux are the primary platforms. The CLI also supports Windows.
 
 ## What it does
 
 - **Plays SCORM 1.2 and SCORM 2004** zips or unzipped folders. Progress is saved in your
-  browser, so a reload picks up where you left off.
+  local player cache, so a reload or a restart on another port picks up where you left off.
+  Existing browser progress migrates when you reopen that course on its original port.
 - **Pins.** Press <kbd>P</kbd>, click anything in the course (or drag across text), and write
   what should change. Each pin saves the element, its text, the page, a screenshot of the
   element and, when it can find it, the file and line the text came from.
@@ -88,7 +107,10 @@ Run `scormplayer --drop` (or pick **Empty player** in the course list, or just r
 in a folder with no courses) and the browser opens a drop zone: drag a SCORM zip in, or click
 **Choose a SCORM zip**. While a course is playing you can drop another zip anywhere on the
 player, or use **More → Open another course…**, to switch. Pins for a dropped zip are saved
-next to where you started scormplayer, named after the zip.
+next to where you started scormplayer, named after the zip plus a content hash. Different
+ZIPs with the same filename keep separate notes; reuploading the same ZIP restores its notes.
+Older notes without a hash remain in their original file. If you know which course they
+belong to, open it with `scormplayer ./course.zip --pins ./course.pins.json`.
 
 ## Use
 
@@ -174,7 +196,8 @@ registers tools an agent can call instead of clicking around: `scormplayer_statu
 `scormplayer_go_to_page`, `scormplayer_switch_module`, `scormplayer_skip_narration`,
 `scormplayer_tour_step`, `scormplayer_list_pins`, `scormplayer_add_pin`,
 `scormplayer_resolve_pin`, `scormplayer_get_handoff`, `scormplayer_set_screen_size` and
-`scormplayer_scorm_data`. In other browsers nothing is registered and nothing changes.
+`scormplayer_scorm_data`. Tools also expose live source status, course/package switching,
+reload, note editing, reopening pins and locating a pin on its page. In other browsers nothing is registered and nothing changes.
 
 ### Where pins are kept
 
@@ -254,6 +277,42 @@ With it, a bare `scormplayer` lists exactly those courses (from the project or a
 it), pins stay out of the course folders, and generated files stay current while you review.
 Sync results appear in the dashboard's activity feed.
 
+### Connect Codex, Claude Code and Cursor
+
+The normal browser runs your lesson; MCP tools let your agent read pins and saved progress,
+open lessons, and work with the correct course revision. MCP Apps hosts can show a pin checklist
+when the agent lists pins: a light widget with the number of pins left, one selection
+checkbox per pin, and a **Send to agent** button. Longer lists add search and pagination;
+full notes and saved screenshots open on demand. Sending leaves the pins open until the
+agent verifies and resolves the work. Hosts without a panel receive the same structured
+data. No local certificate setup is needed.
+
+To connect a normal stdio MCP server, add this entry to your host's MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "scormplayer": { "command": "scormplayer", "args": ["mcp"] }
+  }
+}
+```
+
+Or install the host package, which includes the same MCP server and skills. Cursor also
+gets native `/scorm-review` and `/scorm-pins` commands and a review rule.
+
+```sh
+scormplayer plugin install all
+scormplayer plugin status all
+```
+
+MCP and host packages require Node.js 22.22.2+. Use `codex`, `claude` or `cursor` to install one.
+Codex/Claude require their CLI; Cursor installs directly into its local plugins folder.
+Reload Cursor with **Developer: Reload Window**, then check **Customize → Plugins**.
+Installation is opt-in and persists outside npm's package folder.
+See [agent integration](docs/agent-integration.md) for source builds, host support
+and capability fallbacks. Sending selected pins requires an explicit click and host
+messaging support; a copyable request remains available when messaging is unsupported.
+
 ### Teach your coding agents
 
 scormplayer comes with an agent skill that tells coding agents how to read pins, find the
@@ -286,6 +345,11 @@ Point `scormplayer` at a Vite project (a folder with a `vite.config.*` and an `i
 starts the project's **own** Vite inside the player, so your plugins and config apply unchanged,
 and serves the course from source with hot reload. Install the project's dependencies first.
 Use `--live` to force live mode for a folder that also has an `imsmanifest.xml`.
+
+Live reviews retain the course URL, scroll, keyed focus and native disclosures across
+source updates and reloads. A versioned course adapter can also retain page/guide state
+and enable the explicit **Skip to next page/guide step for review** actions in More.
+See [live review adapters](docs/live-review.md) for the contract and integration steps.
 
 ### Pin targets
 
@@ -341,7 +405,10 @@ players hold them.
 
 Opened zips are unpacked into a cache (`~/.cache/scormplayer`, or `%LOCALAPPDATA%\scormplayer\Cache` on
 Windows). It keeps itself small: the 20 most recently used courses, nothing unused for 14 days.
-`scormplayer cache` shows its size and `scormplayer cache clear` empties it.
+`scormplayer cache` shows its size and `scormplayer cache clear` clears extracted packages and
+uploads. Learner state stays in the cache's `progress` folder. **More → Reset progress** clears
+every module of the current course and starts at module one. Tabs opened before a reset must
+reload before saving again. Failed saves show an error and a Retry button.
 
 The dashboard, and **More** in the player, tell you when a newer scormplayer is published
 (checked at most once a day). `scormplayer update` installs it and refreshes the agent skill
@@ -358,13 +425,20 @@ there's nothing to update. Set `SCORMPLAYER_NO_UPDATE_CHECK=1` to turn the check
 ```sh
 npm install
 npm run build        # builds the player UI into dist/client
+npm ci --prefix integrations/agent  # optional plugin development
+npm run build:plugins && npm run test:plugins
 npm test
-npx playwright install chromium && npm run test:e2e   # browser tests of the player page
+npx playwright install chromium firefox webkit
+npm run test:e2e       # normal autoplay rules; set SCORMPLAYER_BROWSER=firefox or webkit
+npm run test:courses -- ./some-course.zip   # exact-export desktop/tablet and resume checks
 node bin/scormplayer.mjs ./some-course.zip
 ```
 
 Releases publish to npm from GitHub Actions when a `v*` tag is pushed (see
-`.github/workflows/release.yml`).
+`.github/workflows/release.yml`), after the server/package checks and Chromium, Firefox and
+WebKit browser checks on macOS and Linux pass. `test:courses` writes screenshots and exact
+ZIP hashes to `artifacts/player-qualification`; it uses temporary cache/pins and leaves the
+course files untouched. This checks local playback and resume, rather than LMS conformance.
 
 ## License
 
