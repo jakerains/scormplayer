@@ -2,35 +2,64 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { githubRelease, releaseReady, stableVersion } from "./releases.mjs";
 
 export const PACKAGE = "@jakerains/scormplayer";
 const DAY = 86_400_000;
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /**
- * The newer published version, or null. Asks the npm registry at most once a day (the answer is
+ * The newer downloadable version, or null. Checks GitHub at most once a day (the answer is
  * kept in the cache), gives up after a moment, and never runs in CI or when
  * SCORMPLAYER_NO_UPDATE_CHECK / NO_UPDATE_NOTIFIER is set.
  */
 export async function checkForUpdate({ current, cacheDir, now = Date.now(), fetchImpl = globalThis.fetch }) {
   if (process.env.CI || process.env.SCORMPLAYER_NO_UPDATE_CHECK || process.env.NO_UPDATE_NOTIFIER) return null;
   const file = path.join(cacheDir, "update-check.json");
-  let latest = null;
+  const kind = installMethod().kind === "standalone" ? "standalone" : "npm";
+  let release = null;
   try {
     const saved = JSON.parse(fs.readFileSync(file, "utf8"));
     // A saved answer older than the running version is stale (it was upgraded by hand since): ask again.
-    if (now - saved.checkedAt < DAY && !isNewer(current, saved.latest)) latest = saved.latest;
+    if (now >= saved.checkedAt && now - saved.checkedAt < DAY && saved.release?.kind === kind && stableVersion(saved.release.version) && !isNewer(current, saved.release.version)) release = saved.release;
   } catch { /* no saved answer */ }
-  if (!latest) {
+  if (!release) {
     try {
-      latest = await fetchLatest({ cacheDir, now, fetchImpl, timeout: 1500 });
+      release = await fetchUpdate({ cacheDir, now, kind, fetchImpl, timeout: 1500 });
     } catch {
       return null;
     }
   }
-  if (typeof latest !== "string" || !isNewer(latest, current)) return null;
+  if (!stableVersion(release.version) || !isNewer(release.version, current)) return null;
   // Only announce a version people can actually install (see packageReady).
-  return (await packageReady(latest, { fetchImpl, timeout: 1500 })) ? latest : null;
+  let ready = release.source === "github" ? await releaseReady(release, { fetchImpl, timeout: 1500 }) : kind !== "standalone" && await packageReady(release.version, { fetchImpl, timeout: 1500 });
+  if (!ready && release.source === "github" && kind !== "standalone") ready = await packageReady(release.version, { fetchImpl, timeout: 1500 });
+  return ready ? release.version : null;
+}
+
+/** GitHub is primary; old/incomplete releases and outages can use npm without downgrading. */
+export async function fetchUpdate({ cacheDir, now = Date.now(), kind = "npm", fetchImpl = globalThis.fetch, timeout = 8000 } = {}) {
+  let release;
+  let githubError;
+  try { release = await githubRelease({ kind, fetchImpl, timeout }); }
+  catch (error) { githubError = error; }
+  if (!release?.ready) {
+    try {
+      const version = await fetchLatest({ fetchImpl, timeout });
+      const target = release && isNewer(release.version, version) ? release.version : version;
+      const ready = kind !== "standalone" && await packageReady(target, { fetchImpl, timeout });
+      if (ready || !release || isNewer(target, release.version)) release = { version: target, source: "npm", kind, ready };
+    } catch (error) {
+      if (!release) throw new Error(`Couldn't check GitHub (${githubError?.message}) or npm (${error.message}).`);
+    }
+  }
+  if (cacheDir) {
+    try {
+      fs.mkdirSync(cacheDir, { recursive: true });
+      fs.writeFileSync(path.join(cacheDir, "update-check.json"), JSON.stringify({ latest: release.version, release, checkedAt: now }));
+    } catch { /* cache is optional */ }
+  }
+  return release;
 }
 
 /** Where npm serves a version's package file. */
@@ -57,7 +86,7 @@ export async function fetchLatest({ cacheDir, now = Date.now(), fetchImpl = glob
   const response = await fetchImpl(`https://registry.npmjs.org/${PACKAGE.replace("/", "%2f")}/latest`, { signal: AbortSignal.timeout(timeout) });
   if (!response.ok) throw new Error(`The npm registry answered ${response.status}.`);
   const latest = (await response.json()).version;
-  if (typeof latest !== "string") throw new Error("The npm registry gave no version.");
+  if (!stableVersion(latest)) throw new Error("The npm registry gave no stable version.");
   try {
     fs.mkdirSync(cacheDir, { recursive: true });
     fs.writeFileSync(path.join(cacheDir, "update-check.json"), JSON.stringify({ latest, checkedAt: now }));
@@ -86,7 +115,7 @@ export function isNewer(candidate, current) {
 export function installMethod({ packageRoot = PACKAGE_ROOT } = {}) {
   const where = packageRoot.split(path.sep).join("/");
   const install = (tool, args) => ({ kind: tool, command: [tool, ...args], hint: "scormplayer update" });
-  if (fs.existsSync(path.join(packageRoot, ".standalone-install.json"))) return { kind: "standalone", command: null, hint: "curl -fsSL https://github.com/jakerains/scormplayer/releases/latest/download/install.sh | bash" };
+  if (fs.existsSync(path.join(packageRoot, ".standalone-install.json"))) return { kind: "standalone", command: null, hint: "scormplayer update" };
   if (where.includes("/_npx/")) return { kind: "npx", command: null, hint: `npx ${PACKAGE}@latest` };
   if (!where.includes("/node_modules/")) return { kind: "source", command: null, hint: "git pull && npm install && npm run build" };
   if (where.includes("/.bun/install/global/")) return install("bun", ["add", "-g", `${PACKAGE}@latest`]);
@@ -113,8 +142,8 @@ export const NPM_INSTALL = ["npm", "install", "-g", `${PACKAGE}@latest`];
  * version list can lag the fresh "latest" answer and install an older release or fail
  * with "No matching version found" although the package file is already there.
  */
-export function tarballInstall(version, { prefix } = {}) {
-  return ["npm", "install", "-g", ...(prefix ? ["--prefix", prefix] : []), tarballUrl(version)];
+export function tarballInstall(version, { prefix, tarball = tarballUrl(version) } = {}) {
+  return ["npm", "install", "-g", ...(prefix ? ["--prefix", prefix] : []), tarball];
 }
 
 /** Update the installation being run, even if npm's configured prefix has changed. */
@@ -124,12 +153,12 @@ function npmPrefix(packageRoot) {
 }
 
 /** A new process reads the replaced CLI, without the updater's old module cache. */
-export function verifyUpdatedCli(expected, { entry = process.argv[1] } = {}) {
-  const result = spawnSync(process.execPath, [entry, "--version", "--json"], { encoding: "utf8", timeout: 10000 });
+export function verifyUpdatedCli(expected, { entry = process.argv[1], launcher } = {}) {
+  const result = spawnSync(launcher || process.execPath, [...(launcher ? [] : [entry]), "--version", "--json"], { encoding: "utf8", timeout: 10000 });
   let version;
   try { version = JSON.parse(result.stdout).version; } catch { /* report a failed launch below */ }
   if (result.status !== 0 || version !== expected) {
-    throw new Error(`The installation finished, but ${entry} ${version ? `still runs ${version}` : "could not start"} (expected ${expected}). Check for multiple installations with ${process.platform === "win32" ? "where scormplayer" : "type -a scormplayer"}.`);
+    throw new Error(`The installation finished, but ${launcher || entry} ${version ? `still runs ${version}` : "could not start"} (expected ${expected}). Check for multiple installations with ${process.platform === "win32" ? "where scormplayer" : "type -a scormplayer"}.`);
   }
   return version;
 }
@@ -162,12 +191,12 @@ export function hasTool(tool) {
  * failure can be summed up in a line or two. `sudo` prefixes it; sudo asks for the password on
  * the terminal itself, so that still works. Resolves to `{ code, output }`.
  */
-export function runInstall(command, { sudo = false } = {}) {
+export function runInstall(command, { sudo = false, env = process.env } = {}) {
   const [tool, ...args] = sudo ? ["sudo", ...command] : command;
   return new Promise((resolve, reject) => {
     let output = "";
     const keep = (chunk) => { output = (output + chunk).slice(-16_384); };
-    const child = spawn(process.platform === "win32" ? `${tool}.cmd` : tool, args, { stdio: [sudo ? "inherit" : "ignore", "pipe", "pipe"], shell: process.platform === "win32" });
+    const child = spawn(process.platform === "win32" ? `${tool}.cmd` : tool, args, { stdio: [sudo ? "inherit" : "ignore", "pipe", "pipe"], shell: process.platform === "win32", env });
     child.stdout.on("data", keep);
     child.stderr.on("data", keep);
     child.on("error", (error) => reject(new Error(`Could not run ${tool}: ${error.message}`)));

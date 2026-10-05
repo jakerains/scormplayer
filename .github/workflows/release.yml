@@ -49,20 +49,29 @@ jobs:
       - run: npm run test:plugins
       - run: npm run build:standalone
       - run: npm run test:standalone
-      - name: Publish (skipped when this version is already on npm)
-        run: |
-          version="$(node -p "require('./package.json').version")"
-          if npm view "@jakerains/scormplayer@$version" version >/dev/null 2>&1; then
-            echo "@jakerains/scormplayer@$version is already published; nothing to do."
-          else
-            npm publish --access public
-          fi
+      - run: node scripts/package-release.mjs
       - name: Publish GitHub release downloads
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           node -e 'const fs=require("fs");const v=require("./package.json").version;const s=fs.readFileSync("CHANGELOG.md","utf8").split(`## [${v}]`)[1];fs.writeFileSync(process.env.RUNNER_TEMP+"/release-notes.md",s.slice(s.indexOf("\n")+1).split("\n## [")[0].trim())'
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME — SCORM Player" --notes-file "$RUNNER_TEMP/release-notes.md"
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME — SCORM Player" --notes-file "$RUNNER_TEMP/release-notes.md"
           fi
-          gh release upload "$GITHUB_REF_NAME" artifacts/standalone/install.sh artifacts/standalone/SHA256SUMS artifacts/standalone/scormplayer-*-standalone.tar.gz artifacts/agent-plugins/scormplayer-*.zip --clobber
+          if [ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')" = true ]; then
+            gh release upload "$GITHUB_REF_NAME" artifacts/standalone/install.sh artifacts/standalone/SHA256SUMS artifacts/standalone/scormplayer-*-standalone.tar.gz artifacts/standalone/jakerains-scormplayer-*.tgz artifacts/agent-plugins/scormplayer-*.zip --clobber
+            gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+          else
+            # A retry uses the already released npm package, preserving published assets.
+            gh release download "$GITHUB_REF_NAME" --pattern 'jakerains-scormplayer-*.tgz' --pattern SHA256SUMS --dir "$RUNNER_TEMP/released" --clobber
+            (cd "$RUNNER_TEMP/released" && sha256sum --ignore-missing -c SHA256SUMS)
+            cp "$RUNNER_TEMP/released"/jakerains-scormplayer-*.tgz artifacts/standalone/
+          fi
+      - name: Publish the same packed file to npm (skipped when already published)
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if npm view "@jakerains/scormplayer@$version" version >/dev/null 2>&1; then
+            echo "@jakerains/scormplayer@$version is already published; nothing to do."
+          else
+            npm publish "artifacts/standalone/jakerains-scormplayer-$version.tgz" --access public
+          fi

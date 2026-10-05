@@ -47,6 +47,7 @@ download "$base/$asset" "$work/$asset"
 download "$base/SHA256SUMS" "$work/SHA256SUMS"
 hash=$(awk -v name="$asset" '$2 == name { print $1 }' "$work/SHA256SUMS")
 verify "$work/$asset" "$hash"
+[[ -z "${SCORMPLAYER_EXPECTED_SHA256:-}" || "$hash" == "$SCORMPLAYER_EXPECTED_SHA256" ]] || fail "Release checksum changed during update."
 safe_archive "$work/$asset" scormplayer
 mkdir "$work/extract"
 tar -xzf "$work/$asset" -C "$work/extract"
@@ -91,4 +92,4 @@ case ":$PATH:" in *":$BIN_DIR:"*) ;; *)
   if ! grep -Fqx "$path_line" "$profile" 2>/dev/null; then printf '\n# SCORM Player user commands\n%s\n' "$path_line" >> "$profile"; fi
   printf 'Open a new terminal, or run: export PATH=%q:"$PATH"\n' "$BIN_DIR" ;;
 esac
-printf 'Open a course: scormplayer ./my-course.zip\nOptional AI setup: scormplayer setup\nTo update, rerun this Bash installer.\n'
+printf 'Open a course: scormplayer ./my-course.zip\nOptional AI setup: scormplayer setup\nTo update: scormplayer update\n'

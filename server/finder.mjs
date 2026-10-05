@@ -25,7 +25,12 @@ export function findCourses(cwd = process.cwd()) {
 
 /** Is this folder itself something scormplayer opens directly? */
 export function isCourseFolder(dir) {
-  return Boolean(describe(dir));
+  const course = describe(dir);
+  if (!course) return false;
+  if (course.kind !== "folder" || fs.existsSync(path.join(dir, "imsmanifest.xml"))) return true;
+  // A wrapper with one manifest can also hold other course ZIPs or live projects.
+  // Keep the picker in that case instead of silently opening only the manifest.
+  return scan(dir, 2).map(describe).filter(Boolean).length <= 1;
 }
 
 function nestedConfigs(dir, depth) {

@@ -136,10 +136,11 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     return Boolean(courses && switchCourse && state.length === 1);
   }
 
-  function showCourses() {
+  function showCourses(direction = null) {
     const found = courses();
     if (!found.length) return say("No other courses found here");
     courseList = createCourseList({ courses: found, current: state[0].player.course?.source ?? null });
+    if (direction) courseList.key(direction);
     view = "courses";
     render();
   }
@@ -336,7 +337,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       ...(entries.length > 1 ? [[`1–${Math.min(9, entries.length)}`, "open one"]] : []),
       ["c", "copy pins"],
       ["p", "show pins"],
-      ...(canSwitch() ? [["l", "switch course"]] : []),
+      ...(canSwitch() ? [["↑↓", "switch course"]] : []),
       ...(canUnzip() ? [["u", "unzip to edit"]] : []),
       ...(skillState === "missing" ? [["s", "install agent skill"]] : skillState === "outdated" ? [["s", "update agent skill"]] : []),
       ["q", "quit"],
@@ -475,7 +476,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       else if (/^[1-9]$/.test(key) && state[Number(key) - 1]) openUrl(state[Number(key) - 1]);
       else if (key === "c") copyPins();
       else if (key === "p") showPins();
-      else if (key === "l" && canSwitch()) showCourses();
+      else if ((key === "l" || key === "up" || key === "down") && canSwitch()) showCourses(key === "l" ? null : key);
       else if (key === "u" && canUnzip()) void unzip(state[0]);
       else if (key === "s" && (skillState === "missing" || skillState === "outdated")) void installSkill();
     });

@@ -25,7 +25,7 @@ curl -fsSL https://github.com/jakerains/scormplayer/releases/latest/download/ins
 The Bash installer downloads a verified standalone release from GitHub. It installs in your
 home directory, uses no npm install, and downloads a private Node.js 24 runtime if your Node
 is missing or too old for MCP. It adds the launcher to your shell's PATH; open a new terminal
-afterward. Rerun the same Bash command to update. An existing unrelated launcher is preserved.
+afterward. Update with `scormplayer update`. An existing unrelated launcher is preserved.
 
 **Try it without a global install**
 
@@ -51,6 +51,8 @@ scormplayer ./my-course.zip
 
 Or run `scormplayer` on its own in a folder of courses to pick one, or to get a page where you
 can drop a zip.
+In the running terminal dashboard, press ↑/↓ to choose another course, then Enter to open it.
+The `l` key also opens the course list.
 
 **3. Optional: connect your AI apps**
 
@@ -88,13 +90,16 @@ Claude Desktop has no filesystem skill target. `--mcp-only` is an alias for the 
 scormplayer update
 ```
 
-For npm installs, update downloads the exact release it checked, replaces the copy you ran,
-and verifies the new CLI starts with that version.
+Update checks GitHub's latest stable release first. For npm installs it verifies the release
+package's SHA-256 checksum, then installs that exact file through npm into the copy you ran.
+If GitHub is unavailable, it can use the same version from npm. A checksum mismatch stops
+the update. The new CLI's version is verified before success is reported.
 You can keep using `scormplayer` in the same terminal; no shell refresh is needed.
 
 The terminal alerts you when a downloadable update is available, and the browser marks
-**More** with an **Update** badge. Open it to copy the update command. Bash installs are
-updated by rerunning the Bash command above; `scormplayer update` displays that command.
+**More** with an **Update** badge. Open it to copy the update command. Checks run at most
+once a day; `scormplayer update --check` checks immediately. Bash installs also update through
+`scormplayer update`, using GitHub's standalone package and preserving the launcher path.
 
 The npm/npx options need [Node.js](https://nodejs.org) 20 or newer, which includes npm. No Node yet? On a Mac, the
 installer from [nodejs.org](https://nodejs.org) works, or `brew install node` with Homebrew.

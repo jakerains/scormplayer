@@ -419,6 +419,35 @@ test("dashboard: plain output without a terminal, and text fits the screen", asy
   assert.doesNotMatch(text, /\x1b\[/, "no escape codes when not writing to a terminal");
 });
 
+test("dashboard: arrow keys open the course list and choose adjacent lessons without pressing l", async (t) => {
+  const { createDashboard } = await import("../server/tui.mjs");
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  const previousCi = process.env.CI;
+  delete process.env.CI;
+  t.after(() => { if (previousCi === undefined) delete process.env.CI; else process.env.CI = previousCi; });
+  const courses = ["A", "B"].map((name) => ({ path: `/test/lesson-${name}`, kind: "folder", title: `Lesson ${name}` }));
+  const stdin = new PassThrough();
+  stdin.isTTY = true;
+  stdin.setRawMode = () => {};
+  const stdout = new PassThrough();
+  stdout.isTTY = true;
+  stdout.columns = 112;
+  stdout.rows = 30;
+  let output = "";
+  stdout.on("data", (chunk) => { output += chunk; });
+  const player = { url: "http://127.0.0.1:4620/", events: new EventEmitter(), course: { ...courses[0], source: courses[0].path, kind: "package", scormVersion: "1.2" } };
+  const chosen = [];
+  const dashboard = createDashboard({ version: "test", entries: [{ id: "lesson", player }], stdin, stdout, onQuit: () => {}, courses: () => courses, switchCourse: async (target) => { chosen.push(target); player.course.source = target; } });
+  try {
+    stdin.write("\x1b[B\r");
+    assert.match(output, /Switch course/);
+    assert.deepEqual(chosen, [courses[1].path], "normal down arrow selects the next lesson");
+    stdin.write("\x1bOA\r");
+    assert.deepEqual(chosen, [courses[1].path, courses[0].path], "application-mode up arrow selects the previous lesson");
+  } finally { await dashboard.quit(); stdin.destroy(); stdout.destroy(); }
+});
+
 test("project config: pins location, course list and sync commands", async () => {
   const { findConfig, configuredPinsFile, configuredCourses, startSync } = await import("../server/config.mjs");
   const { findCourses, isCourseFolder } = await import("../server/finder.mjs");
@@ -470,6 +499,25 @@ test("finder: lists SCORM zips and folders, skipping zips without a manifest", a
   fs.writeFileSync(path.join(dir, "unzipped", "imsmanifest.xml"), MANIFEST_12("Unzipped course"));
   fs.writeFileSync(path.join(dir, "unzipped", "index.html"), "<p>hi</p>");
   assert.deepEqual(findCourses(dir).map((course) => [course.kind, course.title]), [["zip", "safety.zip"], ["folder", "Unzipped course"]]);
+});
+
+test("finder: a mixed folder keeps the picker instead of opening only its unpacked lesson", async () => {
+  const { findCourses, isCourseFolder } = await import("../server/finder.mjs");
+  const dir = tempDir();
+  const lesson = path.join(dir, "lesson-a");
+  fs.mkdirSync(lesson);
+  fs.writeFileSync(path.join(lesson, "imsmanifest.xml"), MANIFEST_12("Lesson A"));
+  fs.writeFileSync(path.join(lesson, "index.html"), "<h1>Lesson A</h1>");
+  assert.equal(isCourseFolder(dir), true, "a single wrapped package still opens directly");
+  const { default: AdmZip } = await import("adm-zip");
+  const photos = new AdmZip();
+  photos.addFile("photo.jpg", Buffer.from("not a course"));
+  fs.writeFileSync(path.join(dir, "photos.zip"), photos.toBuffer());
+  assert.equal(isCourseFolder(dir), true, "unrelated archives do not turn it into a course collection");
+  fs.writeFileSync(path.join(dir, "lesson-b.zip"), scorm12Zip({ title: "Lesson B" }));
+  assert.equal(isCourseFolder(dir), false, "other courses require the picker");
+  assert.equal(isCourseFolder(lesson), true, "the actual lesson still opens directly");
+  assert.deepEqual(findCourses(dir).map((course) => course.path), [lesson, path.join(dir, "lesson-b.zip")]);
 });
 
 test("starts empty and opens zips sent from the browser", async () => {
@@ -545,6 +593,7 @@ test("update check: newer versions only, asked at most once a day", async () => 
   // Count only "what's the latest?" questions; the readiness check asks for the package file.
   let fileReady = true;
   const fetchImpl = async (url, options) => {
+    if (url.startsWith("https://api.github.com/")) return { ok: false, status: 503 };
     if (options?.method === "HEAD") return { ok: fileReady };
     calls += 1;
     return { ok: true, json: async () => ({ version: "9.0.0" }) };
@@ -598,7 +647,7 @@ test("update: tells how scormplayer was installed, and how to update it", async 
   fs.writeFileSync(path.join(standalone, ".standalone-install.json"), '{"kind":"standalone"}');
   assert.equal(kind(standalone), "standalone");
   assert.equal(installMethod({ packageRoot: standalone }).command, null);
-  assert.match(installMethod({ packageRoot: standalone }).hint, /releases\/latest\/download\/install.sh/);
+  assert.equal(installMethod({ packageRoot: standalone }).hint, "scormplayer update");
   const { tarballInstall, summarizeInstallError, packageReady } = await import("../server/update.mjs");
   assert.equal(await packageReady("1.2.3", { fetchImpl: async (url, options) => ({ ok: options.method === "HEAD" && url.includes("scormplayer-1.2.3.tgz") }) }), true);
   assert.equal(await packageReady("1.2.3", { fetchImpl: async () => ({ ok: false }) }), false);

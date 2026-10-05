@@ -4,13 +4,15 @@ import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
 import { startPlayer, resolveCourse, createPinStore, createDashboard, openBrowser, unzipCourse, UserError, PORT_RANGE } from "../server/index.mjs";
 import { listPlayers, findPlayer, stopPlayer, askPlayer, unregisteredPlayers, isAlive } from "../server/registry.mjs";
 import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere, skillScopes, installSkill, skillStatus, updateSkills } from "../server/skill.mjs";
 import { findConfig, configuredPinsFile, startSync } from "../server/config.mjs";
 import { findCourses, isCourseFolder } from "../server/finder.mjs";
 import { cacheEntries, clearCache, formatBytes, MAX_AGE_DAYS, MAX_ENTRIES } from "../server/cache.mjs";
-import { checkForUpdate, fetchLatest, hasTool, installMethod, isNewer, npmNeedsSudo, NPM_INSTALL, packageReady, runInstall, summarizeInstallError, tarballInstall, updateHint, verifyUpdatedCli } from "../server/update.mjs";
+import { checkForUpdate, fetchUpdate, hasTool, installMethod, isNewer, npmNeedsSudo, NPM_INSTALL, packageReady, runInstall, summarizeInstallError, tarballInstall, updateHint, verifyUpdatedCli } from "../server/update.mjs";
+import { downloadRelease } from "../server/releases.mjs";
 import { pickCourse, pickFromList, DROP_PAGE } from "../server/tui.mjs";
 import { pinsReport, createJsonReporter, jsonError } from "../server/agent.mjs";
 import { managePlugins } from "../server/plugins.mjs";
@@ -526,24 +528,30 @@ function runCache(action, cacheDir, json) {
 async function runUpdate({ cacheDir, check, json }) {
   const say = (text) => { if (!json) console.log(text); };
   const method = installMethod();
-  if (method.kind === "standalone" && !check) {
-    if (json) return void console.log(JSON.stringify({ ok: true, method: "standalone", manual: true, command: method.hint }));
-    return say(`Update this standalone install through GitHub:\n${method.hint}`);
-  }
-  let latest;
-  try { latest = await fetchLatest({ cacheDir }); }
-  catch (error) { throw new UserError(`Couldn't reach the npm registry to check for updates (${error.message}).`); }
+  let release;
+  try { release = await fetchUpdate({ cacheDir, kind: method.kind === "standalone" ? "standalone" : "npm" }); }
+  catch (error) { throw new UserError(error.message); }
+  const latest = release.version;
   const updateAvailable = isNewer(latest, VERSION);
   // Just after a release npm names the new version before its file can be downloaded.
-  const ready = updateAvailable ? await packageReady(latest) : true;
-  const stillProcessing = `Version ${latest} is published, but npm is still getting it ready to download (usually a few minutes, now and then up to 20).`;
+  const ready = updateAvailable ? release.ready : true;
+  const stillProcessing = `Version ${latest} is published, but its ${method.kind === "standalone" || release.source === "github" ? "GitHub release files" : "npm download"} are not ready yet.`;
   if (check || !updateAvailable) {
-    if (json) return void console.log(JSON.stringify({ ok: true, current: VERSION, latest, updateAvailable, ready, method: method.kind }));
+    if (json) return void console.log(JSON.stringify({ ok: true, current: VERSION, latest, updateAvailable, ready, method: method.kind, source: release.source }));
     if (!updateAvailable) return say(`scormplayer ${VERSION} is the latest version.`);
     if (!ready) return say(`${stillProcessing} You have ${VERSION}; check again shortly.`);
     return say(`scormplayer ${latest} is available (you have ${VERSION}). Update with: ${method.hint}`);
   }
   if (!ready) throw Object.assign(new UserError(`${stillProcessing} Try \`scormplayer update\` again shortly.`), { code: "not_ready" });
+  if (method.kind === "standalone") {
+    const marker = JSON.parse(fs.readFileSync(new URL("../.standalone-install.json", import.meta.url), "utf8"));
+    if (![marker.installDir, marker.binDir].every((dir) => typeof dir === "string" && path.isAbsolute(dir))) throw new UserError("The standalone installation record is invalid. Rerun the Bash installer.");
+    const result = await runInstall(["bash", fileURLToPath(new URL("../install.sh", import.meta.url))], { env: { ...process.env, SCORMPLAYER_VERSION: `v${latest}`, SCORMPLAYER_INSTALL_DIR: marker.installDir, SCORMPLAYER_BIN_DIR: marker.binDir, SCORMPLAYER_NODE: process.execPath, SCORMPLAYER_EXPECTED_SHA256: release.asset.sha256 } });
+    if (result.code !== 0) throw new UserError(`The standalone update didn't install:\n${summarizeInstallError(result.output)}`);
+    const now = verifyUpdatedCli(latest, { launcher: path.join(marker.binDir, "scormplayer") });
+    if (json) return void console.log(JSON.stringify({ ok: true, from: VERSION, to: now, method: "standalone", source: "github", skill: "bundled" }));
+    return say(`scormplayer is now ${now}. Bundled guides are updated. Ready in this terminal; no shell refresh needed.`);
+  }
   if (!method.command) {
     if (method.kind === "npx") throw new UserError(`You're running scormplayer through npx, so there's nothing to install. Run it as: ${method.hint}`);
     if (method.kind === "source") throw new UserError(`This scormplayer runs from a source checkout. Update it there: ${method.hint}`);
@@ -569,9 +577,24 @@ async function runUpdate({ cacheDir, check, json }) {
     throw new UserError(`npm's global folder needs admin rights on this machine. Update with: sudo ${command.join(" ")}`);
   }
 
-  say(`Updating scormplayer ${VERSION} → ${latest} with ${tool}…`);
+  say(`Updating scormplayer ${VERSION} → ${latest} from ${release.source === "github" ? "GitHub" : "npm"} with ${tool}…`);
   if (sudo) say("npm needs admin rights to update global packages here, so this runs with sudo. Enter your Mac password if asked.");
-  const result = await runInstall(command, { sudo });
+  let work;
+  let result;
+  try {
+    if (release.source === "github") {
+      work = fs.mkdtempSync(path.join(os.tmpdir(), "scormplayer-update-"));
+      let file;
+      try { file = await downloadRelease(release, work); }
+      catch (error) {
+        if (error.code !== "github_unavailable" || !await packageReady(latest)) throw new UserError(error.message);
+        say("GitHub's download is unavailable; using the same release from npm.");
+        release = { ...release, source: "npm" };
+      }
+      if (file) command[command.length - 1] = file;
+    }
+    result = await runInstall(command, { sudo });
+  } finally { if (work) fs.rmSync(work, { recursive: true, force: true }); }
   if (result.code !== 0) {
     throw new UserError(`The update didn't install. ${tool} said:\n${summarizeInstallError(result.output)}\nYour current install has not been verified as updated. Try scormplayer update again after fixing the error above.`);
   }
@@ -587,7 +610,7 @@ async function runUpdate({ cacheDir, check, json }) {
     skill = (await updateSkills().catch(() => ({ state: "outdated" }))).state === "outdated" ? "failed" : "updated";
   }
 
-  if (json) return void console.log(JSON.stringify({ ok: true, from: VERSION, to: now, method: tool, skill }));
+  if (json) return void console.log(JSON.stringify({ ok: true, from: VERSION, to: now, method: tool, skill, source: release.source }));
   say(`scormplayer is now ${now}.${skill === "updated" ? " The agent skill is updated too." : ""}`);
   say("Ready in this terminal; no shell refresh needed.");
   if (skill === "failed") say("The agent skill didn't update; run: scormplayer skill");

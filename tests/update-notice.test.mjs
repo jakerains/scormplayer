@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { MANIFEST_12 } from "./fixtures.mjs";
 import { updateHint } from "../server/update.mjs";
+import { createHash } from "node:crypto";
+import { RELEASES_API, releaseFilename } from "../server/releases.mjs";
 
 const entry = fileURLToPath(new URL("../bin/scormplayer.mjs", import.meta.url));
 const exec = promisify(execFile);
@@ -25,6 +27,7 @@ for (const ready of [true, false]) {
     fs.writeFileSync(preload, `import fs from "node:fs";
 const original = globalThis.fetch;
 globalThis.fetch = async (url, options) => {
+  if (String(url).startsWith("https://api.github.com/")) return new Response(null, { status: 503 });
   if (String(url).startsWith("https://registry.npmjs.org/")) {
     if (options?.method === "HEAD") { fs.writeFileSync(${JSON.stringify(checked)}, "checked"); return new Response(null, { status: ${ready ? 200 : 404} }); }
     return Response.json({version:"99.0.0"});
@@ -61,7 +64,7 @@ globalThis.fetch = async (url, options) => {
   });
 }
 
-async function updateFixture(t, { unchanged = false } = {}) {
+async function updateFixture(t, { unchanged = false, github = false, corrupt = false, unavailable = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scorm update same shell "));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.dirname(path.dirname(entry));
@@ -95,7 +98,20 @@ if (!${unchanged}) {
 }
 `, { mode: 0o755 });
   const preload = path.join(dir, "registry.mjs");
-  fs.writeFileSync(preload, `globalThis.fetch = async (url, options) => options?.method === "HEAD" ? new Response(null) : Response.json({version:"99.0.0"});`);
+  const filename = releaseFilename("99.0.0");
+  const bytes = Buffer.from("verified release package fixture");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const base = "https://github.com/jakerains/scormplayer/releases/download/v99.0.0";
+  const metadata = { tag_name: "v99.0.0", draft: false, prerelease: false, assets: [filename, "SHA256SUMS"].map((name) => ({ name, state: "uploaded", browser_download_url: `${base}/${name}` })) };
+  fs.writeFileSync(preload, `globalThis.fetch = async (url, options) => {
+  if (url === ${JSON.stringify(RELEASES_API)}) return ${github} ? Response.json(${JSON.stringify(metadata)}) : new Response(null, {status:503});
+  if (url === ${JSON.stringify(`${base}/SHA256SUMS`)}) return new Response(${JSON.stringify(`${sha256}  ${filename}\n`)});
+  if (url === ${JSON.stringify(`${base}/${filename}`)}) {
+    if (options?.method === "HEAD") return new Response(null);
+    return new Response(${JSON.stringify((corrupt ? Buffer.from("damaged download") : bytes).toString())}, {status:${unavailable ? 503 : 200}});
+  }
+  return options?.method === "HEAD" ? new Response(null) : Response.json({version:"99.0.0"});
+};`);
   const env = { ...process.env, HOME: dir, XDG_CACHE_HOME: path.join(dir, "cache"), CI: "1", NODE_OPTIONS: `--import=${JSON.stringify(preload)}`, PATH: `${path.dirname(launcher)}${path.delimiter}${tools}${path.delimiter}${process.env.PATH}`, npm_config_prefix: path.join(dir, "different npm prefix") };
   return { dir, env, launcher, calls, prefix };
 }
@@ -125,4 +141,35 @@ test("update does not claim success when the installer leaves the invoked CLI on
     assert.match(result.error, /still runs 0\.1\.0.*expected 99\.0\.0/);
     return true;
   });
+});
+
+test("GitHub updates install the verified package file through npm in the same shell", { skip: process.platform === "win32" }, async (t) => {
+  const { dir, env, calls } = await updateFixture(t, { github: true });
+  const { stdout } = await exec("bash", ["-c", "scormplayer --version; hash scormplayer; scormplayer update --json || exit $?; scormplayer --version"], { env, cwd: dir });
+  const [before, update, after] = stdout.trim().split("\n");
+  assert.equal(before, "0.1.0");
+  assert.equal(JSON.parse(update).source, "github");
+  assert.equal(after, "99.0.0");
+  const file = JSON.parse(fs.readFileSync(calls))[0].at(-1);
+  assert.equal(path.basename(file), releaseFilename("99.0.0"));
+  assert.equal(fs.existsSync(path.dirname(file)), false, "temporary download removed after installation");
+});
+
+test("a GitHub checksum failure preserves the installed CLI and never runs npm", { skip: process.platform === "win32" }, async (t) => {
+  const { dir, env, calls, launcher } = await updateFixture(t, { github: true, corrupt: true });
+  await assert.rejects(exec(process.execPath, [launcher, "update", "--json"], { env, cwd: dir }), (error) => {
+    assert.match(JSON.parse(error.stdout).error, /checksum did not match/);
+    return true;
+  });
+  assert.equal(fs.existsSync(calls), false);
+  assert.equal((await exec(launcher, ["--version"], { env })).stdout.trim(), "0.1.0");
+});
+
+test("a GitHub download outage falls back to the same exact release on npm", { skip: process.platform === "win32" }, async (t) => {
+  const { dir, env, calls, launcher } = await updateFixture(t, { github: true, unavailable: true });
+  const { stdout } = await exec(launcher, ["update", "--json"], { env, cwd: dir });
+  const result = JSON.parse(stdout);
+  assert.equal(result.source, "npm");
+  assert.equal(result.to, "99.0.0");
+  assert.match(JSON.parse(fs.readFileSync(calls))[0].at(-1), /^https:\/\/registry\.npmjs\.org\/.+scormplayer-99\.0\.0\.tgz$/);
 });

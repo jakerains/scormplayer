@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - October 5, 2026
+
+- Update discovery and downloads use stable GitHub Releases first, with npm as a fallback.
+  GitHub packages are checked against SHA-256 checksums before installation; checksum
+  failures preserve the current installation. Updates never switch an npm install to Bash.
+- Release automation uploads the exact packed npm package and standalone archive with
+  checksums, publishes the GitHub release after every asset is uploaded, then publishes
+  that same package file to npm. Retried releases preserve already-published GitHub assets.
+- Standalone Bash installs support `scormplayer update` directly, preserving the launcher
+  and previous version bundles. The updated CLI is verified before success is reported.
+- Mixed folders containing an unpacked lesson and other course ZIPs keep the course picker.
+  The running terminal dashboard accepts ↑/↓ to open and navigate the course list.
+
 ## [0.9.1] - October 5, 2026
 
 - `scormplayer update` downloads the exact npm release it just checked, so stale npm
