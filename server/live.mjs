@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -24,7 +25,9 @@ export async function startLiveCourse({ root, viteConfig, httpServer, onChange =
   const { createServer } = await import(pathToFileURL(path.join(path.dirname(vitePackagePath), "dist/node/index.js")).href);
 
   // Vite 8 names the shared socket server `server.ws`; earlier majors use `server.hmr.server`.
-  const socket = { server: httpServer };
+  // Course switches briefly stage two Vite servers. Give each socket its own path
+  // so reconnecting clients cannot be upgraded by both listeners.
+  const socket = { server: httpServer, path: `scormplayer-${randomUUID()}` };
   const vite = await createServer({
     root,
     configFile: viteConfig ?? false,

@@ -7,3 +7,4 @@ dist/
 artifacts/agent-plugins/
 artifacts/player-qualification/
 artifacts/releases/
+artifacts/standalone/

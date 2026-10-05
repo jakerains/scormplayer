@@ -3,6 +3,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseManifestXml, resolveCourse, UserError } from "../server/course.mjs";
@@ -593,6 +594,11 @@ test("update: tells how scormplayer was installed, and how to update it", async 
   assert.equal(kind(at("home/.bun/install/global/node_modules/@jakerains/scormplayer")), "bun");
   assert.equal(kind(at("home/.config/yarn/global/node_modules/@jakerains/scormplayer")), "yarn");
   assert.equal(kind(at("src/scormplayer")), "source");
+  const standalone = at("home/.local/share/scormplayer/standalone/versions/v0.9.0");
+  fs.writeFileSync(path.join(standalone, ".standalone-install.json"), '{"kind":"standalone"}');
+  assert.equal(kind(standalone), "standalone");
+  assert.equal(installMethod({ packageRoot: standalone }).command, null);
+  assert.match(installMethod({ packageRoot: standalone }).hint, /releases\/latest\/download\/install.sh/);
   const { tarballInstall, summarizeInstallError, packageReady } = await import("../server/update.mjs");
   assert.equal(await packageReady("1.2.3", { fetchImpl: async (url, options) => ({ ok: options.method === "HEAD" && url.includes("scormplayer-1.2.3.tgz") }) }), true);
   assert.equal(await packageReady("1.2.3", { fetchImpl: async () => ({ ok: false }) }), false);
@@ -836,4 +842,21 @@ test("multi-SCO packages list every module in manifest order", async () => {
   const single = path.join(dir, "single.zip");
   fs.writeFileSync(single, scorm12Zip());
   assert.equal(resolveCourse(single, { cacheDir: path.join(dir, "cache") }).scos.length, 1);
+});
+
+
+test("closing a live player also closes a retired WebSocket upgrade", async (t) => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, "package.json"), '{"type":"module"}');
+  fs.writeFileSync(path.join(dir, "vite.config.mjs"), "export default {};");
+  fs.writeFileSync(path.join(dir, "index.html"), "<h1>Live socket cleanup</h1>");
+  fs.symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), path.join(dir, "node_modules"), "junction");
+  const player = await startPlayer({ input: dir, live: true, port: 0, registryDir: null, cacheDir: path.join(dir, "cache") });
+  const port = Number(new URL(player.url).port);
+  const socket = net.connect(port, "127.0.0.1");
+  t.after(async () => { socket.destroy(); await player.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  await new Promise((resolve, reject) => { socket.once("connect", resolve); socket.once("error", reject); });
+  socket.write(`GET /course/retired-session HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: vite-ping\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await Promise.race([player.close(), new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("Retired upgrade prevented shutdown")), 2000); timer.unref(); })]);
 });

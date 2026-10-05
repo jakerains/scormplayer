@@ -18,6 +18,7 @@ test("standalone bundled MCP shares pins, serves inline UI and rejects stale rev
   const installed = path.join(dir, ".installed");
   fs.mkdirSync(installed);
   const entry = path.join(installed, "server.mjs");
+  fs.copyFileSync(fileURLToPath(new URL("../dist/source-worker.mjs", import.meta.url)), path.join(installed, "source-worker.mjs"));
   fs.copyFileSync(fileURLToPath(new URL("../dist/server.mjs", import.meta.url)), entry);
   fs.copyFileSync(fileURLToPath(new URL("../dist/review.html", import.meta.url)), path.join(installed, "review.html"));
   fs.copyFileSync(fileURLToPath(new URL("../dist/skills.json", import.meta.url)), path.join(installed, "skills.json"));
@@ -51,6 +52,11 @@ test("standalone bundled MCP shares pins, serves inline UI and rejects stale rev
     assert.equal(fs.existsSync(path.join(dir, "agent", "tls")), false, "normal MCP startup never creates certificates");
     const owned = started.structuredContent;
     const browserScope = { playerId: owned.playerId, revision: started.structuredContent.revision };
+    const ownPin = await fetch(new URL("api/pins", owned.url), { method: "POST", headers: { "content-type": "application/json", "x-scormplayer-revision": owned.revision }, body: JSON.stringify({ note: "Bundled source lookup", target: { text: "This paragraph explains the course." } }) });
+    assert.equal(ownPin.status, 201);
+    const enriched = await ownPin.json();
+    assert.ok(enriched.source.some((match) => match.file === "index.html"), "MCP-owned player bundles its source worker");
+    assert.equal((await fetch(new URL(`api/pins/${enriched.id}`, owned.url), { method: "DELETE", headers: { "x-scormplayer-revision": owned.revision } })).status, 200);
     const browserLaunch = await call("scormplayer_open_browser", browserScope);
     assert.equal(browserLaunch.structuredContent.launched, true);
     assert.deepEqual(JSON.parse(fs.readFileSync(launchLog, "utf8").trim()), [owned.url]);

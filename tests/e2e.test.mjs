@@ -65,6 +65,20 @@ async function open(options, context = null) {
   return { player, page, dir };
 }
 
+test("a confirmed update is visible without opening More and offers the update command", async () => {
+  const { player, page } = await open({ input: navCourse() });
+  try {
+    assert.equal(await page.getByTitle("More", { exact: true }).getByText("Update", { exact: true }).count(), 0);
+    player.setUpdate({ latest: "9.0.0", command: "scormplayer update" });
+    await page.getByTitle("More", { exact: true }).getByText("Update", { exact: true }).waitFor();
+    await page.getByTitle("More", { exact: true }).click();
+    const advice = page.getByRole("menuitem", { name: "scormplayer 9.0.0 is available" });
+    assert.equal(await advice.getAttribute("title"), "Copies: scormplayer update");
+    await advice.click();
+    await page.getByRole("status").filter({ hasText: "Run scormplayer update in your terminal" }).waitFor();
+  } finally { await page.close(); await player.close(); }
+});
+
 test("SCORM 1.2 and 2004 resume on another port", async () => {
   for (const version of ["1.2", "2004"]) {
     const input = path.join(tempDir(), "resume.zip");
@@ -240,6 +254,7 @@ test("pages, tour steps and narration skip", async () => {
     assert.equal(await page.frameLocator("iframe.sp-frame").locator("#title").innerText(), "Introduction");
 
     await page.frameLocator("iframe.sp-frame").locator("#startNarration").click();
+    await page.frames()[1].evaluate(() => window.startNarration());
     const tourButton = page.locator(".sp-tour .sp-skip");
     await page.waitForFunction(() => document.querySelector(".sp-tour .sp-skip")?.textContent?.includes("Skip"));
     await tourButton.click();
@@ -482,6 +497,7 @@ test("paused narration remains skippable but lets an idle player ask", async () 
   try {
     await page.locator(".sp-nav__page").waitFor();
     await page.frameLocator("iframe.sp-frame").locator("#startNarration").click();
+    await page.frames()[1].evaluate(() => window.startNarration());
     await page.waitForTimeout(600);
     await page.frames()[1].evaluate(() => {
       for (const media of window.__scormplayerMedia) media.pause();

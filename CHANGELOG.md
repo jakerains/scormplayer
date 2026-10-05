@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scormplayer setup`: choose apps once to configure MCP with bundled review guidance.
   Supports Codex, Claude Code, Cursor, Claude Desktop, Gemini CLI and Windsurf. Filesystem
   skills remain optional through `--skills-only` or `--with-skills`.
+- A verified standalone Bash install for macOS/Linux, including a private Node runtime
+  when needed. `npx @jakerains/scormplayer@latest` also opens or picks courses without a
+  global install; an exact current course folder is detected even without a terminal.
 - Native Codex, Claude and Cursor packages; Cursor includes review commands and a rule.
   Both review guides are also readable as MCP resources. A normal guide tool supports
   hosts without native skill loading.
@@ -30,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dropped ZIPs with the same filename keep separate pins, and packaged player assets work
   from hidden installation folders such as `.nvm` and `.codex`.
 - Browser tools report current availability and reject stale lesson revisions.
+- MCP-owned players include the source-search worker, so pins retain source locations.
+- Live course switches isolate their hot-reload sockets and close retired reconnects on shutdown.
+- A downloadable update is visible on the browser's More button, without opening its menu.
 
 ### Changed
 - Release checks cover Linux and macOS, Node.js 20/22/24, and Chromium, Firefox and WebKit.

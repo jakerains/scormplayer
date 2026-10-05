@@ -62,8 +62,9 @@ export function App() {
   const [unzipOpen, setUnzipOpen] = useState(false);
   const skillOffer = useAgentSkill();
   const [switcherOpen, setSwitcherOpen] = useState(false);
-  // A newer scormplayer, when the terminal found one; asked again each time More opens.
+  // Make a server-confirmed update visible without requiring the reviewer to open More.
   const [update, setUpdate] = useState<{ latest: string; command: string } | null>(null);
+  useEffect(() => pollWhileVisible(() => api.update().then(setUpdate), 5000, 60_000), []);
   useEffect(() => { if (menuOpen) api.update().then(setUpdate, () => {}); }, [menuOpen]);
   const unzipNotice = useUnzipNotice(course);
   const [nav, setNav] = useState<NavState>(null);
@@ -1003,7 +1004,7 @@ export function App() {
             </button>
             <div className="sp-menu-anchor">
               <button type="button" className="sp-tab" aria-expanded={menuOpen} onClick={() => { setMenuOpen((value) => !value); setConfirmReset(false); }} title="More">
-                <Icon name="more" /><span>More</span>
+                <Icon name="more" /><span>More</span>{update ? <em title={`scormplayer ${update.latest} is available`}>Update</em> : null}
               </button>
               {menuOpen ? (
                 <div className="sp-menu" role="menu">

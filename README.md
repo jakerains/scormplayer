@@ -10,8 +10,37 @@ Click the copy button on a box, paste it into your terminal, and press Enter.
 
 **1. Install scormplayer**
 
+With npm:
+
 ```sh
 npm install -g @jakerains/scormplayer@latest
+```
+
+Or use Bash on macOS/Linux if npm is giving you trouble:
+
+```sh
+curl -fsSL https://github.com/jakerains/scormplayer/releases/latest/download/install.sh | bash
+```
+
+The Bash installer downloads a verified standalone release from GitHub. It installs in your
+home directory, uses no npm install, and downloads a private Node.js 24 runtime if your Node
+is missing or too old for MCP. It adds the launcher to your shell's PATH; open a new terminal
+afterward. Rerun the same Bash command to update. An existing unrelated launcher is preserved.
+
+**Try it without a global install**
+
+```sh
+cd /path/to/your/courses
+npx @jakerains/scormplayer@latest
+```
+
+Inside a SCORM or Vite course folder, it opens that course. In a folder containing courses,
+it shows the same picker as `scormplayer`. With no courses, choose the empty player and drop
+a ZIP. npx downloads to npm's cache for the command; it doesn't install a global player.
+You can also give it an exact path:
+
+```sh
+npx @jakerains/scormplayer@latest ./my-course.zip
 ```
 
 **2. Open a course**
@@ -47,19 +76,17 @@ the [Vercel skills CLI](https://github.com/vercel-labs/skills) and require inter
 Claude Desktop has no filesystem skill target. `--mcp-only` is an alias for the default.
 `scormplayer skill install` remains available for custom skill scope and agent choices.
 
-**Just trying it out?** Run it once without installing anything:
-
-```sh
-npx @jakerains/scormplayer@latest ./my-course.zip
-```
-
 **Keep it current:**
 
 ```sh
 scormplayer update
 ```
 
-Needs [Node.js](https://nodejs.org) 20 or newer, which includes npm. No Node yet? On a Mac, the
+The terminal alerts you when a downloadable update is available, and the browser marks
+**More** with an **Update** badge. Open it to copy the update command. Bash installs are
+updated by rerunning the Bash command above; `scormplayer update` displays that command.
+
+The npm/npx options need [Node.js](https://nodejs.org) 20 or newer, which includes npm. No Node yet? On a Mac, the
 installer from [nodejs.org](https://nodejs.org) works, or `brew install node` with Homebrew.
 macOS and Linux are the primary platforms. The CLI also supports Windows.
 

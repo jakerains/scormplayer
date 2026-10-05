@@ -10,7 +10,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 # One release per tag at a time; a duplicate trigger waits and then finds the version published.
@@ -47,6 +47,8 @@ jobs:
       - run: npm run build:plugins
       - run: npx playwright install --with-deps chromium firefox webkit
       - run: npm run test:plugins
+      - run: npm run build:standalone
+      - run: npm run test:standalone
       - name: Publish (skipped when this version is already on npm)
         run: |
           version="$(node -p "require('./package.json').version")"
@@ -55,3 +57,12 @@ jobs:
           else
             npm publish --access public
           fi
+      - name: Publish GitHub release downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node -e 'const fs=require("fs");const v=require("./package.json").version;const s=fs.readFileSync("CHANGELOG.md","utf8").split(`## [${v}]`)[1];fs.writeFileSync(process.env.RUNNER_TEMP+"/release-notes.md",s.slice(s.indexOf("\n")+1).split("\n## [")[0].trim())'
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME — SCORM Player" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          gh release upload "$GITHUB_REF_NAME" artifacts/standalone/install.sh artifacts/standalone/SHA256SUMS artifacts/standalone/scormplayer-*-standalone.tar.gz artifacts/agent-plugins/scormplayer-*.zip --clobber

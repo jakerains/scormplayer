@@ -26,6 +26,8 @@ jobs:
       - run: npm run build:plugins
       - run: npx playwright install --with-deps chromium firefox webkit
       - run: npm run test:plugins
+      - run: npm run build:standalone
+      - run: npm run test:standalone
       - uses: actions/upload-artifact@v4
         with:
           name: agent-plugins-${{ matrix.os }}
@@ -81,6 +83,14 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps ${{ matrix.browser }}
       - run: npm run build
+      - name: Start audio output for Linux narration tests
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=scormplayer_ci
+          pactl set-default-sink scormplayer_ci
       - run: npm run test:e2e
         env:
           SCORMPLAYER_BROWSER: ${{ matrix.browser }}

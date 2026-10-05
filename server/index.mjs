@@ -70,6 +70,11 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
   let update = null;
   const app = express();
   const httpServer = createServer(app);
+  // Node's closeAllConnections excludes upgraded sockets, including stale Vite
+  // reconnects after a course switch. Keep those sockets in shutdown cleanup too.
+  const sockets = new Set();
+  httpServer.on("connection", (socket) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); });
+  const closeSockets = () => { for (const socket of sockets) socket.destroy(); };
   let started = false;
 
   function registryFields(source) {
@@ -424,6 +429,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
         registration?.remove();
         lease.close();
         await current?.liveCourse?.close();
+        closeSockets();
         httpServer.closeAllConnections?.();
         await new Promise((resolve) => httpServer.close(resolve));
       },
@@ -433,6 +439,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     lease.close();
     registration?.remove();
     await current?.liveCourse?.close();
+    closeSockets();
     httpServer.closeAllConnections?.();
     if (httpServer.listening) await new Promise((resolve) => httpServer.close(resolve));
     throw error;

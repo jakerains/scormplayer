@@ -20,6 +20,7 @@ for (const host of ["codex", "claude", "cursor"]) {
   fs.copyFileSync(path.join(integration, "dist", "server.mjs"), path.join(dir, "server.mjs"));
   fs.copyFileSync(path.join(integration, "dist", "review.html"), path.join(dir, "review.html"));
   fs.copyFileSync(path.join(integration, "dist", "skills.json"), path.join(dir, "skills.json"));
+  fs.copyFileSync(path.join(integration, "dist", "source-worker.mjs"), path.join(dir, "source-worker.mjs"));
   fs.cpSync(path.join(integration, "plugin", "skills"), path.join(dir, "skills"), { recursive: true });
   fs.cpSync(path.join(root, "skills", "scormplayer"), path.join(dir, "skills", "scormplayer"), { recursive: true });
   fs.writeFileSync(path.join(dir, "README.md"), `# SCORM Player ${version}\n\nRequires Node.js 22.22.2 or newer.\n\nNormal stdio MCP tools connect to browser players or start an exact requested lesson. The standard MCP Apps pin checklist needs no child lesson frame, localhost certificate or remote assets. Select open pins and send a request with one click; inspect saved screenshots when needed. Messaging depends on host support. Local webhook MCP Events are not enabled.\n\nBoth guides are included as native skills and MCP resources. Compatible hosts can use skills/list and skills/get; other clients can call scormplayer_get_review_guide. Native skill loading is host-dependent. The MCP server keeps the SDK 1.x connection handshake; it does not claim the newer 2026-07-28 base protocol.\n\nSource: https://github.com/jakerains/scormplayer\n`);

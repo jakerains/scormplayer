@@ -13,3 +13,4 @@ fs.writeFileSync("dist/skills.json", JSON.stringify(buildSkillCatalog(["plugin/s
 await build({ entryPoints: ["stdio.ts"], bundle: true, platform: "node", format: "esm", target: "node22", outfile: "dist/server.mjs", sourcemap: false,
   banner: { js: 'import { createRequire as scormBundleRequire } from "node:module"; const require = scormBundleRequire(import.meta.url);' },
 });
+await build({ entryPoints: ["../../server/source-worker.mjs"], bundle: true, platform: "node", format: "esm", target: "node22", outfile: "dist/source-worker.mjs" });

@@ -81,11 +81,12 @@ export function isNewer(candidate, current) {
  * - npx: nothing to install; `npx @jakerains/scormplayer@latest` always fetches the newest
  * - a dependency inside a project, or a source checkout: update it there, not globally
  *
- * @returns {{ kind: "npm" | "pnpm" | "yarn" | "bun" | "npx" | "project" | "source", command: string[] | null, hint: string }}
+ * @returns {{ kind: "npm" | "pnpm" | "yarn" | "bun" | "npx" | "project" | "source" | "standalone", command: string[] | null, hint: string }}
  */
 export function installMethod({ packageRoot = PACKAGE_ROOT } = {}) {
   const where = packageRoot.split(path.sep).join("/");
   const install = (tool, args) => ({ kind: tool, command: [tool, ...args], hint: "scormplayer update" });
+  if (fs.existsSync(path.join(packageRoot, ".standalone-install.json"))) return { kind: "standalone", command: null, hint: "curl -fsSL https://github.com/jakerains/scormplayer/releases/latest/download/install.sh | bash" };
   if (where.includes("/_npx/")) return { kind: "npx", command: null, hint: `npx ${PACKAGE}@latest` };
   if (!where.includes("/node_modules/")) return { kind: "source", command: null, hint: "git pull && npm install && npm run build" };
   if (where.includes("/.bun/install/global/")) return install("bun", ["add", "-g", `${PACKAGE}@latest`]);

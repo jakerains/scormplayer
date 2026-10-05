@@ -162,7 +162,7 @@ async function main(argv) {
     try { await runSetup(); }
     catch (error) { console.error(`Setup: ${error.message}\nYou can continue using the player and run scormplayer setup later.`); }
   }
-  if (positionals.length === 0 && !values.drop && json) {
+  if (positionals.length === 0 && !values.drop && json && !isCourseFolder(process.cwd())) {
     throw new UserError("Pass a course (a SCORM .zip, a SCORM folder or a Vite project), or --drop to start empty.");
   }
   // Picked from the list of courses here: switching later shows that same list.
@@ -170,8 +170,8 @@ async function main(argv) {
   if (positionals.length === 0 && !values.drop) {
     listHome = process.cwd();
     const interactive = process.stdout.isTTY && process.stdin.isTTY && !values.plain;
-    if (!interactive) return void console.log(HELP);
     const here = process.cwd();
+    if (!interactive && !isCourseFolder(here)) return void console.log(HELP);
     const choice = isCourseFolder(here) ? here : await pickCourse({ version: VERSION, courses: findCourses(here) });
     if (!choice) return;
     if (choice !== DROP_PAGE) positionals.push(choice);
@@ -515,11 +515,15 @@ function runCache(action, cacheDir, json) {
  */
 async function runUpdate({ cacheDir, check, json }) {
   const say = (text) => { if (!json) console.log(text); };
+  const method = installMethod();
+  if (method.kind === "standalone" && !check) {
+    if (json) return void console.log(JSON.stringify({ ok: true, method: "standalone", manual: true, command: method.hint }));
+    return say(`Update this standalone install through GitHub:\n${method.hint}`);
+  }
   let latest;
   try { latest = await fetchLatest({ cacheDir }); }
   catch (error) { throw new UserError(`Couldn't reach the npm registry to check for updates (${error.message}).`); }
   const updateAvailable = isNewer(latest, VERSION);
-  const method = installMethod();
   // Just after a release npm names the new version before its file can be downloaded.
   const ready = updateAvailable ? await packageReady(latest) : true;
   const stillProcessing = `Version ${latest} is published, but npm is still getting it ready to download (usually a few minutes, now and then up to 20).`;

@@ -44,7 +44,7 @@
   "scripts": {
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/server.test.mjs tests/quality.test.mjs tests/webmcp.test.mjs tests/plugins.test.mjs tests/scorm-state.test.mjs tests/setup.test.mjs",
+    "test": "node --test tests/server.test.mjs tests/quality.test.mjs tests/webmcp.test.mjs tests/plugins.test.mjs tests/scorm-state.test.mjs tests/setup.test.mjs tests/update-notice.test.mjs",
     "check": "npm run typecheck && npm run build && npm test",
     "start": "node bin/scormplayer.mjs",
     "prepack": "npm run build && npm run build:plugins",
@@ -52,6 +52,8 @@
     "test:courses": "node scripts/qualify-courses.mjs",
     "version": "node scripts/sync-skill-version.mjs",
     "build:plugins": "npm --prefix integrations/agent run build && node scripts/package-agent-plugin.mjs",
+    "build:standalone": "node scripts/package-standalone.mjs",
+    "test:standalone": "node --test tests/install.test.mjs",
     "test:plugins": "npm --prefix integrations/agent run typecheck && npm --prefix integrations/agent test",
     "postinstall": "node bin/install-tip.mjs"
   },
