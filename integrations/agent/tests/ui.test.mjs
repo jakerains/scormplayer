@@ -184,7 +184,7 @@ test("missing messaging and rejected sends provide copyable requests", async () 
       assert.match(await app.getByRole("textbox", { name: "Request to copy", exact: true }).inputValue(), /The diagram label overlaps/);
       assert.equal(await page.evaluate(() => window.calls.some(call => call.params?.name === "scormplayer_update_pin")), false);
       await app.getByRole("checkbox", { name: "Include pin 2 in request", exact: true }).check();
-      assert.equal(await app.getByRole("textbox", { name: "Request to copy", exact: true }).count(), 0, "selection changes invalidate the copy request");
+      await app.getByRole("textbox", { name: "Request to copy", exact: true }).waitFor({ state: "detached" });
     } finally { await browser.close(); }
   }
 });

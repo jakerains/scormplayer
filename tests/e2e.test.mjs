@@ -248,6 +248,7 @@ test("pages, tour steps and narration skip", async () => {
     await page.waitForFunction(() => document.querySelector(".sp-nav__page")?.textContent?.includes("Spot the hazards"));
     await page.keyboard.press("BracketRight");
     await page.waitForFunction(() => document.querySelector(".sp-nav__page")?.textContent?.includes("Quick check"));
+    await page.locator('.sp-nav[aria-label="Pages"][aria-busy="false"]').waitFor();
     await nav.click();
     await page.locator(".sp-pages button", { hasText: "Introduction" }).click();
     await page.waitForFunction(() => document.querySelector(".sp-nav__page")?.textContent?.includes("Introduction"));

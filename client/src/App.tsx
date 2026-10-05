@@ -940,7 +940,7 @@ export function App() {
           ) : null}
 
           {nav ? (
-            <div className="sp-nav" aria-label="Pages">
+            <div className="sp-nav" aria-label="Pages" aria-busy={navBusy}>
               <button type="button" className="sp-nav__step" disabled={nav.index === 0} onClick={() => void stepPage(-1)} title="Previous page ( [ )" aria-label="Previous page">
                 <Icon name="chevronLeft" />
               </button>
