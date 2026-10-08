@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.4] - October 8, 2026
+
+- Pin selections follow scrolling inside lesson panels without waiting for the polling
+  timer. Saving or cancelling a pin cannot leave an old selection outline behind.
+- Saved pin screenshots load from hidden project folders such as `.scormplayer`.
+- Bundled MCP, pin widget and native host packages are 0.4.6, with the updated player
+  included in every host bundle. The bundled player guide is stamped 0.9.4.
+
 ## [0.9.3] - October 7, 2026
 
 - The Bash installer adds PATH to both interactive and login startup files, preserving

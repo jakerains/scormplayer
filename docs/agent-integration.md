@@ -153,4 +153,8 @@ Zod validation and MCP Apps metadata remain intact. After updating the player, r
 Their persistent MCP snapshots are separate from the CLI installation. Installed-server
 stdio verification does not establish a successful native Cowork agent turn.
 
+MCP 0.4.6 ships with player 0.9.4 and includes the selection scroll/cleanup and hidden-folder
+pin screenshot fixes in each native host bundle. Refresh existing connections with
+`scormplayer setup` or the native plugin installer after updating.
+
 Protocol and renderer references: [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) and [json-render MCP integration](https://github.com/vercel-labs/json-render/blob/main/skills/mcp/SKILL.md).

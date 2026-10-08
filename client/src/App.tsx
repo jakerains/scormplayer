@@ -420,7 +420,10 @@ export function App() {
   // Keep pin markers and the selection box on their elements as the course scrolls and changes.
   useEffect(() => {
     const tick = () => {
-      if (document.hidden || (!pins.length && !selection)) return;
+      // Closing the editor clears this ref immediately. A queued tick from the
+      // previous effect must not restore that selection's rectangle afterward.
+      const selected = selectionRef.current;
+      if (document.hidden || (!pins.length && !selected)) return;
       const doc = frameDoc();
       if (!doc) return;
       const page = currentPage();
@@ -436,22 +439,35 @@ export function App() {
         next.push({ id: pin.id, number: pin.number, rect });
       }
       setMarkers((previous) => (JSON.stringify(previous) === JSON.stringify(next) ? previous : next));
-      if (selection?.elements && selection.elements.length > 1) {
-        const rects = selection.elements.filter((element) => element.isConnected).map((element) => {
+      if (selected?.elements && selected.elements.length > 1) {
+        const rects = selected.elements.filter((element) => element.isConnected).map((element) => {
           const box = element.getBoundingClientRect();
           return { x: box.x, y: box.y, width: box.width, height: box.height };
         });
         setGroupRects((previous) => (JSON.stringify(previous) === JSON.stringify(rects) ? previous : rects));
       }
-      if (selection) {
-        const box = selection.target.kind === "text" || selection.target.kind === "region" ? locateTarget(doc, selection.target) : selection.element.isConnected ? selection.element.getBoundingClientRect() : null;
+      if (selected) {
+        const box = selected.target.kind === "text" || selected.target.kind === "region" ? locateTarget(doc, selected.target) : selected.element.isConnected ? selected.element.getBoundingClientRect() : null;
         const rect = box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
         setSelectionRect((previous) => (JSON.stringify(previous) === JSON.stringify(rect) ? previous : rect));
       }
     };
     tick();
+    let frame = 0;
+    const schedule = () => {
+      if (!frame) frame = window.requestAnimationFrame(() => { frame = 0; tick(); });
+    };
+    const doc = frameDoc();
+    // Scroll events on an inner panel do not bubble. Capture them from the whole lesson.
+    doc?.addEventListener("scroll", schedule, true);
+    doc?.defaultView?.addEventListener("resize", schedule);
     const timer = window.setInterval(tick, 200);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      window.cancelAnimationFrame(frame);
+      doc?.removeEventListener("scroll", schedule, true);
+      doc?.defaultView?.removeEventListener("resize", schedule);
+    };
   }, [pins, selection, frameLoads, currentPage]);
 
   async function savePin() {
@@ -827,7 +843,7 @@ export function App() {
 
           <div className="sp-overlay" aria-hidden={!markers.length}>
             {hover && !selection ? <div className="sp-box sp-box--hover" style={boxStyle(hover)} /> : null}
-            {selectionRect ? <div className={`sp-box sp-box--selected ${selection?.target.kind === "region" ? "is-region" : ""}`} style={boxStyle(selectionRect)} /> : null}
+            {selection && selectionRect ? <div className={`sp-box sp-box--selected ${selection.target.kind === "region" ? "is-region" : ""}`} style={boxStyle(selectionRect)} /> : null}
             {groupRects.slice(1).map((rect, index) => <div key={index} className="sp-box sp-box--also" style={boxStyle(rect)} />)}
             {band ? <div className="sp-box sp-box--band" style={boxStyle(band)} /> : null}
             {markers.map((marker) => (

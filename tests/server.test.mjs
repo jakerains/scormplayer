@@ -179,6 +179,22 @@ test("serves the course, saves pins and frames over HTTP", async () => {
   }
 });
 
+test("pin screenshots load from a hidden project directory", async () => {
+  const dir = tempDir();
+  const zip = path.join(dir, "course.zip");
+  fs.writeFileSync(zip, scorm2004Zip());
+  const player = await startPlayer({ input: zip, pinsFile: path.join(dir, ".scormplayer", "pins.json"), cacheDir: path.join(dir, "cache"), port: 0, registryDir: null });
+  try {
+    const pin = player.pins.create({ note: "Screenshot in project" });
+    const png = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000", "hex");
+    player.pins.saveFrame(pin.id, png);
+    const response = await fetch(new URL(`api/pins/${pin.id}/frame`, player.url));
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type"), /image\/png/);
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+  } finally { await player.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("only the player's own page can make changes; it reports the agent skill", async () => {
   const dir = tempDir();
   const zipPath = path.join(dir, "demo.zip");

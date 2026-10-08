@@ -351,7 +351,9 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     app.get("/api/pins/:id/frame", handle(async (req, res) => {
       const file = requireCourse().pins.frameFile(req.params.id);
       if (!file || !fs.existsSync(file)) return res.status(404).end();
-      res.type("png").sendFile(file);
+      // Live-course screenshots live inside .scormplayer; this route serves only the
+      // exact frame belonging to a saved pin, including when a parent is hidden.
+      res.type("png").sendFile(file, { dotfiles: "allow" });
     }));
 
     app.get("/api/brief", handle(async (req, res) => {

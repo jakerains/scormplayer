@@ -344,6 +344,64 @@ test("element, area and multi-element pins, and editing a note", async () => {
   }
 });
 
+test("a selected pin follows its element inside a scrolling lesson panel", async () => {
+  const input = navCourse();
+  fs.writeFileSync(path.join(input, "index.html"), `<!doctype html><title>Scrolling lesson</title>
+    <body style="margin:0"><div id="pane" style="height:450px;overflow:auto">
+    <div style="height:300px"></div><button id="target" style="margin-left:80px;width:300px;height:80px">Review this block</button>
+    <div style="height:1400px"></div></div></body>`);
+  const { player, page } = await open({ input, registryDir: null });
+  try {
+    await page.addInitScript(() => {
+      const interval = window.setInterval;
+      window.setInterval = (callback, delay, ...args) => {
+        if (delay === 200) {
+          window.__geometryTick = callback;
+          return interval(() => { if (!window.__pauseGeometryPolling) callback(...args); }, delay);
+        }
+        return interval(callback, delay, ...args);
+      };
+    });
+    await page.reload();
+    const frame = page.frameLocator("iframe.sp-frame");
+    await frame.locator("#target").waitFor();
+    await page.getByTitle("Pin mode (P)", { exact: true }).click();
+    await frame.locator("#target").click();
+    const aligned = () => page.evaluate(() => {
+      const box = document.querySelector(".sp-box--selected");
+      const element = document.querySelector("iframe.sp-frame").contentDocument.querySelector("#target");
+      return box && Math.abs(parseFloat(box.style.top) - element.getBoundingClientRect().top) < 2;
+    });
+    await page.waitForFunction(() => Boolean(document.querySelector(".sp-box--selected")));
+    assert.equal(await aligned(), true, "highlight starts on the target");
+    // Prevent the fallback timer from making a missing scroll listener pass.
+    await page.evaluate(() => { window.__pauseGeometryPolling = true; });
+    const before = await page.locator(".sp-box--selected").evaluate((element) => parseFloat(element.style.top));
+    await frame.locator("#pane").evaluate((element) => { element.scrollTop += 120; });
+    await page.waitForFunction(() => {
+      const box = document.querySelector(".sp-box--selected");
+      const element = document.querySelector("iframe.sp-frame").contentDocument.querySelector("#target");
+      return box && Math.abs(parseFloat(box.style.top) - element.getBoundingClientRect().top) < 2;
+    }, null, { timeout: 1000 });
+    const after = await page.locator(".sp-box--selected").evaluate((element) => parseFloat(element.style.top));
+    assert.equal(before - after, 120, "scroll listener moves the highlight with polling paused");
+    // A last geometry callback can run after the editor's DOM commit and before
+    // React cleans up its passive effect. Make that scheduling gap deterministic.
+    await page.evaluate(() => {
+      const tick = window.__geometryTick;
+      const observer = new MutationObserver(() => {
+        if (!document.querySelector(".sp-composer")) { observer.disconnect(); tick(); }
+      });
+      observer.observe(document.querySelector(".sp-device"), { childList: true });
+    });
+    await page.locator(".sp-composer textarea").fill("Follow nested scrolling");
+    await page.locator(".sp-composer button", { hasText: "Save pin" }).click();
+    await page.locator(".sp-composer").waitFor({ state: "detached" });
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator(".sp-box--selected").count(), 0, "saving cannot leave a stationary selection box");
+  } finally { await page.close(); await player.close(); fs.rmSync(path.dirname(input), { recursive: true, force: true }); }
+});
+
 test("tablet and phone views resize the course", async () => {
   const { player, page } = await open({ input: navCourse() });
   try {
