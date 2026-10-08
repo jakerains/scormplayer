@@ -441,7 +441,10 @@ Pass several players to `createDashboard` to watch several courses in one screen
 ### Running players
 
 Each course opens in one player. Run `scormplayer` on a course that's already open and it opens
-that player again rather than starting another (`--new` starts another anyway).
+that player again. In an interactive terminal, a menu stays open: reopen the browser, start a
+separate player here (sharing the course and pins), or return to the terminal. Leaving the menu
+does not stop the existing player; its original session still manages it. `--new` skips the menu
+and starts another player. Plain and JSON commands return immediately when reusing a player.
 
 ```sh
 scormplayer ps                 # what's running: port, course, when a browser last looked

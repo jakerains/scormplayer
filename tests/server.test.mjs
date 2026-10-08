@@ -778,6 +778,81 @@ test("update: tells how scormplayer was installed, and how to update it", async 
   }
 });
 
+test("interactive reuse stays open, reopens the browser, and leaves the original player running", { timeout: 30000 }, async (t) => {
+  const dir = tempDir();
+  const zipPath = path.join(dir, "demo.zip");
+  fs.writeFileSync(zipPath, scorm12Zip());
+  const cache = path.join(dir, "cache");
+  const data = path.join(dir, "data");
+  const setup = path.join(data, "scormplayer", "setup");
+  fs.mkdirSync(setup, { recursive: true });
+  fs.writeFileSync(path.join(setup, "choice.json"), "{}");
+  const registry = path.join(cache, "scormplayer", "players");
+  const original = await startPlayer({ input: zipPath, cacheDir: cache, port: 0, registryDir: registry });
+  t.after(() => original.close());
+  // Exercise the real CLI and key handling with terminal streams; only intercept OS browser launch.
+  const preload = path.join(dir, "terminal.mjs");
+  const opened = path.join(dir, "browser-opens");
+  fs.writeFileSync(preload, `import cp from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+process.stdin.isTTY = process.stdout.isTTY = true;
+process.stdin.setRawMode = () => {};
+const spawn = cp.spawn;
+cp.spawn = (command, args, options) => {
+  if (["open", "xdg-open", "cmd"].includes(command)) {
+    fs.appendFileSync(${JSON.stringify(opened)}, JSON.stringify(args) + "\\n");
+    return { on() { return this; }, unref() {} };
+  }
+  return spawn(command, args, options);
+};
+syncBuiltinESMExports();`);
+  const env = { ...process.env, CI: "", XDG_CACHE_HOME: cache, XDG_DATA_HOME: data, SCORMPLAYER_NO_UPDATE_CHECK: "1" };
+  const launch = () => {
+    const child = spawn(process.execPath, ["--import", preload, BIN, zipPath, "--no-open", "--port", "0"], { env });
+    let output = "";
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.stderr.on("data", (chunk) => { output += chunk; });
+    const done = new Promise((resolve) => child.once("close", resolve));
+    t.after(async () => { if (child.exitCode === null) child.kill("SIGKILL"); await done; });
+    return { child, done, output: () => output };
+  };
+  const waitFor = async (session, predicate) => {
+    const deadline = Date.now() + 10000;
+    while (!predicate()) {
+      assert.equal(session.child.exitCode, null, session.output());
+      assert.ok(Date.now() < deadline, session.output());
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  };
+  const session = launch();
+  await waitFor(session, () => session.output().includes("What would you like to do?"));
+  assert.equal(fs.existsSync(opened), false, "--no-open is respected");
+  session.child.stdin.write("\r");
+  await waitFor(session, () => session.output().includes("Requested your browser"));
+  assert.deepEqual(JSON.parse(fs.readFileSync(opened, "utf8").trim()), [original.url]);
+  assert.equal(session.child.exitCode, null, "opening the browser keeps the menu alive");
+  session.child.stdin.end("q");
+  assert.equal(await session.done, 0);
+  assert.match(session.output(), /existing player was not stopped/);
+  assert.equal((await fetch(`${original.url}api/player`)).status, 200);
+
+  const separate = launch();
+  await waitFor(separate, () => separate.output().includes("What would you like to do?"));
+  separate.child.stdin.write("\x1b[B\r");
+  const { listPlayers } = await import("../server/registry.mjs");
+  await waitFor(separate, () => listPlayers(registry).length === 2);
+  const other = listPlayers(registry).find((entry) => entry.pid === separate.child.pid);
+  assert.ok(other);
+  assert.notEqual(other.url, original.url);
+  assert.equal(other.pinsFile, original.course.pinsFile);
+  // Wait for the new dashboard's keys before quitting it.
+  await waitFor(separate, () => separate.output().includes(other.url));
+  separate.child.stdin.write("q");
+  assert.equal(await separate.done, 0);
+  assert.equal((await fetch(`${original.url}api/player`)).status, 200, "quitting the new player leaves the original alive");
+});
+
 test("running players: registry, reuse, ps and stop, and stopping when idle", async (t) => {
   const { registerPlayer, listPlayers, findPlayer } = await import("../server/registry.mjs");
   const dir = tempDir();

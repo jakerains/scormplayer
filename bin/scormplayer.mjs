@@ -287,7 +287,11 @@ async function main(argv) {
   // One player per course: if this course is already open (same pins), use that player.
   if (input && !values.new) {
     const running = findPlayer({ input, pinsFile, pkg });
-    if (running && await askPlayer(running.url)) return reusePlayer(running, { json, open: !values["no-open"] });
+    const info = running && await askPlayer(running.url);
+    if (running && info?.pid === running.pid) {
+      const action = await reusePlayer(running, { json, open: !values["no-open"], interactive: mode === "dashboard" });
+      if (action !== "new") return;
+    }
   }
 
   const idleMinutes = values.idle !== undefined ? Number(values.idle) : mode === "background" ? 30 : 0;
@@ -418,7 +422,7 @@ function packagesNote(course, input) {
 }
 
 /** The course is already open in another player: point at that one instead of starting another. */
-async function reusePlayer(running, { json, open }) {
+async function reusePlayer(running, { json, open, interactive }) {
   if (open) openBrowser(running.url);
   if (json) {
     return void console.log(JSON.stringify({
@@ -428,7 +432,34 @@ async function reusePlayer(running, { json, open }) {
     }));
   }
   console.log(`${running.title ?? "This course"} is already open at ${running.url} (started ${since(running.startedAt)} ago, process ${running.pid}).`);
-  console.log(`${open ? "Opened it in your browser. " : ""}Stop it with: scormplayer stop ${running.port}   Start another anyway with: --new`);
+  if (open) console.log("Requested your browser to open it. You can also click or copy the URL above.");
+  if (!interactive) {
+    console.log(`The player stays running. Stop it with: scormplayer stop ${running.port}   Start another: scormplayer ${quote(running.input)} --new`);
+    return;
+  }
+  console.log("This player is managed by the session that started it. Leaving this menu does not stop it.");
+  while (true) {
+    const choice = await pickFromList({
+      title: "What would you like to do?",
+      items: [
+        { label: "Open existing player in browser" },
+        { label: "Start a separate player here", note: "same course and pins" },
+        { label: "Return to terminal", note: "leave existing player running" },
+      ],
+    });
+    if (choice === 1) return "new";
+    if (choice !== 0) {
+      console.log(`Left the menu. The existing player was not stopped: ${running.url}`);
+      return;
+    }
+    const info = await askPlayer(running.url);
+    if (info?.pid !== running.pid) {
+      console.log("The original player is no longer responding. Choose a separate player to open this course here.");
+      continue;
+    }
+    openBrowser(running.url);
+    console.log(`Requested your browser to open ${running.url}`);
+  }
 }
 
 /** Every player on this machine: the registered ones, plus ones from older versions found on the port range. */

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6] - October 8, 2026
+
+- Opening an already-running course in a terminal keeps a reuse menu open, with browser,
+  separate-player and leave-running choices. Exiting the menu never stops the original player.
+- Reuse verifies that the responding process matches the registry entry. Plain and JSON
+  launches retain their immediate-return behavior.
+- Bundled MCP and Codex/Claude/Cursor packages are 0.4.8, including player 0.9.6.
+
 ## [0.9.5] - October 8, 2026
 
 - Pins preserve content and tour IDs, raw and rendered text, CSS casing, ancestor identity,

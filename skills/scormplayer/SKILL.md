@@ -2,7 +2,7 @@
 name: scormplayer
 description: Work with scormplayer, a local SCORM player whose reviewers leave pinned notes on a course. Use when someone asks you to act on pins, review notes or feedback on a SCORM course or lesson, mentions scormplayer or a *.pins.json file, pastes a "# Pinned notes:" hand-off, or wants to open, preview or review a SCORM zip, SCORM folder or Vite-built course.
 metadata:
-  version: "0.9.5"
+  version: "0.9.6"
 ---
 
 # scormplayer
