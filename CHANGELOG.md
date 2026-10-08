@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - October 8, 2026
+
+- Pins preserve content and tour IDs, raw and rendered text, CSS casing, ancestor identity,
+  and the original clicked child when selection expands to a containing element.
+- Source search lists repeated occurrences in minified and hashed bundles with original
+  offsets and context. Text matches are labeled as candidates; manifest titles are excluded
+  from visible-copy matching and search limits are reported.
+- Optional course-authored content manifests map element IDs to JSON fields and known
+  consumers. Artifact hashes are checked; stale or ambiguous bindings are rejected.
+- Standard MCP adds `scormplayer_verify_pin`, `scormplayer_reload`, and
+  `scormplayer_list_browser_sessions`. Agents can inspect the actual open review tab without
+  host-specific browser tools. Wrong-page, ambiguous, stale, disconnected and unconfirmed
+  targets are reported explicitly; verification never resolves a pin automatically.
+- Bundled MCP, pin widget and Codex/Claude/Cursor host packages are 0.4.7. The player guide is
+  stamped 0.9.5. Restart older running players and refresh host setup after updating.
+
 ## [0.9.4] - October 8, 2026
 
 - Pin selections follow scrolling inside lesson panels without waiting for the polling

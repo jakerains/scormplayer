@@ -11,6 +11,13 @@ export type PinTarget = {
   tag: string;
   selector: string;
   text: string;
+  clicked?: PinTarget;
+  rawText?: string;
+  textTransform?: string;
+  ancestors?: { selector: string; tag: string; attributes: Record<string, string> }[];
+  scroll?: { x: number; y: number };
+  scrollContainers?: { selector: string; x: number; y: number }[];
+  selectorUnique?: boolean;
   rect: Rect;
   viewport: { width: number; height: number };
   attributes?: Record<string, string>;
@@ -25,11 +32,12 @@ const MEANINGFUL = [
   "button", "a[href]", "input", "select", "textarea", "label", "img", "video", "audio", "svg", "canvas", "iframe",
   "h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "figure", "blockquote", "pre", "table", "tr", "td", "th", "summary", "dt", "dd",
   "[role=button]", "[role=tab]", "[role=link]", "[role=img]", "[role=checkbox]", "[role=radio]", "[role=option]",
-  "[role=dialog]", "[role=listitem]", "[aria-label]", "[data-testid]", "[oai-annotatable]",
+  "[data-content-id]", "[data-content-component-id]", "[data-tour-id]", "[role=dialog]", "[role=listitem]", "[aria-label]", "[data-testid]", "[oai-annotatable]",
 ].join(",");
 
 /** Attributes worth carrying into a pin when a course already has them. */
-const READ_ATTRIBUTES = ["aria-label", "alt", "title", "data-testid", "oai-annotatable", "href", "src", "role"];
+export const IDENTITY_ATTRIBUTES = ["id", "data-content-id", "data-content-component-id", "data-tour-id", "data-testid"];
+const READ_ATTRIBUTES = [...IDENTITY_ATTRIBUTES, "aria-labelledby", "aria-describedby", "aria-label", "alt", "title", "oai-annotatable", "href", "src", "role"];
 
 /** The element a pointer over `element` should select. */
 export function chooseTarget(element: Element | null): Element | null {
@@ -61,6 +69,7 @@ export function describeElement(element: Element): PinTarget {
   const win = element.ownerDocument.defaultView!;
   const box = element.getBoundingClientRect();
   return {
+    ...evidenceOf(element),
     kind: "element",
     name: nameOf(element),
     tag: element.tagName.toLowerCase(),
@@ -82,6 +91,7 @@ export function describeTextSelection(selection: Selection): PinTarget | null {
   const win = element.ownerDocument.defaultView!;
   const box = range.getBoundingClientRect();
   return {
+    ...evidenceOf(element),
     kind: "text",
     name: `“${text.length > 60 ? `${text.slice(0, 59)}…` : text}”`,
     tag: element.tagName.toLowerCase(),
@@ -116,6 +126,7 @@ export function describeRegion(doc: Document, band: Rect): { element: Element; t
   return {
     element,
     target: {
+      ...evidenceOf(element),
       kind: "region",
       name: `Area ${rect.width}×${rect.height} in ${nameOf(element)}`.slice(0, 120),
       tag: element.tagName.toLowerCase(),
@@ -161,7 +172,7 @@ export function locateTarget(doc: Document, target: PinTarget, element = element
 }
 
 export function elementFor(doc: Document, target: PinTarget): Element | null {
-  try { return doc.querySelector(target.selector); } catch { return null; }
+  try { const matches = doc.querySelectorAll(target.selector); return matches.length === 1 ? matches[0] : null; } catch { return null; }
 }
 
 function findTextRange(element: Element, text: string): Range | null {
@@ -197,7 +208,7 @@ function attributesOf(element: Element): Record<string, string> | undefined {
     const value = element.getAttribute(name);
     if (value && value.length <= 300 && !value.startsWith("data:")) out[name] = value;
   }
-  const metadata = element.closest("[oai-annotation-metadata]")?.getAttribute("oai-annotation-metadata");
+  const metadata = element.getAttribute("oai-annotation-metadata");
   if (metadata) {
     try {
       const parsed = JSON.parse(metadata);
@@ -223,11 +234,11 @@ export function cssPath(element: Element): string {
       steps.unshift(`#${CSS.escape(id)}`);
       break;
     }
-    const testId = current.getAttribute("data-testid");
-    if (testId && unique(`[data-testid="${CSS.escape(testId)}"]`)) {
-      steps.unshift(`[data-testid="${CSS.escape(testId)}"]`);
-      break;
-    }
+    const identity = IDENTITY_ATTRIBUTES.slice(1).map((name) => {
+      const value = current!.getAttribute(name);
+      return value ? `[${name}="${CSS.escape(value)}"]` : "";
+    }).find((selector) => selector && unique(selector));
+    if (identity) { steps.unshift(identity); break; }
     const tag = current.tagName.toLowerCase();
     const parent: Element | null = current.parentElement;
     const siblings = parent ? Array.from(parent.children).filter((child) => child.tagName === current!.tagName) : [];
@@ -266,4 +277,25 @@ function toRect(box: DOMRect): Rect {
 
 function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/** Bounded evidence; ancestor identity stays attached to the element that owns it. */
+function evidenceOf(element: Element) {
+  const win = element.ownerDocument.defaultView!;
+  const ancestors: NonNullable<PinTarget["ancestors"]> = [];
+  const scrollContainers: NonNullable<PinTarget["scrollContainers"]> = [];
+  let parent = element.parentElement;
+  for (let depth = 0; parent && depth < 12; depth++, parent = parent.parentElement) {
+    const attributes = attributesOf(parent);
+    if (attributes && ancestors.length < 6) ancestors.push({ selector: cssPath(parent), tag: parent.tagName.toLowerCase(), attributes });
+    if ((parent.scrollTop || parent.scrollLeft) && scrollContainers.length < 6) scrollContainers.push({ selector: cssPath(parent), x: parent.scrollLeft, y: parent.scrollTop });
+  }
+  return {
+    rawText: (element.textContent ?? "").slice(0, 1200),
+    textTransform: win.getComputedStyle(element).textTransform,
+    ancestors,
+    scroll: { x: win.scrollX, y: win.scrollY },
+    scrollContainers,
+    selectorUnique: element.ownerDocument.querySelectorAll(cssPath(element) || "body").length === 1,
+  };
 }

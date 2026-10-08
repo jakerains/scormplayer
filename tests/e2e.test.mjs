@@ -787,3 +787,98 @@ test("packaged review keeps ordinary learner requirements and receives no live r
     assert.equal(await page.frameLocator("iframe.sp-frame").locator(".driver-popover-next-btn").isDisabled(), true);
   } finally { await page.close(); await player.close(); fs.rmSync(path.dirname(input), { recursive: true, force: true }); }
 });
+
+test("pins preserve content identity and verify the actual review tab through the server", async () => {
+  const input = navCourse();
+  const file = path.join(input, "index.html");
+  fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("First card</button>", "<span>First card</span></button>"));
+  fs.appendFileSync(file, '<header aria-label="Course header" data-content-component-id="lesson-header"><span data-content-id="lesson.title" data-tour-id="welcome-label" style="text-transform:uppercase">Welcome to the ElevenAgents Course</span></header>');
+  const { player, page } = await open({ input, registryDir: null });
+  let second;
+  const revision = (await (await fetch(new URL("api/player", player.url))).json()).revision;
+  const post = async (endpoint, body) => {
+    const response = await fetch(new URL(endpoint, player.url), { method: "POST", headers: { "content-type": "application/json", "x-scormplayer-revision": revision }, body: JSON.stringify(body) });
+    return { code: response.status, body: await response.json() };
+  };
+  try {
+    const frame = page.frameLocator("iframe.sp-frame");
+    const label = frame.locator('[data-content-id="lesson.title"]');
+    await label.waitFor();
+    await page.keyboard.press("p");
+    await label.click();
+    await page.locator(".sp-composer textarea").fill("Shorten this title");
+    await page.locator(".sp-composer button", { hasText: "Save pin" }).click();
+    await page.locator(".sp-composer").waitFor({ state: "detached" });
+    const pin = player.pins.list()[0];
+    assert.equal(pin.target.tag, "span", "select the tagged child rather than its labeled header");
+    assert.equal(pin.target.rawText, "Welcome to the ElevenAgents Course");
+    assert.equal(pin.target.text, "WELCOME TO THE ELEVENAGENTS COURSE");
+    assert.equal(pin.target.textTransform, "uppercase");
+    assert.equal(pin.target.attributes["data-content-id"], "lesson.title");
+    assert.equal(pin.target.attributes["data-tour-id"], "welcome-label");
+    assert.ok(pin.target.ancestors.some((item) => item.attributes["data-content-component-id"] === "lesson-header"));
+    assert.equal(pin.target.attributes["data-content-component-id"], undefined);
+    assert.equal(pin.target.selectorUnique, true);
+    await frame.locator("#a span").click();
+    await page.locator(".sp-composer textarea").fill("Make the card clearer");
+    await page.locator(".sp-composer button", { hasText: "Save pin" }).click();
+    await page.locator(".sp-composer").waitFor({ state: "detached" });
+    assert.equal(player.pins.list()[1].target.tag, "button");
+    assert.equal(player.pins.list()[1].target.clicked.tag, "span", "keep clicked child evidence across iframe realms");
+    await page.waitForFunction(async () => (await (await fetch("/api/browser/sessions")).json()).sessions.some((s) => s.ready));
+    const sessions = (await (await fetch(new URL("api/browser/sessions", player.url))).json()).sessions;
+    const sessionId = sessions[0].sessionId;
+    let result = await post("api/verify-pin", { id: pin.id });
+    assert.equal(result.code, 200);
+    assert.equal(result.body.observation.status, "observed");
+    assert.equal(result.body.observation.targets[0].target.rawText, pin.target.rawText);
+
+    // An edit to the real served folder is read after an explicit MCP-style reload.
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("Welcome to the ElevenAgents Course</span>", "Welcome to ElevenAgents</span>"));
+    result = await post("api/reload", { sessionId });
+    assert.equal(result.body.observation.status, "reload-requested");
+    await page.waitForFunction(() => document.querySelector("iframe.sp-frame")?.contentDocument?.querySelector('[data-content-id="lesson.title"]')?.textContent === "Welcome to ElevenAgents");
+    await page.waitForFunction(() => document.querySelector("iframe.sp-frame")?.contentDocument?.readyState === "complete");
+    await page.waitForFunction(async (id) => (await (await fetch("/api/browser/sessions")).json()).sessions.find((s) => s.sessionId === id)?.ready, sessionId);
+    result = await post("api/verify-pin", { id: pin.id, sessionId });
+    assert.equal(result.body.observation.status, "observed");
+    assert.equal(result.body.observation.targets[0].target.rawText, "Welcome to ElevenAgents");
+    assert.equal(result.body.observation.targets[0].target.text, "WELCOME TO ELEVENAGENTS");
+    assert.equal(player.pins.list()[0].status, "open", "verification never resolves a pin");
+    const header = frame.locator("header[data-content-component-id]");
+    await header.evaluate((element) => element.setAttribute("data-content-component-id", "other-header"));
+    assert.equal((await post("api/verify-pin", { id: pin.id, sessionId })).body.observation.status, "target-unconfirmed");
+    await header.evaluate((element) => element.setAttribute("data-content-component-id", "lesson-header"));
+    await label.evaluate((element) => element.after(element.cloneNode(true)));
+    const duplicate = await post("api/verify-pin", { id: pin.id, sessionId });
+    assert.equal(duplicate.body.observation.targets[0].status, "ambiguous");
+    await label.first().evaluate((element) => element.nextElementSibling.remove());
+    const legacyPin = player.pins.create({ note: "Old pin without identity", page: pin.page, target: { ...pin.target, attributes: {}, ancestors: [] } });
+    assert.equal((await post("api/verify-pin", { id: legacyPin.id, sessionId })).body.observation.targets[0].status, "identity-unconfirmed");
+
+
+    second = await browser.newPage();
+    await second.goto(player.url);
+    await second.frameLocator("iframe.sp-frame").locator("[data-content-id]").waitFor();
+    await second.waitForFunction(async () => { const s = (await (await fetch("/api/browser/sessions")).json()).sessions; return s.length === 2 && s.every((tab) => tab.ready); });
+    result = await post("api/verify-pin", { id: pin.id });
+    assert.equal(result.code, 409, JSON.stringify(result));
+    assert.match(result.body.error, /Several review tabs/);
+    assert.equal((await post("api/verify-pin", { id: pin.id, sessionId })).body.observation.status, "observed");
+    await second.close(); second = null;
+
+    await page.locator('.sp-nav__step[aria-label="Next page"]').click();
+    await page.waitForFunction(() => document.querySelector(".sp-nav__page")?.textContent?.includes("Spot the hazards"));
+    await page.locator('.sp-nav[aria-label="Pages"][aria-busy="false"]').waitFor();
+    assert.equal((await post("api/verify-pin", { id: pin.id, sessionId })).body.observation.status, "wrong-page");
+    await page.locator('.sp-nav__step[aria-label="Previous page"]').click();
+    await page.waitForFunction(() => document.querySelector(".sp-nav__page")?.textContent?.includes("Introduction"));
+    await page.locator('.sp-nav[aria-label="Pages"][aria-busy="false"]').waitFor();
+    await label.evaluate((element) => element.setAttribute("data-content-id", "other.title"));
+    assert.equal((await post("api/verify-pin", { id: pin.id, sessionId })).body.observation.status, "target-unconfirmed");
+    await page.close();
+    result = await post("api/verify-pin", { id: pin.id });
+    assert.equal(result.code, 409);
+    assert.match(result.body.error, /No connected review browser|review tab disconnected/);
+  } finally { await second?.close(); await page.close(); await player.close(); }
+});

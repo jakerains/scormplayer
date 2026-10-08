@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, copyText, type Course, type Pin, type PinPage } from "./api";
 import { captureElement, captureRegion } from "./capture";
+import { connectReviewBrowser } from "./browser-bridge";
 import { Icon } from "./icons";
 import { chooseTarget, describeElement, describeGroup, describeRegion, describeTextSelection, locateTarget, visibleText, elementFor, widenTarget, type PinTarget, type Rect } from "./picker";
 import { installScormApis, progressOf, type ScormData } from "./scorm-api";
@@ -41,6 +42,7 @@ export function App() {
   const [resetting, setResetting] = useState(false);
   const [frameKey, setFrameKey] = useState(0);
   const [frameLoads, setFrameLoads] = useState(0);
+  const reloadPending = useRef(false);
   const [pins, setPins] = useState<Pin[]>([]);
   const [pinMode, setPinMode] = useState(false);
   const [passthrough, setPassthrough] = useState(false);
@@ -194,6 +196,12 @@ export function App() {
     };
   }, [scormData, nav, sco]);
 
+  const browserContext = useRef(() => ({ doc: frameDoc(), page: currentPage(), busy: navBusy || reloadPending.current, reload: async () => { await persistence?.flush(); reloadCourse(); } }));
+  browserContext.current = () => ({ doc: frameDoc(), page: currentPage(), busy: navBusy || reloadPending.current, reload: async () => { await persistence?.flush(); reloadCourse(); } });
+  useEffect(() => {
+    if (course) return connectReviewBrowser(course.revision, () => browserContext.current());
+  }, [course?.revision]);
+
   // Page navigation and the tour/narration shortcuts follow the course frame.
   useEffect(() => {
     const frame = frameRef.current;
@@ -329,7 +337,9 @@ export function App() {
         else openComposer(elements[0], describeGroup(elements), elements);
         return;
       }
-      openComposer(element, describeElement(element));
+      const target = describeElement(element);
+      if (event.target !== element && (event.target as Node)?.nodeType === 1) target.clicked = describeElement(event.target as Element);
+      openComposer(element, target);
     };
 
     const options = { capture: true } as const;
@@ -478,7 +488,7 @@ export function App() {
       setPins((previous) => [...previous, pin]);
       const element = selection.element;
       closeComposer();
-      say(`Pin ${pin.number} saved${pin.source?.length ? ` · found in ${pin.source[0].file}` : ""}`);
+      say(`Pin ${pin.number} saved${pin.source?.length ? ` · ${pin.source[0].provenance === "content-binding" ? "mapped to" : "possible match in"} ${pin.source[0].file}` : ""}`);
       const shot = selection.target.kind === "region" && selection.target.offset
         ? captureRegion(element, selection.target.offset, selection.target.rect)
         : captureElement(element);
@@ -630,6 +640,7 @@ export function App() {
   }
 
   function reloadCourse() {
+    reloadPending.current = true;
     checkpointReview(frameRef.current, false, true);
     setFrameKey((key) => key + 1);
   }
@@ -837,7 +848,7 @@ export function App() {
               src={frameUrl}
               data-review-scope={viewScope || undefined}
               allow="autoplay; fullscreen; microphone; camera; clipboard-write"
-              onLoad={() => setFrameLoads((count) => count + 1)}
+              onLoad={() => { reloadPending.current = false; setFrameLoads((count) => count + 1); }}
             />
           ) : <div className="sp-loading">Opening course…</div>}
 
@@ -1168,7 +1179,7 @@ function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete, onEdit }: {
             {[pin.page?.title, pin.target?.name].filter(Boolean).join(" · ")}
             {onPage ? " · on this page" : ""}
           </small>
-          {pin.source?.[0] ? <code>{pin.source[0].file}:{pin.source[0].line}</code> : null}
+          {pin.source?.[0] ? <code title={pin.source[0].provenance === "content-binding" ? "Course-declared binding; file hashes checked at capture" : "Text match only; confirm the rendering field before editing"}>{pin.source[0].provenance === "content-binding" ? "Mapped: " : "Possible: "}{pin.source[0].file}:{pin.source[0].line}</code> : null}
         </span>
         {pin.frame ? <img src={`/api/pins/${pin.id}/frame?v=${encodeURIComponent(pin.updatedAt)}`} alt="" /> : null}
       </button>

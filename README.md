@@ -237,6 +237,18 @@ folders lists each course to pick from.
 When a manifest lists several SCOs, a **Module** switcher appears in the bar. Each module keeps
 its own SCORM data, as it would in an LMS, and pins remember their module.
 
+### Verify pins through ordinary MCP
+
+`scormplayer_verify_pin` reads the current target from the open review browser, including raw
+and rendered text, content IDs and CSS casing. `scormplayer_reload` requests a course reload;
+`scormplayer_list_browser_sessions` lets the agent choose the right tab when several are open.
+These work through standard MCP without a host-specific browser tool or certificate setup.
+
+Pins distinguish text-match candidates from optional course-declared content bindings. Repeated
+strings in bundles include individual offsets and context; manifest titles are excluded from
+visible-copy matching. See [pin evidence and verification](docs/pin-evidence.md) for source
+confidence, search limits and the optional content manifest.
+
 ### For AI agents in the browser (WebMCP)
 
 In browsers that support [WebMCP](https://github.com/webmachinelearning/webmcp), the player

@@ -2,6 +2,16 @@
 
 Lessons run in the normal local browser player. A standard stdio MCP server gives agents access to registered players, exact course revisions, pins, saved screenshots, source evidence and durable SCORM progress. MCP Apps hosts can render the pin checklist; clients without Apps support receive the same text and structured data. Browser WebMCP tools, when advertised by the browser, control navigation, narration, viewport and the browser's current SCORM state.
 
+## Current-browser verification
+
+The ordinary MCP tools `scormplayer_list_browser_sessions`, `scormplayer_verify_pin`, and
+`scormplayer_reload` use the open player's same-origin browser bridge. They require a connected
+player tab and an unambiguous session selection. Verification reports DOM observations without
+navigating or resolving pins. It reports wrong-page, missing, ambiguous, loading and disconnected
+states explicitly. Reload flushes learner progress and returns a request acknowledgement; wait
+for readiness before verification. See [pin evidence](pin-evidence.md) for confidence semantics
+and optional course-authored content bindings. No proprietary browser API is required.
+
 ## Normal MCP configuration
 
 The recommended setup is:
@@ -153,8 +163,8 @@ Zod validation and MCP Apps metadata remain intact. After updating the player, r
 Their persistent MCP snapshots are separate from the CLI installation. Installed-server
 stdio verification does not establish a successful native Cowork agent turn.
 
-MCP 0.4.6 ships with player 0.9.4 and includes the selection scroll/cleanup and hidden-folder
-pin screenshot fixes in each native host bundle. Refresh existing connections with
-`scormplayer setup` or the native plugin installer after updating.
+MCP 0.4.7 ships with player 0.9.5 and includes richer pin evidence and connected-browser
+verification. Refresh installed host packages or run setup again after updating. Restart older
+running players and open a fresh host session to load the new tools.
 
 Protocol and renderer references: [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) and [json-render MCP integration](https://github.com/vercel-labs/json-render/blob/main/skills/mcp/SKILL.md).

@@ -4,7 +4,7 @@
   "engines": {
     "node": ">=22.22.2"
   },
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "Local SCORM player MCP tools and review panel",
   "author": "Jake Rains",
   "license": "MIT",

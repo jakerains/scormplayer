@@ -8,7 +8,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseManifestXml, resolveCourse, UserError } from "../server/course.mjs";
 import { createPinStore } from "../server/pins.mjs";
-import { findSourceText } from "../server/source-match.mjs";
+import { findSourceText, findSourceEvidence } from "../server/source-match.mjs";
 import { startPlayer } from "../server/index.mjs";
 import { MANIFEST_12, MANIFEST_2004, bundleZip, multiScoZip, scorm12Zip, scorm2004Zip, traversalZip } from "./fixtures.mjs";
 
@@ -131,7 +131,7 @@ test("pins: create, number, resolve, brief and delete", () => {
   assert.equal(saved.course.title, "Demo");
 });
 
-test("finds pinned text in source files, skipping bundles and minified lines", () => {
+test("finds all text candidates including bundles with original offsets", () => {
   const dir = tempDir();
   fs.mkdirSync(path.join(dir, "src/content"), { recursive: true });
   fs.mkdirSync(path.join(dir, "assets"), { recursive: true });
@@ -139,7 +139,9 @@ test("finds pinned text in source files, skipping bundles and minified lines", (
   fs.writeFileSync(path.join(dir, "assets/index-a1b2c3d4.js"), 'const a="Welcome — let’s get started.";');
   fs.writeFileSync(path.join(dir, "assets/app.js"), `${"x".repeat(500)}"Welcome — let’s get started."`);
   const matches = findSourceText(dir, "Welcome – let’s get started.");
-  assert.deepEqual(matches.map((match) => `${match.file}:${match.line}`), ["src/content/pages.json:2"]);
+  assert.deepEqual(matches.map((match) => `${match.file}:${match.line}`), ["src/content/pages.json:2", "assets/app.js:1", "assets/index-a1b2c3d4.js:1"]);
+  assert.ok(matches.every((item) => item.provenance === "text-match" && item.confidence === "candidate"));
+  assert.equal(matches[0].offset, fs.readFileSync(path.join(dir, matches[0].file), "utf8").indexOf("Welcome"));
   assert.deepEqual(findSourceText(dir, "Nowhere in the files"), []);
 });
 
@@ -992,4 +994,56 @@ test("closing a live player also closes a retired WebSocket upgrade", async (t) 
   socket.write(`GET /course/retired-session HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: vite-ping\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`);
   await new Promise((resolve) => setTimeout(resolve, 50));
   await Promise.race([player.close(), new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("Retired upgrade prevented shutdown")), 2000); timer.unref(); })]);
+});
+
+
+test("pin source evidence excludes manifest titles, lists duplicate offsets and reports limits", () => {
+  const dir = tempDir();
+  const title = "Welcome to the ElevenAgents Course";
+  fs.writeFileSync(path.join(dir, "imsmanifest.xml"), `<title>${title}</title>`);
+  fs.writeFileSync(path.join(dir, "bundle-a1b2c3d4.js"), Array.from({ length: 4 }, (_, i) => `field${i}:"${title}"`).join(","));
+  const result = findSourceEvidence(dir, { text: title.toUpperCase(), rawText: title });
+  assert.equal(result.source.length, 4);
+  assert.equal(new Set(result.source.map((item) => item.offset)).size, 4);
+  assert.ok(result.source.every((item) => item.file === "bundle-a1b2c3d4.js"));
+  assert.equal(result.sourceSearch.truncated, false);
+  fs.writeFileSync(path.join(dir, "many.js"), Array(110).fill(JSON.stringify(title)).join(","));
+  const bounded = findSourceEvidence(dir, { text: title });
+  assert.equal(bounded.source.length, 100);
+  assert.equal(bounded.sourceSearch.truncated, true);
+});
+
+test("explicit content bindings require current hashes and own identity, with known consumers", async () => {
+  const { createHash } = await import("node:crypto");
+  const dir = tempDir();
+  const content = JSON.stringify({ lessons: { "m01-l00": { title: "Course title" } } });
+  fs.writeFileSync(path.join(dir, "copy.json"), content);
+  fs.writeFileSync(path.join(dir, "index.html"), "<main>Course title</main>");
+  const sha = (text) => createHash("sha256").update(text).digest("hex");
+  const manifest = { version: 1, entry: "index.html", artifacts: { "index.html": sha("<main>Course title</main>"), "copy.json": sha(content) }, bindings: [
+    { attribute: "data-content-id", value: "lesson.title", file: "copy.json", pointer: "/lessons/m01-l00/title", consumers: ["header", "heading", "screen reader label"] },
+  ] };
+  fs.writeFileSync(path.join(dir, "scormplayer.sources.json"), JSON.stringify(manifest));
+  const target = { rawText: "Course title", text: "COURSE TITLE", attributes: { "data-content-id": "lesson.title" } };
+  const result = findSourceEvidence(dir, target);
+  assert.equal(result.source[0].provenance, "content-binding");
+  assert.equal(result.source[0].pointer, "/lessons/m01-l00/title");
+  assert.equal(result.source[0].consumers.length, 3);
+  const second = JSON.stringify({ title: "Course title" });
+  fs.writeFileSync(path.join(dir, "second.json"), second);
+  manifest.artifacts["second.json"] = sha(second);
+  manifest.bindings.push({ ...manifest.bindings[0], file: "second.json", pointer: "/title" });
+  fs.writeFileSync(path.join(dir, "scormplayer.sources.json"), JSON.stringify(manifest));
+  assert.equal(findSourceEvidence(dir, target).sourceSearch.bindingStatus, "ambiguous");
+  manifest.bindings.pop();
+  fs.writeFileSync(path.join(dir, "scormplayer.sources.json"), JSON.stringify(manifest));
+
+  assert.equal(findSourceEvidence(dir, { ...target, attributes: {}, ancestors: [{ attributes: target.attributes }] }).sourceSearch.bindingStatus, "no-matching-binding");
+  fs.writeFileSync(path.join(dir, "index.html"), "Changed build");
+  const stale = findSourceEvidence(dir, target);
+  assert.equal(stale.sourceSearch.bindingStatus, "stale");
+  assert.ok(stale.source.every((item) => item.provenance !== "content-binding"));
+  manifest.artifacts = { "../outside.json": sha(content) };
+  fs.writeFileSync(path.join(dir, "scormplayer.sources.json"), JSON.stringify(manifest));
+  assert.equal(findSourceEvidence(dir, target).sourceSearch.bindingStatus, "invalid");
 });

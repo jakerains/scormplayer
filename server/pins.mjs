@@ -56,7 +56,8 @@ export function createPinStore(pinsFile, course) {
           note,
           page: clean(input.page),
           target: clean(input.target),
-          source: Array.isArray(input.source) ? input.source.slice(0, 5) : undefined,
+          source: Array.isArray(input.source) ? input.source.slice(0, 100) : undefined,
+          sourceSearch: clean(input.sourceSearch),
           createdAt: now,
           updatedAt: now,
         };
@@ -156,7 +157,14 @@ export function formatBrief(course, pins, pinsDir) {
     if (target.kind === "region" && target.rect) lines.push(`- Area: ${target.rect.width}×${target.rect.height} px at ${target.rect.x},${target.rect.y} in the viewport`);
     if (target.text) lines.push(`- Text: "${truncate(target.text, 240)}"`);
     for (const [key, value] of Object.entries(target.attributes ?? {})) lines.push(`- ${key}: ${truncate(String(value), 240)}`);
-    for (const match of pin.source ?? []) lines.push(`- Source: ${match.file}:${match.line}${match.preview ? ` · ${truncate(match.preview, 120)}` : ""}`);
+    if (target.rawText) lines.push(`- Raw text: ${JSON.stringify(target.rawText)}`);
+    if (target.textTransform) lines.push(`- CSS text-transform: ${target.textTransform}`);
+    for (const ancestor of target.ancestors ?? []) lines.push(`- Ancestor ${ancestor.selector}: ${JSON.stringify(ancestor.attributes)}`);
+    for (const match of pin.source ?? []) {
+      lines.push(`- ${match.provenance === "content-binding" ? "Declared content binding (hash checked)" : "Text-match candidate"}: ${match.file}:${match.line ?? 1}${match.column ? `:${match.column}` : ""}${match.pointer ? ` · JSON pointer ${match.pointer}` : ""}${match.preview ? ` · ${truncate(match.preview, 120)}` : ""}`);
+      if (match.consumers?.length) lines.push(`  Known consumers declared by the course: ${JSON.stringify(match.consumers)}`);
+    }
+    if (pin.sourceSearch) lines.push(`- Search evidence: ${JSON.stringify(pin.sourceSearch)}`);
     if (pin.page?.url) lines.push(`- Page: ${pin.page.url}`);
     if (target.viewport) lines.push(`- Viewport: ${target.viewport.width}×${target.viewport.height}`);
     if (pin.frame) lines.push(`- Screenshot: ${path.join(pinsDir, pin.frame)}`);

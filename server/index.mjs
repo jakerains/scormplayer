@@ -7,6 +7,7 @@ import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { resolveCourse, isInside, siblingPinsFile, UserError } from "./course.mjs";
+import { createBrowserBridge } from "./browser-bridge.mjs";
 import { createPinStore } from "./pins.mjs";
 import { createSourceSearch } from "./source-search.mjs";
 import { startLiveCourse, LIVE_BASE } from "./live.mjs";
@@ -60,6 +61,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
   const revision = () => `${instance}:${courseVersion}`;
   const lease = createCacheLease(cacheDir);
   const search = createSourceSearch();
+  const browserBridge = createBrowserBridge(revision);
   let opening = Promise.resolve();
   let closing = false;
   // When a person last did something in an open page (clicked, typed, scrolled, listened). The
@@ -127,6 +129,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     current = { course, pins, scorm: createScormStore(cacheDir, course), liveCourse, keepPinsFile: Boolean(options.keepPinsFile), target, options };
     progress = null;
     courseVersion += 1;
+    browserBridge.close();
     await previous?.liveCourse?.close();
     registration?.update(registryFields(target));
     lease.update([course.root, target]);
@@ -187,7 +190,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     app.use(express.json({ limit: "1mb" }));
     app.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
-    const scoped = /^\/api\/(pins(?:\/|$)|brief$|progress$|scorm$|open$|switch$|package$|unzip$)/;
+    const scoped = /^\/api\/(browser(?:\/|$)|verify-pin$|reload$|pins(?:\/|$)|brief$|progress$|scorm$|open$|switch$|package$|unzip$)/;
     function checkRevision(req) {
       const expected = req.get("x-scormplayer-revision");
       if (expected && expected !== revision()) throw Object.assign(new Error("The course changed in another tab. Reload before saving this note."), { statusCode: 409 });
@@ -259,7 +262,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     });
 
     // For `scormplayer ps`: who this is and how long since a browser last asked for anything.
-    app.get("/api/player", (_req, res) => res.json({ pid: process.pid, mode, idleMinutes, idleSeconds: Math.round((Date.now() - lastActivity) / 1000), courseVersion, revision: revision() }));
+    app.get("/api/player", (_req, res) => res.json({ pid: process.pid, mode, idleMinutes, idleSeconds: Math.round((Date.now() - lastActivity) / 1000), courseVersion, revision: revision(), browserBridgeVersion: 1 }));
 
     // The courses the page can switch to, and switching. Only listed courses can be opened this way.
     app.get("/api/courses", (_req, res) => {
@@ -309,6 +312,28 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       res.status(204).end();
     });
 
+    app.get("/api/browser/events", handle(async (req, res) => browserBridge.attach(req, res)));
+    app.get("/api/browser/sessions", (_req, res) => res.json({ sessions: browserBridge.list() }));
+    app.post("/api/browser/:sessionId/state", handle(async (req, res) => {
+      browserBridge.state(req.params.sessionId, req.body); res.json({ ok: true });
+    }));
+    app.post("/api/browser/:sessionId/answer/:id", handle(async (req, res) => {
+      browserBridge.answer(req.params.sessionId, req.params.id, req.body); res.json({ ok: true });
+    }));
+    app.post("/api/verify-pin", handle(async (req, res) => {
+      const { pins } = requireCourse();
+      const pin = pins.list().find((item) => item.id === req.body?.id || String(item.number) === String(req.body?.id));
+      if (!pin) throw Object.assign(new Error("Pin not found."), { statusCode: 404 });
+      const result = await browserBridge.request("verify", { pin }, req.body?.sessionId);
+      checkRevision(req);
+      if (pins.list().find((item) => item.id === pin.id)?.updatedAt !== pin.updatedAt) throw Object.assign(new Error("The pin changed during verification. Read it again."), { statusCode: 409 });
+      res.json({ ...result, pinId: pin.id, meaning: "Current DOM observation only; compare with the requested change before resolving." });
+    }));
+    app.post("/api/reload", handle(async (req, res) => {
+      const result = await browserBridge.request("reload", {}, req.body?.sessionId);
+      checkRevision(req); res.json(result);
+    }));
+
     app.get("/api/pins", (req, res) => {
       let stamp = "empty";
       try { const stat = fs.statSync(current.pins.pinsFile); stamp = `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`; } catch { /* no pins yet */ }
@@ -321,14 +346,13 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     app.post("/api/pins", handle(async (req, res) => {
       const { course, pins } = requireCourse();
       const input = req.body ?? {};
-      // Point the pin at its source text where the course files contain it. Read-only search.
-      const text = input.target?.text || input.target?.name;
+      // Read-only evidence distinguishes declared bindings from search candidates.
       const before = revision();
-      let source = [];
-      try { if (text) source = await search.find(course.root, String(text)); } catch { /* a note must survive optional enrichment failures */ }
+      let evidence = {};
+      try { evidence = await search.find(course.root, input.target ?? {}); } catch { /* a note must survive optional enrichment failures */ }
       if (closing || before !== revision()) throw Object.assign(new Error("The course changed. Reload before saving this note."), { statusCode: 409 });
       checkRevision(req);
-      const pin = pins.create({ ...input, source });
+      const pin = pins.create({ ...input, source: [], sourceSearch: undefined, ...evidence });
       events.emit("pin", { type: "created", pin });
       res.status(201).json(pin);
     }));
@@ -427,6 +451,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       async close() {
         closing = true;
         await opening;
+        browserBridge.close();
         search.close();
         registration?.remove();
         lease.close();
@@ -437,6 +462,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       },
     };
   } catch (error) {
+    browserBridge.close();
     search.close();
     lease.close();
     registration?.remove();

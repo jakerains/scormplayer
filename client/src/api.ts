@@ -34,7 +34,8 @@ export type Pin = {
   note: string;
   page?: PinPage;
   target?: PinTarget;
-  source?: { file: string; line: number; preview: string }[];
+  source?: { file: string; line: number; preview: string; provenance?: string; pointer?: string }[];
+  sourceSearch?: { truncated: boolean; bindingStatus?: string; advice?: string };
   frame?: string;
   createdAt: string;
   updatedAt: string;

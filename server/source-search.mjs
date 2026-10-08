@@ -8,13 +8,13 @@ export function createSourceSearch() {
   const close = () => {
     const previous = worker;
     worker = null;
-    for (const job of pending.values()) { clearTimeout(job.timer); job.resolve([]); }
+    for (const job of pending.values()) { clearTimeout(job.timer); job.resolve({ source: [], sourceSearch: { truncated: true, advice: "Source search unavailable or timed out." } }); }
     pending.clear();
     void previous?.terminate();
   };
   return {
-    find(root, text) {
-      if (pending.size >= 32) return Promise.resolve([]);
+    find(root, target) {
+      if (pending.size >= 32) return Promise.resolve({ source: [], sourceSearch: { truncated: true, advice: "Source search busy." } });
       if (!worker) {
         worker = new Worker(new URL("./source-worker.mjs", import.meta.url));
         worker.on("message", ({ id, matches }) => {
@@ -34,7 +34,7 @@ export function createSourceSearch() {
         const id = ++next;
         const timer = setTimeout(close, 5000);
         pending.set(id, { resolve, timer });
-        worker.postMessage({ id, root, text });
+        worker.postMessage({ id, root, target });
       });
     },
     close,

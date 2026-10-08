@@ -21,6 +21,7 @@ export async function connect(playerId: string, revision?: string) {
   await request(player.url, "api/active", current, {});
   return {
     player,
+    browserBridgeVersion: identity.browserBridgeVersion,
     revision: current as string,
     get: (endpoint: string) => request(player.url, endpoint, current),
     write: (endpoint: string, body: unknown) => request(player.url, endpoint, current, body),
