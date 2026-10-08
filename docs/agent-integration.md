@@ -146,4 +146,11 @@ Native Cursor discovery was verified with the earlier 0.3.5 package. Version 0.4
 
 The full-player ChatGPT extension was retired after the native desktop host blocked its loopback iframe with `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`, even after the approved exact-certificate SSL trust repair. Version 0.4.0 removes that child frame, HTTPS proxy and certificate setup rather than requiring host network permission for lesson embedding. Local stdio does not expose lessons to cloud chats or start agent turns through webhook Events.
 
+MCP 0.4.5 ships with player 0.9.3 and fixes Cowork rejecting draft-07 tool schemas.
+Discovery now emits JSON Schema 2020-12 semantics without a dialect header; runtime
+Zod validation and MCP Apps metadata remain intact. After updating the player, rerun
+`scormplayer setup` for apps with an existing connection, then reopen those apps.
+Their persistent MCP snapshots are separate from the CLI installation. Installed-server
+stdio verification does not establish a successful native Cowork agent turn.
+
 Protocol and renderer references: [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) and [json-render MCP integration](https://github.com/vercel-labs/json-render/blob/main/skills/mcp/SKILL.md).

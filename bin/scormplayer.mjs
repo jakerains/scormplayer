@@ -13,10 +13,10 @@ import { findCourses, isCourseFolder } from "../server/finder.mjs";
 import { cacheEntries, clearCache, formatBytes, MAX_AGE_DAYS, MAX_ENTRIES } from "../server/cache.mjs";
 import { checkForUpdate, fetchUpdate, hasTool, installMethod, isNewer, npmNeedsSudo, NPM_INSTALL, packageReady, runInstall, summarizeInstallError, tarballInstall, updateHint, verifyUpdatedCli } from "../server/update.mjs";
 import { downloadRelease } from "../server/releases.mjs";
-import { pickCourse, pickFromList, DROP_PAGE } from "../server/tui.mjs";
+import { pickCourse, pickFromList, DROP_PAGE, SETUP_MENU } from "../server/tui.mjs";
 import { pinsReport, createJsonReporter, jsonError } from "../server/agent.mjs";
 import { managePlugins } from "../server/plugins.mjs";
-import { runSetup, shouldOfferSetup } from "../server/setup.mjs";
+import { runSetup, runSetupMenu, shouldOfferSetup } from "../server/setup.mjs";
 
 // Who started this process, read first thing: if it exits later, the player has been left behind.
 const STARTED_BY = process.ppid;
@@ -184,7 +184,11 @@ async function main(argv) {
     const interactive = process.stdout.isTTY && process.stdin.isTTY && !values.plain;
     const here = process.cwd();
     if (!interactive && !isCourseFolder(here)) return void console.log(HELP);
-    const choice = isCourseFolder(here) ? here : await pickCourse({ version: VERSION, courses: findCourses(here) });
+    let choice = isCourseFolder(here) ? here : await pickCourse({ version: VERSION, courses: findCourses(here) });
+    while (choice === SETUP_MENU) {
+      await runSetupMenu();
+      choice = await pickCourse({ version: VERSION, courses: findCourses(here) });
+    }
     if (!choice) return;
     if (choice !== DROP_PAGE) positionals.push(choice);
   }
@@ -332,6 +336,7 @@ async function main(argv) {
       : `scormplayer pins ${quote(player.course?.source ?? "")} --pins ${quote(player.course?.pinsFile ?? "")}`),
     onQuit,
     skill: { status: () => skillStatus(), install: () => installSkill(), update: () => updateSkills() },
+    setup: () => runSetupMenu(),
     courses: () => findCourses(listHome ?? courseHome(input)),
     switchCourse: (course) => player.switchCourse(course),
   });

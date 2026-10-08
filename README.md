@@ -26,6 +26,8 @@ The Bash installer downloads a verified standalone release from GitHub. It insta
 home directory, uses no npm install, and downloads a private Node.js 24 runtime if your Node
 is missing or too old for MCP. It adds the launcher to your shell's PATH; open a new terminal
 afterward. Update with `scormplayer update`. An existing unrelated launcher is preserved.
+For Bash, it updates `.bashrc` and the active login profile so both kinds of terminal find
+the command. Existing settings are preserved, and rerunning the installer does not add duplicate entries.
 
 **Try it without a global install**
 
@@ -67,7 +69,9 @@ resources and a normal `scormplayer_get_review_guide` tool. Native skill loading
 on the host; essential safeguards are also included in MCP instructions.
 
 Your first interactive player launch offers setup; press Enter to skip. You can also run
-`scormplayer setup` any time. CI, scripts and MCP hosts never receive that prompt. MCP setup
+`scormplayer setup` any time, press F2 on the course picker, or press s in the running dashboard.
+The terminal menu lets you choose MCP, MCP with separate skills, or skills only, then pick your apps once.
+CI, scripts and MCP hosts never receive that prompt. MCP setup
 needs Node.js 22.22.2+; Codex setup also needs its CLI. MCP setup stays local. An existing
 SCORM Player host plugin is reused and refreshed when its bundled version is older.
 
@@ -95,6 +99,8 @@ package's SHA-256 checksum, then installs that exact file through npm into the c
 If GitHub is unavailable, it can use the same version from npm. A checksum mismatch stops
 the update. The new CLI's version is verified before success is reported.
 You can keep using `scormplayer` in the same terminal; no shell refresh is needed.
+If you installed MCP for an AI app, rerun `scormplayer setup` after updating, then reopen
+that app. Its MCP server is a separate persistent copy and is refreshed by setup.
 
 The terminal alerts you when a downloadable update is available, and the browser marks
 **More** with an **Update** badge. Open it to copy the update command. Checks run at most
@@ -137,7 +143,7 @@ saved and resolved, files edited, the course completing).
 | <kbd>p</kbd> | Show the hand-off in the terminal (<kbd>↑</kbd>/<kbd>↓</kbd> to scroll, <kbd>esc</kbd> to go back) |
 | <kbd>l</kbd> | Switch to another course: the list comes back, type to filter, <kbd>enter</kbd> to open it (the browser tab follows) |
 | <kbd>u</kbd> | Unzip a zipped course to a folder you can edit (shown only for a zip) |
-| <kbd>s</kbd> | Install the agent skill, or update it (shown only when it's missing or out of date) |
+| <kbd>s</kbd> | Set up MCP or skills for your AI apps, then return to the player |
 | <kbd>q</kbd> | Quit, with a summary of what's still open |
 
 Without a real terminal (an agent, CI, a pipe), or with `--plain`, it prints plain timestamped

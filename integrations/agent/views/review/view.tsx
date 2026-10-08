@@ -16,7 +16,7 @@ function stamp(data: Snapshot, ids: string[]) { return JSON.stringify([data.play
 const instructions = "Address these selected pins, verify the changes in the browser player, and resolve only verified pins with a short explanation.";
 
 export default function Review() {
-  const { spec, app, error } = useJsonRenderApp({ name: "SCORM pin checklist", version: "0.4.4" });
+  const { spec, app, error } = useJsonRenderApp({ name: "SCORM pin checklist", version: "0.4.5" });
   if (error) return <main role="alert">{error.message} Ask the agent to fetch the pins.</main>;
   const initial = spec?.state?.review as Snapshot | undefined;
   if (!app || !initial?.playerId || !Array.isArray(initial.pins)) return <main><p>Loading pins…</p></main>;

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
-import { SETUP_APPS, parseSetupSelection, installSetup, runSetup, shouldOfferSetup, mcpConfigPath } from "../server/setup.mjs";
+import { SETUP_APPS, parseSetupSelection, installSetup, runSetup, runSetupMenu, shouldOfferSetup, mcpConfigPath } from "../server/setup.mjs";
 
 function fixture(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "scorm setup spaces "));
@@ -155,6 +155,27 @@ test("explicit setup bypasses picker and suppresses skills stdout in JSON mode",
   assert.equal(calls, 1);
   assert.deepEqual(JSON.parse(output), result);
   assert.ok(fs.existsSync(path.join(options.directory, "choice.json")));
+});
+
+test("terminal setup chooses an install mode before one shared app picker, with safe cancel and retry", async () => {
+  const input = { isTTY: true }, output = { isTTY: true, write() {} };
+  const modes = [{ mcp: true, skills: false }, { mcp: true, skills: true }, { mcp: false, skills: true }];
+  for (const [index, mode] of modes.entries()) {
+    let calls = 0, menus = 0;
+    const result = await runSetupMenu({ input, output, env: {},
+      choose: async ({ items }) => { menus++; assert.equal(items.length, menus === 1 ? 3 : 1); return index; },
+      setup: async (options) => { calls++; assert.equal(options.mcp, mode.mcp); assert.equal(options.skills, mode.skills); assert.equal(options.ids, undefined, "the existing setup owns the single app picker"); return { ok: true }; },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(calls, 1);
+    assert.equal(menus, 2, "results remain visible until the user returns");
+  }
+  assert.equal(await runSetupMenu({ input, output, env: {}, choose: async () => null, setup: async () => assert.fail("cancel must not install") }), null);
+  let errorText = "", menus = 0;
+  await runSetupMenu({ input, output: { isTTY: true, write: (text) => { errorText += text; } }, env: {}, choose: async () => { menus++; return 0; }, setup: async () => { throw new Error("Host unavailable"); } });
+  assert.match(errorText, /Host unavailable/);
+  assert.equal(menus, 2, "a setup failure still returns to the player");
+  await assert.rejects(runSetupMenu({ input, output, env: { CI: "1" }, choose: async () => assert.fail("no prompt in CI") }), /terminal/);
 });
 
 test("app selection and platform config paths are explicit", () => {

@@ -7,6 +7,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startPlayer } from "../../../server/index.mjs";
 import { scorm12Zip } from "../../../tests/fixtures.mjs";
+import Ajv2020 from "ajv/dist/2020.js";
+
+function toolValidators(tools) {
+  const ajv = new Ajv2020({ strict: false, allErrors: true });
+  return new Map(tools.map((tool) => {
+    for (const schema of [tool.inputSchema, tool.outputSchema].filter(Boolean)) {
+      assert.equal(schema.$schema, undefined, `${tool.name} uses MCP's default 2020-12 dialect`);
+    }
+    return [tool.name, { input: ajv.compile(tool.inputSchema), output: tool.outputSchema ? ajv.compile(tool.outputSchema) : null }];
+  }));
+}
 
 test("standalone bundled MCP shares pins, serves inline UI and rejects stale revisions", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scorm-mcp-"));
@@ -28,9 +39,16 @@ test("standalone bundled MCP shares pins, serves inline UI and rejects stale rev
   fs.mkdirSync(openerDir);
   for (const name of ["open", "xdg-open"]) fs.writeFileSync(path.join(openerDir, name), `#!${process.execPath}\nrequire("node:fs").appendFileSync(${JSON.stringify(launchLog)}, JSON.stringify(process.argv.slice(2))+"\\n");\n`, { mode: 0o755 });
   const rpc = client(entry, registry, dir, process.execPath, { PATH: `${openerDir}${path.delimiter}${process.env.PATH}` });
+  let validators;
   const call = async (name, args = {}) => {
+    const schema = validators.get(name);
+    // Invalid arguments intentionally exercise the server's own guards below.
     const response = await rpc.request("tools/call", { name, arguments: args });
     assert.equal(response.error, undefined, JSON.stringify(response.error));
+    if (!response.result.isError) {
+      assert.equal(schema.input(args), true, `${name} input: ${JSON.stringify(schema.input.errors)}`);
+      if (schema.output) assert.equal(schema.output(response.result.structuredContent), true, `${name} output: ${JSON.stringify(schema.output.errors)}`);
+    }
     return response.result;
   };
   try {
@@ -41,6 +59,7 @@ test("standalone bundled MCP shares pins, serves inline UI and rejects stale rev
     const listing = await rpc.request("tools/list");
     assert.equal(listing.error, undefined, JSON.stringify(listing.error));
     assert.ok(listing.result.tools.length >= 10);
+    validators = toolValidators(listing.result.tools);
     assert.equal(listing.result.tools.some((tool) => tool.name === "scormplayer_open_workspace"), false);
     assert.equal(listing.result.tools.some((tool) => tool._meta?.["openai/ui"]?.entrypoints), false);
     const pinTool = listing.result.tools.find((tool) => tool.name === "scormplayer_list_pins");
@@ -168,6 +187,7 @@ test("native Cursor package expands its root and serves tools and MCP Apps witho
     assert.equal(init.result.serverInfo.version, manifest.version);
     rpc.notify("notifications/initialized");
     const { result } = await rpc.request("tools/list");
+    toolValidators(result.tools);
     assert.ok(result.tools.some((tool) => tool.name === "scormplayer_get_progress"));
     const panel = result.tools.find((tool) => tool.name === "scormplayer_show_review");
     assert.equal(panel.annotations.readOnlyHint, true);

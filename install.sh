@@ -86,10 +86,26 @@ if [[ ! -d "$bundle" ]]; then mv "$work/extract/scormplayer" "$bundle"; fi
 chmod 755 "$work/launcher"
 mv "$work/launcher" "$launcher"
 printf 'Installed SCORM Player %s. Run: scormplayer\n' "$VERSION"
+path_line=$(printf 'export PATH=%q:"$PATH"' "$BIN_DIR")
+case "${SHELL:-}" in
+  */bash)
+    # Login Bash reads the first readable login profile, not .bashrc. Use the
+    # existing file so creating .bash_profile cannot mask someone's .profile.
+    login_profile="$HOME/.bash_profile"
+    for candidate in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+      if [[ -r "$candidate" ]]; then login_profile="$candidate"; break; fi
+    done
+    profiles=("$HOME/.bashrc" "$login_profile") ;;
+  */zsh) profiles=("$HOME/.zshrc") ;;
+  *) profiles=("$HOME/.profile") ;;
+esac
+# Persist PATH even if this shell already has a temporary PATH addition.
+for profile in "${profiles[@]}"; do
+  if ! grep -Fqx "$path_line" "$profile" 2>/dev/null; then
+    printf '\n# SCORM Player user commands\n%s\n' "$path_line" >> "$profile"
+  fi
+done
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *)
-  case "${SHELL:-}" in */zsh) profile="$HOME/.zshrc" ;; */bash) profile="$HOME/.bashrc" ;; *) profile="$HOME/.profile" ;; esac
-  path_line=$(printf 'export PATH=%q:"$PATH"' "$BIN_DIR")
-  if ! grep -Fqx "$path_line" "$profile" 2>/dev/null; then printf '\n# SCORM Player user commands\n%s\n' "$path_line" >> "$profile"; fi
   printf 'Open a new terminal, or run: export PATH=%q:"$PATH"\n' "$BIN_DIR" ;;
 esac
 printf 'Open a course: scormplayer ./my-course.zip\nOptional AI setup: scormplayer setup\nTo update: scormplayer update\n'

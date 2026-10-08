@@ -8,6 +8,7 @@ import { createInterface } from "node:readline/promises";
 import lockfile from "proper-lockfile";
 import { PACKAGE_ROOT, runSkills, skillsArgs } from "./skill.mjs";
 import { hostCommand, managePlugins } from "./plugins.mjs";
+import { pickFromList } from "./tui.mjs";
 
 const exec = promisify(execFile);
 export const SETUP_APPS = [
@@ -205,4 +206,25 @@ export async function runSetup({ ids, mcp = true, skills = false, json = false, 
 
 export function shouldOfferSetup({ input = process.stdin, output = process.stdout, env = process.env, json = false, plain = false, directory = setupDirectory() } = {}) {
   return Boolean(input.isTTY && output.isTTY && !env.CI && !json && !plain && !fs.existsSync(path.join(directory, "choice.json")));
+}
+
+/** Explicit terminal setup: choose what to install, then choose apps once. */
+export async function runSetupMenu({ input = process.stdin, output = process.stdout, env = process.env, choose = pickFromList, setup = runSetup } = {}) {
+  if (env.CI || !input.isTTY || !output.isTTY) throw new Error("Run scormplayer setup in a terminal.");
+  const options = [
+    { label: "MCP with built-in review guides", mcp: true, skills: false },
+    { label: "MCP and separate skill files", mcp: true, skills: true },
+    { label: "Skill files only", mcp: false, skills: true },
+  ];
+  const selected = await choose({ title: "Set up MCP / skills", items: options, stdin: input, stdout: output });
+  if (selected === null) return null;
+  let result;
+  try {
+    const { mcp, skills } = options[selected];
+    result = await setup({ mcp, skills, input, output, env });
+  } catch (error) {
+    output.write(`Setup: ${error.message}\n`);
+  }
+  await choose({ title: "", items: [{ label: "Back to player" }], stdin: input, stdout: output });
+  return result;
 }

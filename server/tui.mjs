@@ -15,11 +15,12 @@ import { spawn, spawnSync } from "node:child_process";
  *   onQuit: () => void | Promise<void>,
  *   courses?: () => { path: string, kind: string, title: string }[],
  *   switchCourse?: (path: string) => Promise<unknown>,
+ *   setup?: () => Promise<unknown>,
  *   skill?: { status: () => { state: string, version: string, installed: { version: string | null }[] },
  *     install: () => Promise<{ installed: boolean, output: string }>, update: () => Promise<{ state: string, output: string }> },
  * }} options
  */
-export function createDashboard({ version, entries, plain = false, pinsHint, onQuit, skill = null, courses = null, switchCourse = null, stdout = process.stdout, stdin = process.stdin }) {
+export function createDashboard({ version, entries, plain = false, pinsHint, onQuit, skill = null, setup = null, courses = null, switchCourse = null, stdout = process.stdout, stdin = process.stdin }) {
   const interactive = !plain && stdout.isTTY && stdin.isTTY && !process.env.CI;
   const paint = createPaint(stdout);
   const state = entries.map((entry) => ({
@@ -38,6 +39,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
   let flash = "";
   let flashTimer = null;
   let closed = false;
+  let paused = false;
   let update = null;
   let updateCommand = "scormplayer update";
   // Whether coding agents have the scormplayer skill, and whether it matches this version:
@@ -189,6 +191,25 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     else log("✗", `The agent skill didn't install. Run: scormplayer skill${result.output ? ` (${oneLine(result.output).slice(-120)})` : ""}`);
   }
 
+  async function showSetup() {
+    if (!setup || paused) return;
+    paused = true;
+    stdin.setRawMode?.(false);
+    stdout.write("\x1b[?25h\x1b[?1049l");
+    try { await setup(); }
+    catch (error) { log("✗", `Setup: ${error.message}`); }
+    finally {
+      skillState = skill ? safeSkillStatus(skill)?.state ?? "unknown" : "unknown";
+      paused = false;
+      if (!closed) {
+        stdout.write("\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J");
+        stdin.setRawMode?.(true);
+        stdin.resume();
+        render();
+      }
+    }
+  }
+
   function canUnzip() {
     return state.length === 1 && state[0].player.course?.kind === "package" && Boolean(state[0].player.unzip);
   }
@@ -223,7 +244,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
   // ---- Rendering ---------------------------------------------------------------------------
 
   function render() {
-    if (!interactive || closed) return;
+    if (!interactive || closed || paused) return;
     const width = Math.max(56, Math.min(stdout.columns || 80, 112));
     const height = stdout.rows || 30;
     const lines = view === "brief" ? renderBrief(width, height) : view === "courses" ? renderCourses(width, height) : renderHome(width, height);
@@ -270,8 +291,8 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       if (course.kind === "live") lines.push(boxLine(`${p.dim("Source".padEnd(10))}${sourceLine(entry, inner - 12)}`, width));
       lines.push(boxLine(`${p.dim("Pins".padEnd(10))}${pinCounts(entry.pins)}`, width));
       const agentsLine = {
-        missing: () => `${p.amber("Skill not installed.")} ${p.dim("Press s to teach coding agents about pins")}`,
-        outdated: () => `${p.amber(`Skill out of date (${skillVersions().installed}; this is ${version}).`)} ${p.dim("Press s to update it")}`,
+        missing: () => `${p.dim(setup ? "Press s to set up MCP or skill files for your AI apps" : "Press s to install the agent skill")}`,
+        outdated: () => `${p.amber(`Skill out of date (${skillVersions().installed}; this is ${version}).`)} ${p.dim(setup ? "Press s for setup" : "Press s to update it")}`,
         newer: () => `${p.amber(`Skill is newer than scormplayer ${version}.`)} ${p.dim("Run: scormplayer update")}`,
         installing: () => p.amber("Updating the agent skill…"),
       }[skillState];
@@ -330,8 +351,9 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     }
 
     // Footer
-    while (lines.length < height - 2) lines.push("");
+    while (lines.length < height - (setup ? 3 : 2)) lines.push("");
     lines.push(flash ? `  ${p.pin("●")} ${flash}` : "");
+    if (setup) lines.push(`  ${p.key(" s ")} ${p.bold("MCP / skills setup")}`);
     const keys = [
       ["o", entries.length > 1 ? "open all" : "open"],
       ...(entries.length > 1 ? [[`1–${Math.min(9, entries.length)}`, "open one"]] : []),
@@ -339,7 +361,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       ["p", "show pins"],
       ...(canSwitch() ? [["↑↓", "switch course"]] : []),
       ...(canUnzip() ? [["u", "unzip to edit"]] : []),
-      ...(skillState === "missing" ? [["s", "install agent skill"]] : skillState === "outdated" ? [["s", "update agent skill"]] : []),
+      ...(!setup && skillState === "missing" ? [["s", "install agent skill"]] : !setup && skillState === "outdated" ? [["s", "update agent skill"]] : []),
       ["q", "quit"],
     ];
     lines.push(`  ${keys.map(([key, label]) => `${p.key(` ${key} `)} ${p.dim(label)}`).join("   ")}`);
@@ -456,6 +478,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
     stdin.setEncoding("utf8");
     stdin.resume();
     onKeys(stdin, (key) => {
+      if (paused || closed) return;
       if (key === "ctrl-c" || (view === "home" && (key === "q" || key === "Q"))) return void quit();
       if (view === "courses") {
         const result = courseList.key(key);
@@ -478,6 +501,7 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       else if (key === "p") showPins();
       else if ((key === "l" || key === "up" || key === "down") && canSwitch()) showCourses(key === "l" ? null : key);
       else if (key === "u" && canUnzip()) void unzip(state[0]);
+      else if (key === "s" && setup) void showSetup();
       else if (key === "s" && (skillState === "missing" || skillState === "outdated")) void installSkill();
     });
     stdout.on("resize", render);
@@ -777,6 +801,7 @@ function courseListKeys(p, list, leave) {
 
 /** What pickCourse returns when the user wants to drop or choose a zip in the browser. */
 export const DROP_PAGE = Symbol("drop page");
+export const SETUP_MENU = Symbol("setup menu");
 
 /**
  * The screen for a bare `scormplayer`: the logo, what was found here, and a list to pick from
@@ -818,10 +843,12 @@ export function pickCourse({ version, courses, cwd = process.cwd(), stdout = pro
           ["scormplayer --help", "everything else"],
         ]) lines.push(`    ${p.pin("›")} ${p.bold(command.padEnd(30))} ${p.dim(note)}`);
         lines.push("");
+        lines.push(`  ${p.key(" F2 ")} ${p.bold("Set up MCP / skills")}`);
         lines.push(`  ${p.key(" enter ")} ${p.dim("open the drop page")}   ${p.key(" q ")} ${p.dim("quit")}`);
       } else {
         lines.push(...list.lines({ p, width, room: Math.max(3, height - lines.length - 3) }));
         while (lines.length < height - 2) lines.push("");
+        lines.push(`  ${p.key(" F2 ")} ${p.bold("Set up MCP / skills")}`);
         lines.push(courseListKeys(p, list, "quit"));
       }
       stdout.write(`\x1b[H${lines.slice(0, height).map((line) => `${line}\x1b[K`).join("\n")}\x1b[J`);
@@ -838,6 +865,7 @@ export function pickCourse({ version, courses, cwd = process.cwd(), stdout = pro
     };
     const onKey = (key) => {
       if (key === "ctrl-c") return finish(null);
+      if (key === "f2") return finish(SETUP_MENU);
       if (!courses.length) {
         if (key === "q" || key === "escape") return finish(null);
         if (key === "enter") return finish(DROP_PAGE);
@@ -921,8 +949,8 @@ export function pickFromList({ title, items, stdout = process.stdout, stdin = pr
 export function onKeys(stdin, handle) {
   let pending = "";
   let timer = null;
-  const NAMES = { A: "up", B: "down", C: "right", D: "left", H: "home", F: "end" };
-  const TILDE = { 1: "home", 4: "end", 5: "pageup", 6: "pagedown", 7: "home", 8: "end" };
+  const NAMES = { A: "up", B: "down", C: "right", D: "left", H: "home", F: "end", Q: "f2" };
+  const TILDE = { 1: "home", 4: "end", 5: "pageup", 6: "pagedown", 7: "home", 8: "end", 12: "f2" };
   const drain = (flush) => {
     while (pending) {
       const char = pending[0];

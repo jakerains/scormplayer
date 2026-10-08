@@ -448,6 +448,74 @@ test("dashboard: arrow keys open the course list and choose adjacent lessons wit
   } finally { await dashboard.quit(); stdin.destroy(); stdout.destroy(); }
 });
 
+test("launcher setup shortcut stays outside courses and preserves title filtering", async () => {
+  const { pickCourse, SETUP_MENU } = await import("../server/tui.mjs");
+  const { PassThrough } = await import("node:stream");
+  for (const sequence of ["\x1b[12~", "\x1bOQ"]) {
+    for (const courses of [[], [{ path: "/test/safety", title: "Safety", kind: "folder" }]]) {
+      const stdin = new PassThrough(), stdout = new PassThrough();
+      stdin.setRawMode = () => {};
+      stdout.isTTY = true;
+      stdout.rows = 30;
+      stdout.columns = 80;
+      let output = "";
+      stdout.on("data", (chunk) => { output += chunk; });
+      const picked = pickCourse({ version: "test", courses, stdin, stdout });
+      stdin.write(sequence);
+      assert.equal(await picked, SETUP_MENU);
+      assert.match(output, /F2.*Set up MCP \/ skills/);
+      assert.doesNotMatch(output, /❯.*Set up MCP/, "setup is never a course row");
+      stdin.destroy(); stdout.destroy();
+    }
+  }
+  const stdin = new PassThrough(), stdout = new PassThrough();
+  stdin.setRawMode = () => {};
+  const picked = pickCourse({ version: "test", courses: [{ path: "/test/safety", title: "Safety", kind: "folder" }], stdin, stdout });
+  stdin.write("safety\r");
+  assert.equal(await picked, "/test/safety", "typing s still filters course titles");
+  stdin.destroy(); stdout.destroy();
+});
+
+test("dashboard setup suspends input and painting then restores the running player", async (t) => {
+  const { createDashboard } = await import("../server/tui.mjs");
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  const previousCi = process.env.CI;
+  delete process.env.CI;
+  t.after(() => { if (previousCi === undefined) delete process.env.CI; else process.env.CI = previousCi; });
+  const stdin = new PassThrough(), stdout = new PassThrough();
+  stdin.isTTY = stdout.isTTY = true;
+  stdout.columns = 112; stdout.rows = 30;
+  const rawModes = [];
+  stdin.setRawMode = (raw) => { rawModes.push(raw); };
+  let output = "", calls = 0, quit = 0, finish;
+  stdout.on("data", (chunk) => { output += chunk; });
+  const events = new EventEmitter();
+  const dashboard = createDashboard({ version: "test", entries: [{ id: "empty", player: { url: "http://127.0.0.1:4620/", events } }], stdin, stdout,
+    skill: { status: () => ({ state: "current", installed: [] }) },
+    onQuit: () => { quit++; },
+    setup: () => { calls++; return new Promise((resolve) => { finish = resolve; }); },
+  });
+  try {
+    assert.match(output, /MCP \/ skills setup/, "setup remains available with current skills and no lesson");
+    stdin.write("s");
+    assert.deepEqual(rawModes, [true, false]);
+    const pausedOutput = output;
+    stdin.write("sq");
+    events.emit("browser");
+    dashboard.render();
+    assert.equal(output, pausedOutput, "dashboard cannot paint over installer prompts");
+    assert.equal(calls, 1);
+    assert.equal(quit, 0, "installer keystrokes must not control the player");
+    finish();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(rawModes, [true, false, true]);
+    assert.match(output, /Player opened in the browser/, "events still arrive while setup is open");
+    stdin.write("q");
+    assert.equal(quit, 1, "normal dashboard keys work again after setup");
+  } finally { await dashboard.quit(); stdin.destroy(); stdout.destroy(); }
+});
+
 test("project config: pins location, course list and sync commands", async () => {
   const { findConfig, configuredPinsFile, configuredCourses, startSync } = await import("../server/config.mjs");
   const { findCourses, isCourseFolder } = await import("../server/finder.mjs");

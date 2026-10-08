@@ -92,6 +92,38 @@ test("Bash installs without npm, preserves profiles, opens the current course fo
   assert.ok(sources.some((item) => item.file === "index.html"), "bundled source worker enriches pins");
 });
 
+test("Bash installation configures login and non-login terminals without masking existing profiles", async (t) => {
+  for (const names of [[], [".profile"], [".bash_login", ".profile"], [".bash_profile", ".bash_login", ".profile"]]) {
+    await t.test(names.join(", ") || "no existing login profile", async (t) => {
+      const { home, env, launcher, install } = await fixture(t);
+      const login = names[0] ?? ".bash_profile";
+      const before = new Map(names.map((name) => [name, `# existing ${name}\nexport SCORM_LOGIN_MARKER=${name}\n`]));
+      for (const [name, text] of before) fs.writeFileSync(path.join(home, name), text);
+      // The command may already work in the installing shell through a temporary
+      // PATH change. Installation must still make a new terminal find it.
+      env.PATH = `${env.SCORMPLAYER_BIN_DIR}${path.delimiter}${process.env.PATH}`;
+      await install();
+      await install();
+      for (const name of [".bashrc", login]) {
+        const text = fs.readFileSync(path.join(home, name), "utf8");
+        assert.equal(text.split("# SCORM Player user commands").length, 2, `${name} gets PATH once`);
+        if (before.has(name)) assert.ok(text.startsWith(before.get(name)), "existing preferences stay intact");
+      }
+      for (const name of names.slice(1)) assert.equal(fs.readFileSync(path.join(home, name), "utf8"), before.get(name));
+      if (login !== ".bash_profile") assert.equal(fs.existsSync(path.join(home, ".bash_profile")), false, "do not mask the existing login profile");
+      const cleanEnv = { ...env, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" };
+      const found = await exec("/bin/bash", ["--login", "-c", "command -v scormplayer"], { env: cleanEnv, cwd: home });
+      assert.equal(fs.realpathSync(found.stdout.trim()), fs.realpathSync(launcher), "a fresh login terminal finds the installed command");
+      const interactive = await exec("/bin/bash", ["--noprofile", "-ic", "command -v scormplayer"], { env: cleanEnv, cwd: home });
+      assert.equal(fs.realpathSync(interactive.stdout.trim()), fs.realpathSync(launcher), "a fresh non-login terminal also finds the command");
+      if (names.length) {
+        const marker = await exec("/bin/bash", ["--login", "-c", 'printf "%s" "$SCORM_LOGIN_MARKER"'], { env: cleanEnv, cwd: home });
+        assert.equal(marker.stdout, login, "existing login settings still load");
+      }
+    });
+  }
+});
+
 test("standalone update uses GitHub without npm and keeps the same cached shell command", async (t) => {
   const { home, files, env, install, setReleaseVersion } = await fixture(t);
   await install();

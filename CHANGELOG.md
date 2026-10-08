@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - October 7, 2026
+
+- The Bash installer adds PATH to both interactive and login startup files, preserving
+  the active login profile and avoiding duplicate entries. Newly opened Bash terminals
+  can find the player even when installation ran with a temporary PATH addition.
+- Terminal setup stays available through F2 beside the course picker and s in the
+  running dashboard. Choose MCP, MCP with separate skills, or skills only, then choose
+  apps once. Setup returns to the player without closing the lesson.
+
+- MCP tool input and output schemas use JSON Schema 2020-12, fixing Cowork's
+  rejection of the SDK's draft-07 declarations. Bundled MCP/native hosts are 0.4.5.
+  Schema checks validate the advertised schemas and successful tool results using 2020-12.
+
 ## [0.9.2] - October 5, 2026
 
 - Update discovery and downloads use stable GitHub Releases first, with npm as a fallback.
