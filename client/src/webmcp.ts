@@ -21,13 +21,16 @@ export type PlayerActions = {
   skip: () => unknown;
   tourStep: (direction: "next" | "back") => unknown;
   listPins: (status: "open" | "resolved" | "all") => unknown;
-  addPin: (input: { note: string; selector?: string; text?: string; selectors?: string[]; region?: { x: number; y: number; width: number; height: number } }) => Promise<unknown>;
+  addPin: (input: { note: string; selector?: string; text?: string; selectors?: string[]; region?: { x: number; y: number; width: number; height: number }; suggestion?: QaSuggestion }) => Promise<unknown>;
   resolvePin: (number: number, note?: string) => Promise<unknown>;
   handOff: () => Promise<string>;
   unzip: (folder?: string) => Promise<string>;
   setScreen: (size: "desktop" | "tablet" | "phone") => unknown;
   scormData: (includeCalls: boolean) => unknown;
 };
+
+/** An agent's QA suggestion: the reviewer accepts or dismisses it before it joins the hand-off. */
+export type QaSuggestion = { category: string; severity: string; evidence: string; confidence?: string; runId?: string; agent?: string };
 
 type Tool = {
   name: string;
@@ -106,6 +109,19 @@ export function registerWebMcpTools(actions: () => PlayerActions): () => void {
           text: { type: "string", description: "Visible text of the element, when there is no selector." },
           selectors: { type: "array", minItems: 2, items: { type: "string" }, description: "CSS selectors for a group pin. Each must identify one visible element." },
           region: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }, required: ["x", "y", "width", "height"], description: "Area in course viewport CSS pixels." },
+          suggestion: {
+            type: "object",
+            description: "Make this a QA suggestion for the reviewer to accept or dismiss, instead of an open pin. Use when reviewing a course on your own.",
+            properties: {
+              category: { type: "string", enum: ["copy", "content", "accessibility", "scorm", "layout", "interaction", "media"] },
+              severity: { type: "string", enum: ["blocker", "major", "minor", "polish"] },
+              evidence: { type: "string", description: "The exact text, value or rule the suggestion is about." },
+              confidence: { type: "string", enum: ["high", "medium", "low"] },
+              runId: { type: "string", description: "The QA run this belongs to, if one is in progress." },
+              agent: { type: "string", description: "Your name, shown to the reviewer." },
+            },
+            required: ["category", "severity", "evidence"],
+          },
         },
         required: ["note"],
       },

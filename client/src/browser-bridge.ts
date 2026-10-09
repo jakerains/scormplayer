@@ -1,7 +1,14 @@
 import type { Pin, PinPage } from "./api";
 import { describeElement, resolveTarget, visibleTargetRect, locateTarget, type PinTarget } from "./picker";
 
-type Context = { doc: Document | null; page: PinPage; busy: boolean; reload: () => Promise<void> };
+type Context = {
+  doc: Document | null;
+  page: PinPage;
+  busy: boolean;
+  reload: () => Promise<void>;
+  /** An agent's QA pass: snapshot, navigate, pin, and switching to the QA attempt and back. */
+  qa: (action: string, request: Record<string, any>) => Promise<object>;
+};
 
 /** Ordinary HTTP + SSE works in desktop and external browsers on every supported OS. */
 export function connectReviewBrowser(revision: string, context: () => Context) {
@@ -34,6 +41,9 @@ export function connectReviewBrowser(revision: string, context: () => Context) {
         await current.reload();
         await report();
         observation = { status: "reload-requested", page: current.page, advice: "Wait for readiness, then verify the pin. Reload does not imply acceptance." };
+      } else if (String(message.action).startsWith("qa-")) {
+        try { observation = await current.qa(message.action, message); }
+        catch (error) { observation = { error: error instanceof Error ? error.message : String(error), ...(typeof (error as any)?.statusCode === "number" ? { statusCode: (error as any).statusCode } : {}) }; }
       } else observation = observePin(current, message.pin);
     } catch (error) { observation = { status: "unavailable", reason: String(error) }; }
     if (!stopped) await post(`/api/browser/${responseSession}/answer/${encodeURIComponent(message.id)}`, observation).catch(() => {});

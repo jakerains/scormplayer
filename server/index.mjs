@@ -506,17 +506,18 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       const run = opened.qa.start({ agent: req.body?.agent, focus: req.body?.focus, modules: req.body?.modules, rubric, replace: req.body?.replace === true });
       try {
         // The tab saves the reviewer's progress first; then the course restarts on a fresh QA attempt.
-        await ask("qa-begin", { runId: run.id }, req);
+        await ask("qa-freeze", { runId: run.id }, req);
         opened.qaScorm = createScormStore(cacheDir, opened.course, { scope: "qa" });
         opened.qaScorm.discard();
-        const position = await ask("qa-restart", { runId: run.id }, req);
+        const outline = await ask("qa-restart", { runId: run.id }, req);
         events.emit("qa", { type: "started", run });
         const pins = opened.pins.list();
         res.status(201).json({
           run,
           rubric,
           course: { title: opened.course.title, standard: opened.course.standard ?? "scorm", modules: (opened.course.scos ?? []).map((sco, index) => ({ index, title: sco.title })) },
-          position,
+          position: outline.position,
+          pages: outline.pages,
           known: pins.filter((pin) => pin.status !== "resolved").map((pin) => ({ number: pin.number, status: pin.status, note: pin.note, page: pin.page?.title, ...(pin.origin ? { category: pin.category, evidence: pin.evidence } : {}) })),
           logFile: opened.qa.logFile,
         });
@@ -563,6 +564,8 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
 
     app.post("/api/qa/runs/:id/finish", handle(async (req, res) => {
       const opened = requireCourse();
+      // The tab stops saving the QA attempt before progress switches back to the reviewer's.
+      try { await ask("qa-freeze", { runId: req.params.id }, req, 6000); } catch { /* no tab: nothing to save */ }
       const { run, logFile } = opened.qa.finish(req.params.id, { summary: req.body?.summary, checks: req.body?.checks }, { course: opened.course, pins: opened.pins.list() });
       // Back to the reviewer's own progress; a closed tab picks it up when it next loads.
       try { await ask("qa-end", { runId: run.id }, req); } catch { /* best effort */ }

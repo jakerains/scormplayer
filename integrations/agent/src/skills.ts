@@ -10,6 +10,7 @@ const skill = z.object({ uri: z.string(), frontmatter: z.looseObject({ name: z.s
 const catalogSchema = z.object({ version: z.literal(1), serverVersion: z.string(), skills: z.array(skill), files: z.array(resource.extend({ mimeType: z.string(), blob: z.string() })) });
 const cache = { resultType: "complete" as const, ttlMs: 300_000, cacheScope: "public" as const };
 export const reviewGuideUri = "skill://scormplayer-review/SKILL.md";
+export const qaGuideUri = "skill://scormplayer-qa/SKILL.md";
 
 export function registerSkills(server: McpServer) {
   const catalog = catalogSchema.parse(JSON.parse(fs.readFileSync(new URL("./skills.json", import.meta.url), "utf8")));
@@ -66,8 +67,12 @@ export function registerSkills(server: McpServer) {
     if (!entry) throw new McpError(ErrorCode.InvalidParams, "Unknown skill URI.");
     return { ...cache, skill: entry };
   });
-  const guide = contents.get(reviewGuideUri);
-  const metadata = files.get(reviewGuideUri);
-  if (!guide || !("text" in guide) || !metadata) throw new Error("Review guide missing from skill catalog.");
-  return { uri: reviewGuideUri, digest: metadata.digest, size: metadata.size, markdown: guide.text };
+  const read = (uri: string) => {
+    const guide = contents.get(uri);
+    const metadata = files.get(uri);
+    if (!guide || !("text" in guide) || !metadata) throw new Error(`Guide missing from skill catalog: ${uri}`);
+    return { uri, digest: metadata.digest, size: metadata.size, markdown: guide.text };
+  };
+  // The pin-review guide, and the guide for an agent's own QA pass.
+  return { review: read(reviewGuideUri), qa: read(qaGuideUri) };
 }

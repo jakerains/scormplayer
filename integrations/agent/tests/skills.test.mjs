@@ -36,7 +36,7 @@ test("bundled skills expose complete verified content and the same fallback guid
   assert.equal(listing.result.cacheScope, "public");
   assert.ok(listing.result.ttlMs > 0);
   assert.equal(listing.result.nextCursor, undefined);
-  assert.deepEqual(listing.result.skills.map((item) => item.frontmatter.name).sort(), ["scormplayer", "scormplayer-review"]);
+  assert.deepEqual(listing.result.skills.map((item) => item.frontmatter.name).sort(), ["scormplayer", "scormplayer-qa", "scormplayer-review"]);
   const resources = (await rpc.request("resources/list")).result.resources;
   assert.ok(resources.some((item) => item.uri === "ui://scormplayer/pin-checklist.html"));
   const bodies = new Map();

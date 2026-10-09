@@ -53,6 +53,14 @@ export class ScormPersistence {
     return this.queue;
   }
 
+  /** Stop saving (an agent's QA pass switches the course to another attempt). Pending writes are dropped. */
+  freeze() {
+    window.clearTimeout(this.timer);
+    this.resetting = true;
+    this.dirty = {};
+    this.selected = false;
+  }
+
   async reset(firstSco: string) {
     window.clearTimeout(this.timer);
     this.resetting = true;

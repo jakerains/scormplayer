@@ -1,6 +1,7 @@
 import type { PinTarget } from "./picker";
 import type { ScormState, ScormWrite } from "./scorm-state";
 import type { ScoRuntime } from "./scorm-api";
+import type { QaSuggestion } from "./webmcp";
 
 export type CourseResponse = Course | { empty: true; revision: string };
 
@@ -43,12 +44,35 @@ export type XapiSummary = {
   issues: { at: number; severity: "error" | "warning"; message: string; count: number }[];
 };
 
+export type QaRun = {
+  id: string;
+  agent: string;
+  state: "running" | "stopping" | "finished" | "stopped" | "abandoned";
+  startedAt: string;
+  endedAt?: string;
+  pages: { module: { title?: string } | null; page: { index?: number; of?: number; title?: string } | null; status: string; notes: string; pins: number[] }[];
+  suggestions: number[];
+  summary: string;
+};
+export type QaStatus = { active: QaRun | null; last: QaRun | null; logFile: string | null; counts: { suggested: number; dismissed: number } };
+
 export type PinPage = { url: string; title: string; location?: string; navId?: string; navIndex?: number; scoId?: string; scoTitle?: string };
+
+export type PinStatus = "open" | "resolved" | "suggested" | "dismissed";
+export type QaCategory = "copy" | "content" | "accessibility" | "scorm" | "layout" | "interaction" | "media";
+export type QaSeverity = "blocker" | "major" | "minor" | "polish";
 
 export type Pin = {
   id: string;
   number: number;
-  status: "open" | "resolved";
+  status: PinStatus;
+  /** An agent's QA suggestion (or one the reviewer accepted). Absent for a person's pin. */
+  origin?: { kind: "agent"; agent: string; runId?: string };
+  category?: QaCategory;
+  severity?: QaSeverity;
+  confidence?: "high" | "medium" | "low";
+  evidence?: string;
+  alsoOn?: { title?: string; url?: string; navIndex?: number; scoId?: string; scoTitle?: string }[];
   note: string;
   page?: PinPage;
   target?: PinTarget;
@@ -99,8 +123,13 @@ export const api = {
   course: () => request<CourseResponse>("/api/course").then((course) => { revision = course.revision; return course; }),
   status: () => request<{ lastChangeAt: string | null }>("/api/status"),
   pins: () => fetchPins(),
-  createPin: (input: { note: string; page: PinPage; target: PinTarget }) => request<Pin>("/api/pins", json("POST", input)),
+  createPin: (input: { note: string; page: PinPage; target: PinTarget; qa?: QaSuggestion }) => request<Pin & { outcome?: "created" | "merged" | "duplicate"; stop?: boolean }>("/api/pins", json("POST", input)),
   updatePin: (id: string, changes: Partial<Pick<Pin, "note" | "status">> & { resolution?: string }) => request<Pin>(`/api/pins/${id}`, json("PATCH", changes)),
+  triage: (ids: string[], action: "accept" | "dismiss" | "restore") => request<{ ok: true; pins: Pin[] }>("/api/pins/triage", json("POST", { ids, action })),
+  clearQa: (runId?: string) => request<{ ok: true; removed: number }>(`/api/qa/pins${runId ? `?runId=${encodeURIComponent(runId)}` : ""}`, { method: "DELETE" }),
+  qa: () => request<QaStatus>("/api/qa"),
+  stopQa: (runId: string) => request<{ ok: true }>(`/api/qa/runs/${encodeURIComponent(runId)}/stop`, json("POST", {})),
+  finishQa: (runId: string, summary: string) => request<unknown>(`/api/qa/runs/${encodeURIComponent(runId)}/finish`, json("POST", { summary })),
   reattachPin: (id: string, input: { target: PinTarget; page: PinPage; expectedUpdatedAt: string }) => request<Pin>(`/api/pins/${id}/reattach`, json("POST", input)),
   deletePin: (id: string) => request<Pin>(`/api/pins/${id}`, { method: "DELETE" }),
   saveFrame: (id: string, png: Blob) => request<Pin>(`/api/pins/${id}/frame`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: png }),

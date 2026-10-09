@@ -9,7 +9,7 @@ fs.writeFileSync("dist/review.html", buildAppHtml({ title: "SCORM pin checklist"
 fs.cpSync("../../dist/client", "dist/player-client", { recursive: true });
 fs.cpSync("assets", "dist/assets", { recursive: true });
 const version = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
-fs.writeFileSync("dist/skills.json", JSON.stringify(buildSkillCatalog(["plugin/skills/scormplayer-review", "../../skills/scormplayer"], version)) + "\n");
+fs.writeFileSync("dist/skills.json", JSON.stringify(buildSkillCatalog(["plugin/skills/scormplayer-review", "plugin/skills/scormplayer-qa", "../../skills/scormplayer"], version)) + "\n");
 await build({ entryPoints: ["stdio.ts"], bundle: true, platform: "node", format: "esm", target: "node22", outfile: "dist/server.mjs", sourcemap: false,
   banner: { js: 'import { createRequire as scormBundleRequire } from "node:module"; const require = scormBundleRequire(import.meta.url);' },
 });

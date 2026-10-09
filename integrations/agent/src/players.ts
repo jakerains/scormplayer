@@ -24,16 +24,20 @@ export async function connect(playerId: string, revision?: string) {
     browserBridgeVersion: identity.browserBridgeVersion,
     revision: current as string,
     get: (endpoint: string) => request(player.url, endpoint, current),
-    write: (endpoint: string, body: unknown) => request(player.url, endpoint, current, body),
+    write: (endpoint: string, body: unknown, method?: "POST" | "PATCH" | "DELETE") => request(player.url, endpoint, current, body, method),
   };
 }
 
-async function request(base: string, endpoint: string, revision?: string, body?: unknown): Promise<any> {
+/** QA calls drive the review tab (reloading, navigating, scanning), so they may take a while. */
+const timeoutFor = (endpoint: string) => (endpoint.startsWith("api/qa") ? 90_000 : 10_000);
+
+async function request(base: string, endpoint: string, revision?: string, body?: unknown, method?: "POST" | "PATCH" | "DELETE"): Promise<any> {
+  const verb = method ?? (endpoint === "api/active" ? "POST" : /^api\/pins\/[^/]+$/.test(endpoint) && endpoint !== "api/pins/triage" ? "PATCH" : "POST");
   const response = await fetch(new URL(endpoint, base), {
     redirect: "error",
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(timeoutFor(endpoint)),
     headers: { ...(revision ? { "X-Scormplayer-Revision": revision } : {}), ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
-    ...(body !== undefined ? { method: endpoint === "api/active" ? "POST" : endpoint.startsWith("api/pins/") ? "PATCH" : "POST", body: JSON.stringify(body) } : {}),
+    ...(body !== undefined ? { method: verb, body: JSON.stringify(body) } : {}),
   });
   if (response.status === 204) return null;
   const type = response.headers.get("content-type") ?? "";

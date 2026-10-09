@@ -14,6 +14,8 @@ import { activeMedia, skipMedia, tourState, watchMedia } from "./media";
 import { DropHome, UploadStatus, ZipInput, useZipOpener } from "./DropHome";
 import { Inspector } from "./Inspector";
 import { Checks } from "./Checks";
+import { captureViewport, pageSnapshot, waitFor } from "./qa-agent";
+import { scanAccessibility } from "./a11y";
 import { UnzipDialog, UnzipNotice, useUnzipNotice } from "./Unzip";
 import { ClosedScreen, StillThereCard, useStillThere } from "./StillThere";
 import { SkillCard, useAgentSkill } from "./SkillOffer";
@@ -35,6 +37,8 @@ export function App() {
   const [launchSettings, setLaunchSettings] = useState(loadLaunchSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [checksOpen, setChecksOpen] = useState(false);
+  // The agent QA run in progress, when there is one (the course runs on a throwaway attempt).
+  const [qaRunId, setQaRunId] = useState<string | null>(null);
   const navRequestRef = useRef<(request: NavRequest) => void>(() => {});
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const pendingPinRef = useRef<Pin | null>(null);
@@ -227,8 +231,9 @@ export function App() {
     };
   }, [courseProgress, nav, sco]);
 
-  const browserContext = useRef(() => ({ doc: frameDoc(), page: currentPage(), busy: navBusy || reloadPending.current, reload: async () => { await persistence?.flush(); reloadCourse(); } }));
-  browserContext.current = () => ({ doc: frameDoc(), page: currentPage(), busy: navBusy || reloadPending.current, reload: async () => { await persistence?.flush(); reloadCourse(); } });
+  const qaActionRef = useRef<(action: string, request: Record<string, any>) => Promise<object>>(async () => ({ error: "The player is still loading." }));
+  const browserContext = useRef(() => ({ doc: frameDoc(), page: currentPage(), busy: navBusy || reloadPending.current, reload: async () => { await persistence?.flush(); reloadCourse(); }, qa: (action: string, request: Record<string, any>) => qaActionRef.current(action, request) }));
+  browserContext.current = () => ({ doc: frameDoc(), page: currentPage(), busy: navBusy || reloadPending.current, reload: async () => { await persistence?.flush(); reloadCourse(); }, qa: (action: string, request: Record<string, any>) => qaActionRef.current(action, request) });
   useEffect(() => {
     if (course) return connectReviewBrowser(course.revision, () => browserContext.current());
   }, [course?.revision]);
@@ -832,7 +837,7 @@ export function App() {
       return direction === "back" ? "Moved back." : current.canNext ? "Moved to the next step." : "Skipped the narration; the tour can now continue.";
     },
     listPins: async (status) => (await freshPins()).filter((pin) => status === "all" || pin.status === status),
-    addPin: async ({ note, selector, text, selectors, region }) => {
+    addPin: async ({ note, selector, text, selectors, region, suggestion }) => {
       const doc = frameDoc();
       if (!doc) throw new Error("No course is showing.");
       if ([selector, text, selectors, region].filter((value) => value !== undefined).length !== 1) throw new Error("Provide exactly one selector, text, selectors group, or region.");
@@ -870,14 +875,18 @@ export function App() {
         }
         target = describeElement(element);
       }
-      let pin = await api.createPin({ note: note.trim(), page: currentPage(), target });
+      const created = await api.createPin({ note: note.trim(), page: currentPage(), target, ...(suggestion ? { qa: suggestion } : {}) });
+      let pin: Pin = created;
       let screenshot = "unavailable";
-      try {
-        const png = region && target.offset ? await captureRegion(element, target.offset, target.rect) : await captureElement(element);
-        if (png) { pin = await api.saveFrame(pin.id, png); screenshot = "saved"; }
-      } catch { /* The durable note survives optional screenshot capture failure. */ }
+      // A repeated suggestion joins the pin it repeats, which already has its screenshot.
+      if (!created.outcome || created.outcome === "created") {
+        try {
+          const png = region && target.offset ? await captureRegion(element, target.offset, target.rect) : await captureElement(element);
+          if (png) { pin = await api.saveFrame(pin.id, png); screenshot = "saved"; }
+        } catch { /* The durable note survives optional screenshot capture failure. */ }
+      } else screenshot = "existing";
       await freshPins();
-      return { ...pin, screenshot };
+      return { ...pin, screenshot, ...(created.outcome ? { outcome: created.outcome, stop: created.stop === true } : {}) };
     },
     resolvePin: async (number, note) => {
       const pin = await findPin(number);
@@ -896,6 +905,120 @@ export function App() {
     scormData: (includeCalls) => ({ data: scormData, ...(includeCalls ? { calls: calls.slice(-100) } : {}) }),
   };
   useEffect(() => registerWebMcpTools(() => actionsRef.current!), []);
+
+  // An agent's QA pass drives this tab through the browser bridge. Waits read the latest state from
+  // this ref, since the course reloads and moves between pages while a request is in flight.
+  const qaLive = useRef({ nav, scoIndex, course, busy: false, tour, mediaPlaying, frameLoads, issues, courseProgress, currentPage });
+  qaLive.current = { nav, scoIndex, course, busy: navBusy || reloadPending.current, tour, mediaPlaying, frameLoads, issues, courseProgress, currentPage };
+
+  /** Load progress again from the server (the QA attempt, or back to the reviewer's) and restart the course. */
+  async function reloadProgress() {
+    const state = await api.scormState();
+    if (course?.scos) setScoIndex(Math.max(0, course.scos.findIndex((item) => item.id === state.selectedSco)));
+    setNav(null);
+    setPersistence(new ScormPersistence(state, api.saveScormState, setProgressError));
+    reloadCourse();
+  }
+
+  const qaSettled = () => waitFor(() => {
+    const doc = frameDoc();
+    return Boolean(doc?.body) && doc!.readyState === "complete" && doc!.URL !== "about:blank" && !qaLive.current.busy;
+  }, 20_000);
+  /** After the frame reloads: wait for it, then give the course a moment to announce its pages. */
+  async function qaAfterLoad(loads: number) {
+    await waitFor(() => qaLive.current.frameLoads > loads, 20_000);
+    await qaSettled();
+    await waitFor(() => qaLive.current.nav !== null, 2500);
+  }
+  const qaPosition = () => {
+    const live = qaLive.current;
+    const module = live.course?.scos?.[live.scoIndex];
+    return {
+      module: module ? { index: live.scoIndex, of: live.course!.scos!.length, title: module.title } : null,
+      page: { ...(live.nav ? { index: live.nav.index, of: live.nav.pages.length } : {}), title: live.currentPage().title },
+    };
+  };
+  const qaOutline = () => ({
+    position: qaPosition(),
+    pages: qaLive.current.nav?.pages.map((item) => item.title) ?? null,
+    modules: qaLive.current.course?.scos?.map((item) => item.title) ?? null,
+  });
+
+  qaActionRef.current = async (action, request) => {
+    if (action === "qa-freeze") {
+      await persistence?.flush();
+      persistence?.freeze();
+      return { ok: true };
+    }
+    if (action === "qa-restart" || action === "qa-end") {
+      const loads = qaLive.current.frameLoads;
+      setQaRunId(action === "qa-restart" ? String(request.runId) : null);
+      await reloadProgress();
+      if (action === "qa-end") return { ok: true };
+      await qaAfterLoad(loads);
+      return qaOutline();
+    }
+    await qaSettled();
+    if (action === "qa-position") return qaPosition();
+    if (action === "qa-snapshot") {
+      const doc = frameDoc();
+      if (!doc?.body) throw new Error("The course page isn't showing yet. Try again in a moment.");
+      const live = qaLive.current;
+      const result: Record<string, unknown> = {
+        ...qaOutline(),
+        gates: {
+          narrationPlaying: live.mediaPlaying,
+          tour: live.tour ? { title: live.tour.title, progress: live.tour.progress, canNext: live.tour.canNext } : null,
+          pageList: Boolean(live.nav),
+        },
+        progress: live.courseProgress,
+        page: pageSnapshot(doc),
+      };
+      if (request.checks) {
+        try {
+          const scan = await scanAccessibility(frameRef.current);
+          result.accessibility = scan.violations.map((violation) => ({ id: violation.id, impact: violation.impact, help: violation.help, elements: violation.nodes.length, selectors: violation.nodes.slice(0, 3).map((node) => node.selector) }));
+        } catch (error) { result.accessibility = { error: error instanceof Error ? error.message : String(error) }; }
+        result.scormIssues = live.issues.slice(-30).map((issue) => ({ severity: issue.severity, code: issue.code, method: issue.method, element: issue.element, message: issue.message, count: issue.count }));
+      }
+      if (request.screenshot) result.screenshot = await captureViewport(doc);
+      return result;
+    }
+    if (action === "qa-navigate") {
+      const live = qaLive.current;
+      const scos = live.course?.scos;
+      const toModule = async (index: number) => {
+        const loads = qaLive.current.frameLoads;
+        switchSco(index);
+        await qaAfterLoad(loads);
+      };
+      if (request.module !== null && request.module !== undefined) {
+        if (!scos) throw new Error("This course has a single module.");
+        const index = namedIndex(scos, request.module, "module");
+        if (index !== live.scoIndex) await toModule(index);
+      }
+      if (request.page !== null && request.page !== undefined) {
+        const current = qaLive.current.nav;
+        if (!current) return { reached: false, reason: "This course doesn't offer a page list; move with next (modules) or review what is on screen.", ...qaOutline() };
+        const index = namedIndex(current.pages, request.page, "page");
+        if (index !== current.index && !(await goToPage(index))) return { reached: false, reason: "The course did not move to that page; it may be locked until an activity is done.", ...qaOutline() };
+      }
+      if (request.next) {
+        const current = qaLive.current.nav;
+        if (current && current.index < current.pages.length - 1) {
+          if (!(await goToPage(current.index + 1))) return { reached: false, reason: "The course did not move to the next page; it may be locked until an activity, narration or tour step is done.", ...qaOutline() };
+        } else if (scos && qaLive.current.scoIndex < scos.length - 1) await toModule(qaLive.current.scoIndex + 1);
+        else return { reached: false, done: true, reason: "This is the last page of the last module.", ...qaOutline() };
+      }
+      await qaSettled();
+      return { reached: true, ...qaOutline() };
+    }
+    if (action === "qa-pin") {
+      const input = Object.fromEntries(Object.entries(request.input ?? {}).filter(([, value]) => value !== undefined && value !== null));
+      return await actionsRef.current!.addPin({ ...(input as { note: string }), suggestion: request.qa }) as object;
+    }
+    throw new Error(`Unknown QA action ${action}.`);
+  };
 
   if (presence.state === "closed") return <ClosedScreen course={course} why={presence.why} />;
 
