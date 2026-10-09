@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { validateTarget } from "./pin-target.mjs";
 import { withFileLock } from "./file-lock.mjs";
 
 /**
@@ -55,13 +56,35 @@ export function createPinStore(pinsFile, course) {
           status: "open",
           note,
           page: clean(input.page),
-          target: clean(input.target),
+          target: validateTarget(input.target),
+          capture: clean(input.capture),
           source: Array.isArray(input.source) ? input.source.slice(0, 100) : undefined,
           sourceSearch: clean(input.sourceSearch),
           createdAt: now,
           updatedAt: now,
         };
         data.pins.push(pin);
+        write(data);
+        return pin;
+      });
+    },
+
+    reattach(idOrNumber, input) {
+      const target = validateTarget(input.target);
+      if (!target?.anchorVersion) throw Object.assign(new Error("Select a new target before reattaching."), { statusCode: 400 });
+      if (!input.page || typeof input.page.url !== "string" || !input.page.url) throw Object.assign(new Error("A reattachment needs a page."), { statusCode: 400 });
+      return transaction(() => {
+        const data = read();
+        const pin = find(data, idOrNumber);
+        if (!input.expectedUpdatedAt || pin.updatedAt !== input.expectedUpdatedAt) throw Object.assign(new Error("The pin changed. Read it again before reattaching."), { statusCode: 409 });
+        const at = new Date(Math.max(Date.now(), Date.parse(pin.updatedAt) + 1)).toISOString();
+        pin.attachmentHistory = [...(pin.attachmentHistory ?? []), { at, page: pin.page, target: pin.target, capture: pin.capture, frame: pin.frame, source: pin.source, sourceSearch: pin.sourceSearch }];
+        pin.page = clean(input.page);
+        pin.target = target;
+        pin.capture = clean(input.capture);
+        pin.source = Array.isArray(input.source) ? input.source.slice(0, 100) : [];
+        pin.sourceSearch = clean(input.sourceSearch);
+        pin.updatedAt = at;
         write(data);
         return pin;
       });
@@ -81,7 +104,7 @@ export function createPinStore(pinsFile, course) {
           pin.status = changes.status;
           if (changes.resolution) pin.resolution = String(changes.resolution).slice(0, 2000);
         }
-        pin.updatedAt = new Date().toISOString();
+        pin.updatedAt = new Date(Math.max(Date.now(), Date.parse(pin.updatedAt) + 1)).toISOString();
         write(data);
         return pin;
       });
@@ -109,7 +132,7 @@ export function createPinStore(pinsFile, course) {
         const file = path.join(framesDir, `pin-${pin.number}.png`);
         fs.writeFileSync(file, png);
         pin.frame = path.relative(path.dirname(pinsFile), file).split(path.sep).join("/");
-        pin.updatedAt = new Date().toISOString();
+        pin.updatedAt = new Date(Math.max(Date.now(), Date.parse(pin.updatedAt) + 1)).toISOString();
         write(data);
         return pin;
       });
@@ -150,6 +173,10 @@ export function formatBrief(course, pins, pinsDir) {
     const page = [pin.page?.title, pin.page?.location ? `SCORM location ${pin.page.location}` : null].filter(Boolean).join(" · ");
     lines.push("", `## Pin ${pin.number}${page ? ` · ${page}` : ""}${pin.status === "resolved" ? " (resolved)" : ""}`, "", pin.note, "");
     const target = pin.target ?? {};
+    if (pin.capture) lines.push(`- Captured: ${JSON.stringify(pin.capture)} (session revision is not a content digest)`);
+    if (pin.attachmentHistory?.length) lines.push(`- Reattached ${pin.attachmentHistory.length} time(s); original target and source evidence retained in attachmentHistory. Screenshot remains the original capture.`);
+    lines.push("- Attachment: captured evidence only; use scormplayer_verify_pin for current target status.");
+    if (target.normalizedRegion) lines.push(`- Relative region: ${JSON.stringify(target.normalizedRegion)}`);
     if (target.name || target.selector) lines.push(`- Target: ${target.name ?? target.tag ?? "element"}${target.selector ? ` (\`${target.selector}\`)` : ""}`);
     if (Array.isArray(target.targets) && target.targets.length > 1) {
       lines.push(`- Elements: ${target.targets.map((part) => `${part.name ?? part.tag}${part.selector ? ` (\`${part.selector}\`)` : ""}`).join("; ")}`);

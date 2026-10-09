@@ -91,3 +91,33 @@ A DOM observation is evidence to compare against the request, not an automatic a
 result. Layout, animation, images and accessibility still require appropriate inspection.
 Saved source hints and screenshots are historical. Editing a folder does not update the
 original ZIP; the course's existing packaging workflow must produce the upload artifact.
+
+## Durable attachments
+
+The marker UI and MCP observations use the same target resolver. A unique saved identity,
+matching tag and identifying ancestors yields `attached`; copy edits alone do not detach it.
+Conflicting or duplicated identities never select a first match. Without a saved identity, a
+structural selector with matching text or a unique exact-text recovery yields `possible`.
+Text recovery scans at most 3,000 elements of the saved tag; repeated matches are ambiguous.
+Possible matches remain unconfirmed in MCP and use a dashed marker. This describes attachment
+to a DOM element, independently of source-file confidence or whether requested work is done.
+
+The pin list shows Attached, Possible match, Multiple matches, Target missing, Other page,
+or out of view. Missing targets retain their notes and original screenshots in the list;
+we do not put a convincing-looking marker at an old screen coordinate. Markers are clipped
+against the viewport and nested overflow panels. New area selections use the nearest ancestor
+that contains the whole box and store fractional `normalizedRegion` bounds, so they follow
+that ancestor when it resizes. Boxes extending beyond the body use the document canvas.
+Old area pins retain their original pixel geometry until explicitly reattached.
+
+Choose **Reattach**, select a replacement with the existing picker, then confirm. Cancellation
+changes nothing. The server checks `expectedUpdatedAt`, preserves prior targets/pages/source
+hints/capture metadata in `attachmentHistory`, and recomputes source hints for the replacement.
+The original screenshot remains capture-time evidence, not a picture of the replacement.
+The note, number and resolution status remain unchanged.
+
+New HTTP captures and reattachments contain `capture.at`, `capture.sessionRevision`, and
+`capture.packageSha256` when a ZIP digest exists. A session revision prevents cross-course
+operations; it is **not** a fingerprint of edits to a live folder. Legacy pins have unknown
+capture provenance. Target format `anchorVersion: 1` validates typed finite geometry, bounded
+strings and groups, and allowlisted DOM attributes. Old partial target records remain readable.

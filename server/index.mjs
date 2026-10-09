@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { resolveCourse, isInside, siblingPinsFile, UserError } from "./course.mjs";
 import { createBrowserBridge } from "./browser-bridge.mjs";
+import { validateTarget } from "./pin-target.mjs";
 import { createPinStore } from "./pins.mjs";
 import { createSourceSearch } from "./source-search.mjs";
 import { startLiveCourse, LIVE_BASE } from "./live.mjs";
@@ -345,16 +346,30 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
 
     app.post("/api/pins", handle(async (req, res) => {
       const { course, pins } = requireCourse();
-      const input = req.body ?? {};
+      const input = { ...req.body, target: validateTarget(req.body?.target) };
       // Read-only evidence distinguishes declared bindings from search candidates.
       const before = revision();
       let evidence = {};
       try { evidence = await search.find(course.root, input.target ?? {}); } catch { /* a note must survive optional enrichment failures */ }
       if (closing || before !== revision()) throw Object.assign(new Error("The course changed. Reload before saving this note."), { statusCode: 409 });
       checkRevision(req);
-      const pin = pins.create({ ...input, source: [], sourceSearch: undefined, ...evidence });
+      const pin = pins.create({ ...input, capture: { at: new Date().toISOString(), sessionRevision: before, ...(course.sha256 ? { packageSha256: course.sha256 } : {}) }, source: [], sourceSearch: undefined, ...evidence });
       events.emit("pin", { type: "created", pin });
       res.status(201).json(pin);
+    }));
+
+    app.post("/api/pins/:id/reattach", handle(async (req, res) => {
+      const { course, pins } = requireCourse();
+      const target = validateTarget(req.body?.target);
+      const before = revision();
+      let evidence = {};
+      try { evidence = await search.find(course.root, target ?? {}); } catch { /* Retain the attachment even when source search is unavailable. */ }
+      if (closing || before !== revision()) throw Object.assign(new Error("The course changed. Reload before reattaching."), { statusCode: 409 });
+      checkRevision(req);
+      const pin = pins.reattach(req.params.id, { ...req.body, target, source: [], sourceSearch: undefined, ...evidence,
+        capture: { at: new Date().toISOString(), sessionRevision: before, ...(course.sha256 ? { packageSha256: course.sha256 } : {}) } });
+      events.emit("pin", { type: "edited", pin });
+      res.json(pin);
     }));
 
     app.patch("/api/pins/:id", handle(async (req, res) => {

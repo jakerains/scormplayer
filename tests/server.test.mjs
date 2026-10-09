@@ -1122,3 +1122,52 @@ test("explicit content bindings require current hashes and own identity, with kn
   fs.writeFileSync(path.join(dir, "scormplayer.sources.json"), JSON.stringify(manifest));
   assert.equal(findSourceEvidence(dir, target).sourceSearch.bindingStatus, "invalid");
 });
+
+test("pin anchors validate typed geometry and retain original evidence when reattached", async () => {
+  const { validateTarget } = await import("../server/pin-target.mjs");
+  const target = { anchorVersion: 1, kind: "element", tag: "h1", selector: "#title", name: "Title", text: "Old title", attributes: { id: "title", onclick: "ignored" }, rect: { x: 2, y: 3, width: 40, height: 20 }, viewport: { width: 1024, height: 768 } };
+  assert.deepEqual(validateTarget(target).attributes, { id: "title" });
+  for (const patch of [{ anchorVersion: 2 }, { rect: { ...target.rect, width: -1 } }, { offset: { x: NaN, y: 0 } }, { selector: [] }, { targets: Array(21).fill(target) }, { normalizedRegion: { x: 0, y: 0, width: 2, height: 1 } }]) assert.throws(() => validateTarget({ ...target, ...patch }), /Invalid pin target/);
+  const dir = tempDir();
+  const store = createPinStore(path.join(dir, "pins.json"), { title: "Anchors", source: dir, kind: "folder" });
+  const capture = { at: new Date().toISOString(), sessionRevision: "original-session" };
+  const pin = store.create({ note: "Keep this note", target, page: { url: "index.html" }, capture, source: [{ file: "old.json" }] });
+  store.saveFrame(pin.id, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  const before = store.list()[0];
+  const input = { target: { ...target, selector: "#replacement", attributes: { id: "replacement" } }, page: { url: "index.html" }, expectedUpdatedAt: before.updatedAt, capture: { ...capture, sessionRevision: "new-session" } };
+  const after = store.reattach(pin.id, input);
+  assert.equal(after.id, pin.id);
+  assert.equal(after.note, pin.note);
+  assert.equal(after.frame, before.frame);
+  assert.equal(after.target.selector, "#replacement");
+  assert.equal(after.attachmentHistory[0].target.selector, "#title");
+  assert.deepEqual(after.attachmentHistory[0].capture, capture);
+  assert.deepEqual(after.attachmentHistory[0].source, [{ file: "old.json" }]);
+  assert.deepEqual(after.source, []);
+  assert.throws(() => store.reattach(pin.id, input), /pin changed/);
+  assert.equal(store.list()[0].attachmentHistory.length, 1);
+  assert.match(store.brief(), /Screenshot remains the original capture/);
+});
+
+test("HTTP pin capture stamps server provenance and reattachment rejects stale changes", async () => {
+  const dir = tempDir();
+  const input = path.join(dir, "course.zip");
+  fs.writeFileSync(input, scorm12Zip());
+  const player = await startPlayer({ input, cacheDir: path.join(dir, "cache"), port: 0, registryDir: null });
+  try {
+    const revision = (await (await fetch(`${player.url}api/player`)).json()).revision;
+    const post = (endpoint, body, rev = revision) => fetch(`${player.url}${endpoint}`, { method: "POST", headers: { "content-type": "application/json", "x-scormplayer-revision": rev }, body: JSON.stringify(body) });
+    const target = { anchorVersion: 1, kind: "element", tag: "h1", selector: "h1", text: "Demo", rect: { x: 0, y: 0, width: 10, height: 10 }, viewport: { width: 1024, height: 768 } };
+    const created = await post("api/pins", { note: "Change title", page: { url: "index.html" }, target, capture: { sessionRevision: "forged" } });
+    assert.equal(created.status, 201);
+    const pin = await created.json();
+    assert.equal(pin.capture.sessionRevision, revision);
+    assert.equal(pin.capture.packageSha256, player.course.sha256);
+    const changes = { target, page: pin.page, expectedUpdatedAt: pin.updatedAt };
+    assert.equal((await post(`api/pins/${pin.id}/reattach`, changes, "stale")).status, 409);
+    assert.equal((await post(`api/pins/${pin.id}/reattach`, { ...changes, target: { ...target, anchorVersion: 9 } })).status, 400);
+    assert.equal((await post(`api/pins/${pin.id}/reattach`, changes)).status, 200);
+    assert.equal((await post(`api/pins/${pin.id}/reattach`, changes)).status, 409);
+    assert.equal(player.pins.list()[0].attachmentHistory.length, 1);
+  } finally { await player.close(); }
+});

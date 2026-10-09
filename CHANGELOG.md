@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.7] - October 9, 2026
+
+- Pins use shared UI/MCP identity resolution and show attached, possible, ambiguous or missing
+  target status. Copy edits retain stable attachments; duplicate identities never pick a winner.
+- Reattach a pin without losing its note, original screenshot or prior target/source history.
+  Concurrent changes reject stale reattachments.
+- New region anchors use a containing ancestor, including the document canvas for boxes
+  beyond the body, and resize proportionally; markers clip inside nested scrolling panels.
+- Typed anchor validation and server-stamped capture metadata preserve legacy pin compatibility.
+- Bundled MCP and Codex/Claude/Cursor packages are 0.4.9, including player 0.9.7.
+
 ## [0.9.6] - October 8, 2026
 
 - Opening an already-running course in a terminal keeps a reuse menu open, with browser,

@@ -854,7 +854,8 @@ test("pins preserve content identity and verify the actual review tab through th
     assert.equal(duplicate.body.observation.targets[0].status, "ambiguous");
     await label.first().evaluate((element) => element.nextElementSibling.remove());
     const legacyPin = player.pins.create({ note: "Old pin without identity", page: pin.page, target: { ...pin.target, attributes: {}, ancestors: [] } });
-    assert.equal((await post("api/verify-pin", { id: legacyPin.id, sessionId })).body.observation.targets[0].status, "identity-unconfirmed");
+    // Neither identity nor unchanged text remains; do not accept the old selector alone.
+    assert.equal((await post("api/verify-pin", { id: legacyPin.id, sessionId })).body.observation.targets[0].status, "missing");
 
 
     second = await browser.newPage();
@@ -881,4 +882,159 @@ test("pins preserve content identity and verify the actual review tab through th
     assert.equal(result.code, 409);
     assert.match(result.body.error, /No connected review browser|review tab disconnected/);
   } finally { await second?.close(); await page.close(); await player.close(); }
+});
+
+test("pin attachment survives copy edits, reports ambiguity and missing targets, and reattaches with history", async () => {
+  const { player, page } = await open({ input: navCourse() });
+  try {
+    const frame = page.frameLocator("iframe.sp-frame");
+    await frame.locator("#a").waitFor();
+    await page.keyboard.press("p");
+    await frame.locator("#a").click();
+    await page.locator(".sp-composer textarea").fill("Improve this card");
+    await page.getByRole("button", { name: "Save pin", exact: true }).click();
+    await page.locator(".sp-composer").waitFor({ state: "detached" });
+    await page.locator(".sp-tab", { hasText: "Pins" }).click();
+    const status = page.locator(".sp-pin__attachment");
+    await status.filter({ hasText: /^Attached$/ }).waitFor();
+    await frame.locator("#a").evaluate((element) => { element.textContent = "A completely different label"; const wrapper = document.createElement("section"); element.before(wrapper); wrapper.append(element); });
+    await page.waitForFunction(() => document.querySelector(".sp-marker")?.title.startsWith("Attached"));
+    const pin = player.pins.list()[0];
+    const verify = async () => {
+      const response = await fetch(`${player.url}api/verify-pin`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: pin.id }) });
+      assert.equal(response.status, 200);
+      return (await response.json()).observation;
+    };
+    await page.waitForFunction(async () => (await (await fetch("/api/browser/sessions")).json()).sessions.some((session) => session.ready));
+    assert.equal((await verify()).status, "observed");
+    await frame.locator("#a").evaluate((element) => element.after(element.cloneNode(true)));
+    await status.filter({ hasText: "Multiple matches" }).waitFor();
+    assert.equal(await page.locator(".sp-marker").count(), 0);
+    assert.equal((await verify()).targets[0].status, "ambiguous");
+    await frame.locator("#a").evaluateAll((elements) => elements.forEach((element) => element.remove()));
+    await status.filter({ hasText: "Target missing" }).waitFor();
+    assert.equal((await verify()).targets[0].status, "missing");
+    // Let any initial screenshot refresh finish before taking the optimistic reattachment snapshot.
+    await page.waitForTimeout(500);
+    await page.getByRole("button", { name: "Reattach", exact: true }).click();
+    await frame.locator("#b").click();
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(player.pins.list()[0].attachmentHistory, undefined);
+    await page.locator(".sp-tab", { hasText: "Pins" }).click();
+    await page.getByRole("button", { name: "Reattach", exact: true }).click();
+    await frame.locator("#b").click();
+    await page.getByRole("button", { name: "Confirm reattachment", exact: true }).click();
+    await page.locator(".sp-composer").waitFor({ state: "detached" });
+    const changed = player.pins.list()[0];
+    assert.equal(changed.id, pin.id);
+    assert.equal(changed.note, pin.note);
+    assert.equal(changed.target.selector, "#b");
+    assert.equal(changed.attachmentHistory[0].target.selector, "#a");
+    assert.equal(changed.frame, changed.attachmentHistory[0].frame);
+    assert.equal((await verify()).status, "observed");
+    await page.reload();
+    await page.waitForFunction(() => document.querySelector(".sp-marker")?.title.startsWith("Attached"));
+    await page.locator(".sp-tab", { hasText: "Pins" }).click();
+    await status.filter({ hasText: /^Attached$/ }).waitFor();
+  } finally { await page.close(); await player.close(); }
+});
+
+test("region anchors scale with their target and clip inside nested scrolling panels", async () => {
+  const input = navCourse();
+  fs.appendFileSync(path.join(input, "index.html"), '<div id="clip" style="height:120px;width:500px;overflow:auto"><div style="height:160px"></div><div id="region" style="width:400px;height:200px;background:lightblue">Region</div><div style="height:300px"></div></div>');
+  const { player, page } = await open({ input });
+  try {
+    const frame = page.frameLocator("iframe.sp-frame");
+    await frame.locator("#region").waitFor({ state: "attached" });
+    const target = await frame.locator("#region").evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return { anchorVersion: 1, kind: "region", name: "Area", tag: "div", selector: "#region", attributes: { id: "region" }, text: "", rect: { x: box.x + 40, y: box.y + 20, width: 200, height: 50 }, offset: { x: 40, y: 20 }, normalizedRegion: { x: 0.1, y: 0.1, width: 0.5, height: 0.25 }, viewport: { width: innerWidth, height: innerHeight } };
+    });
+    player.pins.create({ note: "Check region", target });
+    await page.locator(".sp-tab", { hasText: "Pins" }).click();
+    await page.locator(".sp-pin__attachment", { hasText: "out of view" }).waitFor();
+    assert.equal(await page.locator(".sp-marker").count(), 0, "offscreen inside a panel never sticks to its top");
+    await frame.locator("#clip").evaluate((element) => { element.scrollTop = 150; });
+    await page.locator(".sp-marker").waitFor();
+    const before = await page.locator(".sp-marker").evaluate((element) => parseFloat(element.style.left));
+    await frame.locator("#region").evaluate((element) => { element.style.width = "200px"; element.style.height = "100px"; });
+    await page.waitForFunction((before) => Math.abs(parseFloat(document.querySelector(".sp-marker")?.style.left) - (before - 120)) < 2, before);
+    await frame.locator("#region").evaluate((element) => { element.style.visibility = "hidden"; });
+    await page.locator(".sp-marker").waitFor({ state: "detached" });
+    assert.equal(player.pins.list().length, 1, "hiding content keeps feedback");
+  } finally { await page.close(); await player.close(); }
+});
+
+test("region capture climbs past child and body boundaries and scales after reload", async () => {
+  for (const root of [false, true]) {
+    const input = navCourse();
+    fs.writeFileSync(path.join(input, "index.html"), `<!doctype html><title>Region boundary</title>
+      <body style="margin:40px;width:400px;height:240px">
+      <main id="container" style="position:relative;width:400px;height:240px;background:#eee">
+      <div style="position:absolute;left:40px;top:40px;width:140px;height:80px;background:#acf"></div>
+      </main></body>`);
+    const { player, page } = await open({ input });
+    try {
+      const frame = page.frameLocator("iframe.sp-frame");
+      await frame.locator("#container").waitFor();
+      const outer = await frame.locator("#container").boundingBox();
+      const band = root
+        ? { x: outer.x + 60, y: outer.y + 210, width: 180, height: 100 }
+        : { x: outer.x + 60, y: outer.y + 50, width: 180, height: 100 };
+      await page.locator(".sp-tab", { hasText: "Pin" }).filter({ hasText: /^Pin$/ }).click();
+      await page.keyboard.down("Alt");
+      await page.mouse.move(band.x, band.y);
+      await page.mouse.down();
+      await page.mouse.move(band.x + band.width, band.y + band.height, { steps: 8 });
+      await page.mouse.up();
+      await page.keyboard.up("Alt");
+      const composer = page.getByRole("dialog", { name: "New pin", exact: true });
+      await composer.getByRole("textbox").fill("Keep this area aligned");
+      await composer.getByRole("button", { name: "Save pin", exact: true }).click();
+      await page.waitForFunction(() => document.querySelector(".sp-marker"));
+      const pin = player.pins.list()[0];
+      assert.equal(pin.target.selector, root ? "html" : "#container");
+      assert.equal(pin.target.tag, root ? "html" : "main");
+      assert.ok(pin.target.normalizedRegion, "every new region has proportional bounds");
+      const relative = pin.target.normalizedRegion;
+      assert.ok(relative.x >= 0 && relative.y >= 0 && relative.x + relative.width <= 1 && relative.y + relative.height <= 1);
+      await page.reload();
+      await page.locator(".sp-marker").waitFor();
+      const before = await page.locator(".sp-marker").evaluate((element) => ({ x: parseFloat(element.style.left), y: parseFloat(element.style.top) }));
+      if (root) {
+        await page.setViewportSize({ width: 1600, height: 1020 });
+        await page.waitForFunction((before) => {
+          const marker = document.querySelector(".sp-marker");
+          return parseFloat(marker?.style.left) > before.x + 20 && parseFloat(marker?.style.top) > before.y + 20;
+        }, before);
+      } else {
+        await frame.locator("#container").evaluate((element) => { element.style.width = "200px"; element.style.height = "120px"; });
+        await page.waitForFunction((before) => {
+          const marker = document.querySelector(".sp-marker");
+          return Math.abs(parseFloat(marker?.style.left) - (before.x - 120)) < 2 && Math.abs(parseFloat(marker?.style.top) - (before.y - 25)) < 2;
+        }, before);
+      }
+      assert.deepEqual(player.pins.list()[0].target, pin.target, "resizing leaves saved evidence unchanged");
+    } finally { await page.close(); await player.close(); }
+  }
+});
+
+test("structural recovery is a possible match and repeated text stays ambiguous", async () => {
+  const { player, page } = await open({ input: navCourse() });
+  try {
+    const frame = page.frameLocator("iframe.sp-frame");
+    await frame.locator("#intro").waitFor();
+    const target = await frame.locator("#intro").evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return { kind: "element", tag: "p", selector: "article > p", name: "Paragraph", text: element.textContent, rawText: element.textContent, rect: { x: box.x, y: box.y, width: box.width, height: box.height }, viewport: { width: innerWidth, height: innerHeight } };
+    });
+    const pin = player.pins.create({ note: "Legacy paragraph", target });
+    await page.locator(".sp-tab", { hasText: "Pins" }).click();
+    await page.locator(".sp-pin__attachment", { hasText: /^Possible match$/ }).waitFor();
+    await page.locator(".sp-marker.is-approximate").waitFor();
+    await frame.locator("#intro").evaluate((element) => element.after(element.cloneNode(true)));
+    await page.locator(".sp-pin__attachment", { hasText: "Multiple matches" }).waitFor();
+    assert.equal(await page.locator(".sp-marker").count(), 0);
+    assert.equal(player.pins.list()[0].id, pin.id);
+  } finally { await page.close(); await player.close(); }
 });

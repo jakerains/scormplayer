@@ -6,6 +6,9 @@
 export type Rect = { x: number; y: number; width: number; height: number };
 
 export type PinTarget = {
+  anchorVersion?: 1;
+  /** Fractions of the containing element; legacy pixel offsets remain readable. */
+  normalizedRegion?: Rect;
   kind: "element" | "text" | "region" | "group";
   name: string;
   tag: string;
@@ -32,11 +35,11 @@ const MEANINGFUL = [
   "button", "a[href]", "input", "select", "textarea", "label", "img", "video", "audio", "svg", "canvas", "iframe",
   "h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "figure", "blockquote", "pre", "table", "tr", "td", "th", "summary", "dt", "dd",
   "[role=button]", "[role=tab]", "[role=link]", "[role=img]", "[role=checkbox]", "[role=radio]", "[role=option]",
-  "[data-content-id]", "[data-content-component-id]", "[data-tour-id]", "[role=dialog]", "[role=listitem]", "[aria-label]", "[data-testid]", "[oai-annotatable]",
+  "[data-component-id]", "[data-review-id]", "[data-content-id]", "[data-content-component-id]", "[data-tour-id]", "[role=dialog]", "[role=listitem]", "[aria-label]", "[data-testid]", "[oai-annotatable]",
 ].join(",");
 
 /** Attributes worth carrying into a pin when a course already has them. */
-export const IDENTITY_ATTRIBUTES = ["id", "data-content-id", "data-content-component-id", "data-tour-id", "data-testid"];
+export const IDENTITY_ATTRIBUTES = ["id", "data-content-id", "data-content-component-id", "data-component-id", "data-review-id", "data-tour-id", "data-testid"];
 const READ_ATTRIBUTES = [...IDENTITY_ATTRIBUTES, "aria-labelledby", "aria-describedby", "aria-label", "alt", "title", "oai-annotatable", "href", "src", "role"];
 
 /** The element a pointer over `element` should select. */
@@ -70,6 +73,7 @@ export function describeElement(element: Element): PinTarget {
   const box = element.getBoundingClientRect();
   return {
     ...evidenceOf(element),
+    anchorVersion: 1,
     kind: "element",
     name: nameOf(element),
     tag: element.tagName.toLowerCase(),
@@ -92,6 +96,7 @@ export function describeTextSelection(selection: Selection): PinTarget | null {
   const box = range.getBoundingClientRect();
   return {
     ...evidenceOf(element),
+    anchorVersion: 1,
     kind: "text",
     name: `“${text.length > 60 ? `${text.slice(0, 59)}…` : text}”`,
     tag: element.tagName.toLowerCase(),
@@ -105,15 +110,15 @@ export function describeTextSelection(selection: Selection): PinTarget | null {
 
 /** A box drawn over the course: anchored to the smallest element that contains it. */
 export function describeRegion(doc: Document, band: Rect): { element: Element; target: PinTarget } | null {
-  if (band.width < 8 || band.height < 8) return null;
-  let element = doc.elementFromPoint(band.x + band.width / 2, band.y + band.height / 2);
-  while (element && !isRoot(element)) {
-    const box = element.getBoundingClientRect();
-    if (box.x <= band.x && box.y <= band.y && box.right >= band.x + band.width && box.bottom >= band.y + band.height) break;
+  if (!Object.values(band).every(Number.isFinite) || band.width < 8 || band.height < 8) return null;
+  const contains = (box: Rect) => box.width > 0 && box.height > 0 && box.x <= band.x && box.y <= band.y && box.x + box.width >= band.x + band.width && box.y + box.height >= band.y + band.height;
+  let element: Element | null = doc.elementFromPoint(band.x + band.width / 2, band.y + band.height / 2) ?? doc.documentElement;
+  while (element) {
+    if (contains(regionAnchorRect(element))) break;
     element = element.parentElement;
   }
-  if (!element) element = doc.body;
-  const anchor = element.getBoundingClientRect();
+  if (!element) return null;
+  const anchor = regionAnchorRect(element);
   const inside = Array.from(element.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,button,a,label,figcaption,td,th"))
     .filter((child) => {
       const box = child.getBoundingClientRect();
@@ -127,15 +132,30 @@ export function describeRegion(doc: Document, band: Rect): { element: Element; t
     element,
     target: {
       ...evidenceOf(element),
+      anchorVersion: 1,
+      attributes: attributesOf(element),
       kind: "region",
       name: `Area ${rect.width}×${rect.height} in ${nameOf(element)}`.slice(0, 120),
       tag: element.tagName.toLowerCase(),
-      selector: isRoot(element) ? "body" : cssPath(element),
+      selector: isRoot(element) ? element.tagName.toLowerCase() : cssPath(element),
       text: inside.join(" · ").slice(0, 600),
       rect,
       offset: { x: Math.round(band.x - anchor.x), y: Math.round(band.y - anchor.y) },
+      normalizedRegion: { x: (band.x - anchor.x) / anchor.width, y: (band.y - anchor.y) / anchor.height, width: band.width / anchor.width, height: band.height / anchor.height },
       viewport: { width: win.innerWidth, height: win.innerHeight },
     },
+  };
+}
+
+/** Root selections include the document canvas, which may extend beyond a short body's box. */
+function regionAnchorRect(element: Element): Rect {
+  const doc = element.ownerDocument;
+  if (element !== doc.documentElement) return toRect(element.getBoundingClientRect());
+  const win = doc.defaultView!;
+  return {
+    x: -win.scrollX, y: -win.scrollY,
+    width: Math.max(doc.documentElement.scrollWidth, doc.documentElement.clientWidth, doc.body?.scrollWidth ?? 0),
+    height: Math.max(doc.documentElement.scrollHeight, doc.documentElement.clientHeight, doc.body?.scrollHeight ?? 0),
   };
 }
 
@@ -156,9 +176,12 @@ export function describeGroup(elements: Element[]): PinTarget {
 export function locateTarget(doc: Document, target: PinTarget, element = elementFor(doc, target)): Rect | null {
   if (!element) return null;
   if (target.kind === "region" && target.offset) {
-    const anchor = element.getBoundingClientRect();
+    const anchor = target.normalizedRegion ? regionAnchorRect(element) : element.getBoundingClientRect();
     if (anchor.width === 0 && anchor.height === 0) return null;
-    return { x: anchor.x + target.offset.x, y: anchor.y + target.offset.y, width: target.rect.width, height: target.rect.height };
+    const relative = target.normalizedRegion;
+    return relative
+      ? { x: anchor.x + relative.x * anchor.width, y: anchor.y + relative.y * anchor.height, width: relative.width * anchor.width, height: relative.height * anchor.height }
+      : { x: anchor.x + target.offset.x, y: anchor.y + target.offset.y, width: target.rect.width, height: target.rect.height };
   }
   if (target.kind === "text") {
     const found = findTextRange(element, target.text);
@@ -171,8 +194,74 @@ export function locateTarget(doc: Document, target: PinTarget, element = element
   return toRect(box);
 }
 
+export type TargetResolution = { status: "attached" | "possible" | "ambiguous" | "missing" | "identity-changed"; element: Element | null; method: "identity" | "selector" | "text"; matches?: number };
+
+/** Shared by markers and MCP. Candidates are never promoted to verified identity. */
+export function resolveTarget(doc: Document, target: PinTarget): TargetResolution {
+  if (target.kind === "group") return target.targets?.[0] ? resolveTarget(doc, target.targets[0]) : { status: "missing", element: null, method: "selector" };
+  const result = (status: TargetResolution["status"], element: Element | null, method: TargetResolution["method"], matches?: number): TargetResolution => ({ status, element, method, ...(matches === undefined ? {} : { matches }) });
+  const identities = IDENTITY_ATTRIBUTES.filter((name) => target.attributes?.[name] && (name !== "id" || stableToken(target.attributes[name])));
+  const query = (selector: string) => { try { return Array.from(doc.querySelectorAll(selector)); } catch { return []; } };
+  if (identities.length) {
+    let found: Element | null = null;
+    for (const name of identities) {
+      const matches = query(`[${name}="${CSS.escape(target.attributes![name])}"]`);
+      if (matches.length > 1) return result("ambiguous", null, "identity", matches.length);
+      if (!matches.length) return result("missing", null, "identity", 0);
+      if (found && found !== matches[0]) return result("identity-changed", null, "identity");
+      found = matches[0];
+    }
+    if (!found || (target.tag && found.tagName.toLowerCase() !== target.tag)) return result("identity-changed", null, "identity");
+    for (const ancestor of target.ancestors ?? []) {
+      const keys = IDENTITY_ATTRIBUTES.filter((name) => ancestor.attributes?.[name]);
+      if (!keys.length) continue;
+      let parent = found.parentElement;
+      while (parent && !keys.every((name) => parent!.getAttribute(name) === ancestor.attributes[name])) parent = parent.parentElement;
+      if (!parent) return result("identity-changed", null, "identity");
+    }
+    return result("attached", found, "identity", 1);
+  }
+  const fold = (text: string) => text.replace(/\s+/g, " ").trim().toLowerCase();
+  const expected = fold(target.rawText ?? target.text ?? "");
+  const textMatches = (element: Element) => {
+    const actual = fold(target.rawText !== undefined ? (element.textContent ?? "").slice(0, 1200) : visibleText(element).slice(0, 600));
+    return target.kind === "text" ? actual.includes(fold(target.text)) : actual === expected;
+  };
+  const matches = query(target.selector);
+  if (matches.length > 1) return result("ambiguous", null, "selector", matches.length);
+  const element = matches[0];
+  if (element && (!target.tag || element.tagName.toLowerCase() === target.tag) && (target.kind === "region" || !expected || textMatches(element))) return result("possible", element, "selector", 1);
+  // Bounded exact-text recovery. Repeated labels always require human selection.
+  if (expected.length >= 3 && /^[a-z][a-z0-9-]*$/.test(target.tag ?? "")) {
+    const candidates = doc.getElementsByTagName(target.tag);
+    if (candidates.length <= 3000) {
+      const found = Array.from(candidates).filter(textMatches);
+      if (found.length === 1) return result("possible", found[0], "text", 1);
+      if (found.length > 1) return result("ambiguous", null, "text", found.length);
+    }
+  }
+  return result("missing", null, "selector", 0);
+}
+
 export function elementFor(doc: Document, target: PinTarget): Element | null {
-  try { const matches = doc.querySelectorAll(target.selector); return matches.length === 1 ? matches[0] : null; } catch { return null; }
+  return resolveTarget(doc, target).element;
+}
+
+/** Intersect with the viewport and every overflow clip, including nested lesson panels. */
+export function visibleTargetRect(doc: Document, element: Element, rect: Rect): Rect | null {
+  const win = doc.defaultView;
+  if (!win || !element.getClientRects().length) return null;
+  let left = Math.max(0, rect.x), top = Math.max(0, rect.y);
+  let right = Math.min(win.innerWidth, rect.x + rect.width), bottom = Math.min(win.innerHeight, rect.y + rect.height);
+  for (let parent: Element | null = element; parent; parent = parent.parentElement) {
+    const style = win.getComputedStyle(parent);
+    if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" || Number(style.opacity) === 0) return null;
+    if (parent === element) continue;
+    const box = parent.getBoundingClientRect();
+    if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) { left = Math.max(left, box.left + parent.clientLeft); right = Math.min(right, box.left + parent.clientLeft + parent.clientWidth); }
+    if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) { top = Math.max(top, box.top + parent.clientTop); bottom = Math.min(bottom, box.top + parent.clientTop + parent.clientHeight); }
+  }
+  return right > left && bottom > top ? { x: left, y: top, width: right - left, height: bottom - top } : null;
 }
 
 function findTextRange(element: Element, text: string): Range | null {

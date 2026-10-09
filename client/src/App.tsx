@@ -3,7 +3,7 @@ import { api, copyText, type Course, type Pin, type PinPage } from "./api";
 import { captureElement, captureRegion } from "./capture";
 import { connectReviewBrowser } from "./browser-bridge";
 import { Icon } from "./icons";
-import { chooseTarget, describeElement, describeGroup, describeRegion, describeTextSelection, locateTarget, visibleText, elementFor, widenTarget, type PinTarget, type Rect } from "./picker";
+import { chooseTarget, describeElement, describeGroup, describeRegion, describeTextSelection, locateTarget, resolveTarget, visibleTargetRect, type TargetResolution, visibleText, elementFor, widenTarget, type PinTarget, type Rect } from "./picker";
 import { installScormApis, progressOf, type ScormData } from "./scorm-api";
 import { createNavigator, type NavState } from "./nav";
 import { checkpointReview, clearCourseReview, reviewLaunchUrl, reviewScope } from "./review-view";
@@ -21,7 +21,7 @@ import { registerWebMcpTools, type PlayerActions } from "./webmcp";
 import type { ScormCall } from "./scorm-api";
 
 type Selection = { element: Element; target: PinTarget; elements?: Element[] };
-type Marker = { id: string; number: number; rect: Rect };
+type Marker = { id: string; number: number; rect: Rect; status: string };
 
 export function App() {
   const [course, setCourse] = useState<Course | null>(null);
@@ -53,6 +53,8 @@ export function App() {
   const [band, setBand] = useState<Rect | null>(null);
   const selectionRef = useRef<Selection | null>(null);
   const [draft, setDraft] = useState("");
+  const [reattaching, setReattaching] = useState<Pin | null>(null);
+  const [attachments, setAttachments] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
@@ -244,6 +246,7 @@ export function App() {
     setSelection(null);
     setSelectionRect(null);
     setDraft("");
+    setReattaching(null);
   }, []);
 
   // Picking happens inside the course frame (same origin), so the course itself is untouched.
@@ -376,7 +379,7 @@ export function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (pagesOpen) setPagesOpen(false);
-        else if (selection) closeComposer();
+        else if (selection || reattaching) closeComposer();
         else if (menuOpen) setMenuOpen(false);
         else if (panelOpen) setPanelOpen(false);
         else if (pinMode) setPinMode(false);
@@ -388,6 +391,7 @@ export function App() {
         if (!event.repeat) { setPassthrough(true); setHover(null); }
       } else if (event.key.toLowerCase() === "p" && !selection) {
         event.preventDefault();
+        if (reattaching) closeComposer();
         setPinMode((value) => !value);
       } else if (event.key === "[" || event.key === "]") {
         event.preventDefault();
@@ -403,27 +407,27 @@ export function App() {
     const onKeyUp = (event: KeyboardEvent) => { if (event.code === "Space") setPassthrough(false); };
     docs.forEach((doc) => { doc.addEventListener("keydown", onKeyDown, true); doc.addEventListener("keyup", onKeyUp, true); });
     return () => docs.forEach((doc) => { doc.removeEventListener("keydown", onKeyDown, true); doc.removeEventListener("keyup", onKeyUp, true); });
-  }, [pinMode, selection, menuOpen, panelOpen, pagesOpen, frameLoads, closeComposer, nav, navBusy]);
+  }, [pinMode, selection, reattaching, menuOpen, panelOpen, pagesOpen, frameLoads, closeComposer, nav, navBusy]);
 
-  const targetCache = useRef<{ doc: Document; elements: Map<string, Element>; observer: MutationObserver } | null>(null);
+  const targetCache = useRef<{ doc: Document; elements: Map<PinTarget, TargetResolution>; observer: MutationObserver } | null>(null);
   useEffect(() => {
     targetCache.current?.observer.disconnect();
     targetCache.current = null;
     return () => { targetCache.current?.observer.disconnect(); targetCache.current = null; };
   }, [frameLoads]);
-  const cachedElement = (doc: Document, target: PinTarget) => {
+  const cachedResolution = (doc: Document, target: PinTarget) => {
     if (targetCache.current?.doc !== doc) {
       targetCache.current?.observer.disconnect();
-      const elements = new Map<string, Element>();
+      const elements = new Map<PinTarget, TargetResolution>();
       const observer = new MutationObserver(() => elements.clear());
-      observer.observe(doc, { subtree: true, childList: true, attributes: true });
+      observer.observe(doc, { subtree: true, childList: true, attributes: true, characterData: true });
       targetCache.current = { doc, elements, observer };
     }
     const cache = targetCache.current.elements;
-    const existing = cache.get(target.selector);
-    if (existing?.isConnected) return existing;
-    const found = elementFor(doc, target);
-    if (found) cache.set(target.selector, found);
+    const existing = cache.get(target);
+    if (existing && (!existing.element || existing.element.isConnected)) return existing;
+    const found = resolveTarget(doc, target);
+    cache.set(target, found);
     return found;
   };
 
@@ -435,19 +439,32 @@ export function App() {
       const selected = selectionRef.current;
       if (document.hidden || (!pins.length && !selected)) return;
       const doc = frameDoc();
-      if (!doc) return;
+      if (!doc || reloadPending.current || navBusy) { setMarkers([]); setAttachments({}); return; }
       const page = currentPage();
       const next: Marker[] = [];
+      const states: Record<string, string> = {};
       for (const pin of pins) {
-        if (pin.status !== "open" || !pin.target || (pin.page?.url && pin.page.url !== page.url)) continue;
-        if (pin.page?.scoId && page.scoId && pin.page.scoId !== page.scoId) continue;
-        const pinNav = (pin.page as { navId?: string } | undefined)?.navId;
-        if (pinNav && page.navId && pinNav !== page.navId) continue;
-        const element = cachedElement(doc, pin.target);
-        const rect = locateTarget(doc, pin.target, element);
-        if (!rect || !sameText(doc, pin.target, cachedElement)) continue;
-        next.push({ id: pin.id, number: pin.number, rect });
+        if (!pin.target) { states[pin.id] = "Target missing"; continue; }
+        states[pin.id] = "Other page";
+        if (pin.page?.url && pin.page.url !== page.url) continue;
+        if (["navId", "scoId", "location"].some((key) => {
+          const saved = pin.page?.[key as keyof PinPage];
+          return saved !== undefined && saved !== page[key as keyof PinPage];
+        })) continue;
+        const parts = pin.target.kind === "group" ? pin.target.targets ?? [] : [pin.target];
+        const results = parts.map((target) => cachedResolution(doc, target));
+        const result = results[0];
+        const label = !results.length || results.some((r) => r.status === "missing" || r.status === "identity-changed") ? "Target missing"
+          : results.some((r) => r.status === "ambiguous") ? "Multiple matches"
+          : results.every((r) => r.status === "attached") ? "Attached" : "Possible match";
+        states[pin.id] = label;
+        if (!result?.element || results.some((r) => !r.element)) continue;
+        const raw = locateTarget(doc, pin.target, result.element);
+        const rect = raw && visibleTargetRect(doc, result.element, raw);
+        if (!rect) { states[pin.id] = `${label} · out of view`; continue; }
+        if (pin.status === "open") next.push({ id: pin.id, number: pin.number, rect, status: label });
       }
+      setAttachments((previous) => JSON.stringify(previous) === JSON.stringify(states) ? previous : states);
       setMarkers((previous) => (JSON.stringify(previous) === JSON.stringify(next) ? previous : next));
       if (selected?.elements && selected.elements.length > 1) {
         const rects = selected.elements.filter((element) => element.isConnected).map((element) => {
@@ -478,17 +495,21 @@ export function App() {
       doc?.removeEventListener("scroll", schedule, true);
       doc?.defaultView?.removeEventListener("resize", schedule);
     };
-  }, [pins, selection, frameLoads, currentPage]);
+  }, [pins, selection, frameLoads, currentPage, navBusy]);
 
   async function savePin() {
     if (!selection || !draft.trim() || saving) return;
     setSaving(true);
     try {
-      const pin = await api.createPin({ note: draft.trim(), page: currentPage(), target: selection.target });
-      setPins((previous) => [...previous, pin]);
+      const replacing = reattaching;
+      const pin = replacing
+        ? await api.reattachPin(replacing.id, { target: selection.target, page: currentPage(), expectedUpdatedAt: replacing.updatedAt })
+        : await api.createPin({ note: draft.trim(), page: currentPage(), target: selection.target });
+      setPins((previous) => replacing ? previous.map((item) => item.id === pin.id ? pin : item) : [...previous, pin]);
       const element = selection.element;
       closeComposer();
-      say(`Pin ${pin.number} saved${pin.source?.length ? ` · ${pin.source[0].provenance === "content-binding" ? "mapped to" : "possible match in"} ${pin.source[0].file}` : ""}`);
+      say(`Pin ${pin.number} ${replacing ? "reattached" : "saved"}${pin.source?.length ? ` · ${pin.source[0].provenance === "content-binding" ? "mapped to" : "possible match in"} ${pin.source[0].file}` : ""}`);
+      if (replacing) return; // Keep the original screenshot as capture-time evidence.
       const shot = selection.target.kind === "region" && selection.target.offset
         ? captureRegion(element, selection.target.offset, selection.target.rect)
         : captureElement(element);
@@ -861,10 +882,10 @@ export function App() {
               <button
                 key={marker.id}
                 type="button"
-                className={`sp-marker ${activePin === marker.id ? "is-active" : ""}`}
-                style={{ left: marker.rect.x + marker.rect.width - 11, top: Math.max(4, marker.rect.y - 11) }}
+                className={`sp-marker ${marker.status === "Possible match" ? "is-approximate" : ""} ${activePin === marker.id ? "is-active" : ""}`}
+                style={{ left: marker.rect.x + marker.rect.width - 11, top: marker.rect.y }}
                 onClick={() => { setPanelOpen(true); setActivePin(marker.id); }}
-                title={pins.find((pin) => pin.id === marker.id)?.note}
+                title={`${marker.status}: ${pins.find((pin) => pin.id === marker.id)?.note ?? ""}`}
               >
                 {marker.number}
               </button>
@@ -873,7 +894,7 @@ export function App() {
           </div>
 
           {selection ? (
-            <div className="sp-composer" style={composerStyle} role="dialog" aria-label="New pin" onKeyDown={(event) => {
+            <div className="sp-composer" style={composerStyle} role="dialog" aria-label={reattaching ? `Reattach pin ${reattaching.number}` : "New pin"} onKeyDown={(event) => {
               if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void savePin(); }
             }}>
               <div className="sp-composer__target">
@@ -889,13 +910,14 @@ export function App() {
                 autoFocus
                 rows={3}
                 value={draft}
+                readOnly={Boolean(reattaching)}
                 onChange={(event) => setDraft(event.target.value)}
                 placeholder="What should change here?"
               />
               <div className="sp-composer__actions">
                 <small>{navigator.platform.includes("Mac") ? "⌘" : "Ctrl"} + Enter to save</small>
                 <button type="button" className="sp-button sp-button--primary" disabled={!draft.trim() || saving} onClick={() => void savePin()}>
-                  {saving ? "Saving…" : "Save pin"}
+                  {saving ? "Saving…" : reattaching ? "Confirm reattachment" : "Save pin"}
                 </button>
               </div>
             </div>
@@ -905,7 +927,7 @@ export function App() {
           {pinMode && !selection ? (
             <div className="sp-hint" role="status">
               <span>
-                {passthrough
+                {reattaching ? <>Select the new target for pin {reattaching.number} · <button type="button" onClick={closeComposer}>Cancel reattachment</button></> : passthrough
                   ? "Using the course · release Space to keep pinning"
                   : <>Click to pin · drag for an area · drag across text for a phrase · <kbd>Shift</kbd>-click to add more · hold <kbd>Space</kbd> to use the course</>}
               </span>
@@ -1020,7 +1042,7 @@ export function App() {
           </div>
 
           <nav className="sp-bar__actions" aria-label="Player">
-            <button type="button" className="sp-tab" aria-pressed={pinMode} onClick={() => { setPinMode((value) => !value); setMenuOpen(false); }} title="Pin mode (P)">
+            <button type="button" className="sp-tab" aria-pressed={pinMode} onClick={() => { if (reattaching) closeComposer(); setPinMode((value) => !value); setMenuOpen(false); }} title="Pin mode (P)">
               <Icon name="pin" /><span>{pinMode ? "Pinning" : "Pin"}</span>
             </button>
             <button type="button" className="sp-tab" aria-pressed={panelOpen} onClick={() => { setPanelOpen((value) => !value); setInspectorOpen(false); setMenuOpen(false); }} title="Saved pins">
@@ -1117,7 +1139,8 @@ export function App() {
           {listedPins.length ? (
             <ol className="sp-pin-list">
               {listedPins.map((pin) => (
-                <PinRow key={pin.id} pin={pin} active={activePin === pin.id} onPage={markers.some((marker) => marker.id === pin.id)}
+                <PinRow key={pin.id} pin={pin} active={activePin === pin.id} attachment={attachments[pin.id] ?? "Checking target…"}
+                  onReattach={() => { closeComposer(); setReattaching(pin); setDraft(pin.note); setPinMode(true); setPanelOpen(false); say(`Select a replacement for pin ${pin.number}, then confirm.`); }}
                   onOpen={() => void goToPin(pin)} onStatus={(status) => setStatus(pin, status)} onDelete={() => removePin(pin)}
                   onEdit={async (note) => { const updated = await api.updatePin(pin.id, { note }); setPins((previous) => previous.map((item) => (item.id === pin.id ? updated : item))); }} />
               ))}
@@ -1131,8 +1154,8 @@ export function App() {
   );
 }
 
-function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete, onEdit }: {
-  pin: Pin; active: boolean; onPage: boolean;
+function PinRow({ pin, active, attachment, onReattach, onOpen, onStatus, onDelete, onEdit }: {
+  pin: Pin; active: boolean; attachment: string; onReattach: () => void;
   onOpen: () => void; onStatus: (status: Pin["status"]) => Promise<void>; onDelete: () => Promise<void>; onEdit: (note: string) => Promise<void>;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1177,11 +1200,11 @@ function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete, onEdit }: {
           <span className="sp-pin__note">{pin.note}</span>
           <small>
             {[pin.page?.title, pin.target?.name].filter(Boolean).join(" · ")}
-            {onPage ? " · on this page" : ""}
           </small>
+          <small className="sp-pin__attachment" title="Target attachment describes the DOM element, not confidence in a source file.">{attachment}</small>
           {pin.source?.[0] ? <code title={pin.source[0].provenance === "content-binding" ? "Course-declared binding; file hashes checked at capture" : "Text match only; confirm the rendering field before editing"}>{pin.source[0].provenance === "content-binding" ? "Mapped: " : "Possible: "}{pin.source[0].file}:{pin.source[0].line}</code> : null}
         </span>
-        {pin.frame ? <img src={`/api/pins/${pin.id}/frame?v=${encodeURIComponent(pin.updatedAt)}`} alt="" /> : null}
+        {pin.frame ? <img src={`/api/pins/${pin.id}/frame?v=${encodeURIComponent(pin.updatedAt)}`} alt="" title={pin.attachmentHistory?.length ? "Original screenshot, captured before reattachment" : "Screenshot at capture"} /> : null}
       </button>
       {error && <p className="sp-pin__error" role="alert">{error}</p>}
       <div className="sp-pin__actions">
@@ -1189,6 +1212,7 @@ function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete, onEdit }: {
           ? <button type="button" disabled={busy} onClick={() => void run(() => onStatus("resolved"))}><Icon name="check" size={14} /> Resolve</button>
           : <button type="button" disabled={busy} onClick={() => void run(() => onStatus("open"))}><Icon name="undo" size={14} /> Reopen</button>}
         <button type="button" disabled={busy} onClick={() => { setText(pin.note); setEditing(true); setError(""); }}><Icon name="edit" size={14} /> Edit</button>
+        <button type="button" disabled={busy} onClick={onReattach}>Reattach</button>
         <button type="button" disabled={busy} className={confirmDelete ? "is-danger" : ""} onClick={() => (confirmDelete ? void run(onDelete) : setConfirmDelete(true))} onBlur={() => setConfirmDelete(false)}>
           <Icon name="trash" size={14} /> {confirmDelete ? "Confirm delete" : "Delete"}
         </button>
@@ -1197,7 +1221,6 @@ function PinRow({ pin, active, onPage, onOpen, onStatus, onDelete, onEdit }: {
   );
 }
 
-/** Is the saved target still the thing on screen? Group pins check their first element; areas their anchor exists. */
 /**
  * Whether a press lands on readable, selectable text (so a drag from there selects a phrase)
  * rather than on empty space, an image, or text the course made unselectable.
@@ -1216,15 +1239,6 @@ function startsOnText(doc: Document, x: number, y: number) {
   return Array.from(glyphs.getClientRects()).some((rect) => x >= rect.left - 2 && x <= rect.right + 2 && y >= rect.top - 2 && y <= rect.bottom + 2);
 }
 
-function sameText(doc: Document, target: PinTarget, resolve = elementFor) {
-  if (target.kind === "region") return Boolean(resolve(doc, target));
-  const reference = target.kind === "group" ? target.targets?.[0] : target;
-  if (!reference?.text) return true;
-  const element = resolve(doc, reference);
-  if (!element) return false;
-  const fold = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase().slice(0, 40);
-  return visibleText(element).toLowerCase().replace(/\s+/g, " ").includes(fold(reference.text));
-}
 
 function boxStyle(rect: Rect) {
   return { left: rect.x, top: rect.y, width: rect.width, height: rect.height };

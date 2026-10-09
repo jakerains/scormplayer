@@ -2,7 +2,7 @@
 name: scormplayer
 description: Work with scormplayer, a local SCORM player whose reviewers leave pinned notes on a course. Use when someone asks you to act on pins, review notes or feedback on a SCORM course or lesson, mentions scormplayer or a *.pins.json file, pastes a "# Pinned notes:" hand-off, or wants to open, preview or review a SCORM zip, SCORM folder or Vite-built course.
 metadata:
-  version: "0.9.6"
+  version: "0.9.7"
 ---
 
 # scormplayer
@@ -49,6 +49,13 @@ with `scormplayer_list_browser_sessions`; choose `sessionId` when several tabs a
 `scormplayer_reload` requests a course reload without resetting progress. Wait for readiness,
 then verify. Wrong-page, missing, ambiguous and identity-unconfirmed results require inspection,
 not resolution. Use WebMCP or browser tools for navigation and visual verification. Do not reset progress during a review.
+
+The pin list reports target attachment separately from source-file confidence. A possible
+structural/text match is unconfirmed; duplicate identities remain ambiguous. Reviewers can
+use **Reattach** to select a replacement while keeping the note, original screenshot and prior
+target/source evidence in `attachmentHistory`. `capture.sessionRevision` identifies a player
+session, not the contents of an edited folder; `capture.packageSha256` identifies the captured
+ZIP when available. Recheck current evidence before resolving a pin.
 
 The lesson runs in the normal browser; the compact MCP widget needs no local certificate.
 Widget messaging depends on host capabilities and an explicit user click. Where messaging

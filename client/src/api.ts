@@ -36,6 +36,8 @@ export type Pin = {
   target?: PinTarget;
   source?: { file: string; line: number; preview: string; provenance?: string; pointer?: string }[];
   sourceSearch?: { truncated: boolean; bindingStatus?: string; advice?: string };
+  capture?: { sessionRevision?: string; packageSha256?: string; at: string };
+  attachmentHistory?: { page?: PinPage; target?: PinTarget; capture?: Pin["capture"]; frame?: string; at: string }[];
   frame?: string;
   createdAt: string;
   updatedAt: string;
@@ -81,6 +83,7 @@ export const api = {
   pins: () => fetchPins(),
   createPin: (input: { note: string; page: PinPage; target: PinTarget }) => request<Pin>("/api/pins", json("POST", input)),
   updatePin: (id: string, changes: Partial<Pick<Pin, "note" | "status">> & { resolution?: string }) => request<Pin>(`/api/pins/${id}`, json("PATCH", changes)),
+  reattachPin: (id: string, input: { target: PinTarget; page: PinPage; expectedUpdatedAt: string }) => request<Pin>(`/api/pins/${id}/reattach`, json("POST", input)),
   deletePin: (id: string) => request<Pin>(`/api/pins/${id}`, { method: "DELETE" }),
   saveFrame: (id: string, png: Blob) => request<Pin>(`/api/pins/${id}/frame`, { method: "PUT", headers: { "Content-Type": "image/png" }, body: png }),
   active: () => fetch("/api/active", { method: "POST" }).catch(() => {}),

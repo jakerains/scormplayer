@@ -1,5 +1,5 @@
 import type { Pin, PinPage } from "./api";
-import { describeElement, IDENTITY_ATTRIBUTES, type PinTarget } from "./picker";
+import { describeElement, resolveTarget, visibleTargetRect, locateTarget, type PinTarget } from "./picker";
 
 type Context = { doc: Document | null; page: PinPage; busy: boolean; reload: () => Promise<void> };
 
@@ -60,23 +60,10 @@ function observePin(current: Context, pin: Pin) {
 }
 
 function observeTarget(doc: Document, target: PinTarget) {
-  let elements: NodeListOf<Element>;
-  try { elements = doc.querySelectorAll(target.selector); } catch { return { status: "invalid-selector", selector: target.selector }; }
-  if (elements.length !== 1) return { status: elements.length ? "ambiguous" : "missing", selector: target.selector, matches: elements.length };
-  const element = elements[0];
-  if (element.tagName.toLowerCase() !== target.tag) return { status: "identity-changed", selector: target.selector };
-  const identities = IDENTITY_ATTRIBUTES.filter((name) => target.attributes?.[name]);
-  if (identities.some((name) => element.getAttribute(name) !== target.attributes![name])) return { status: "identity-changed", selector: target.selector };
-  for (const ancestor of target.ancestors ?? []) {
-    const keys = IDENTITY_ATTRIBUTES.filter((name) => ancestor.attributes[name]);
-    if (!keys.length) continue;
-    let parent = element.parentElement;
-    while (parent && !keys.every((name) => parent!.getAttribute(name) === ancestor.attributes[name])) parent = parent.parentElement;
-    if (!parent) return { status: "identity-changed", selector: target.selector, reason: "The target's identifying ancestor changed." };
-  }
-  // Unique authored identity can survive a copy edit. A structural path alone cannot prove
-  // the same node survived a rebuild/reorder, so return evidence without claiming verification.
-  const uniqueIdentity = identities.some((name) => doc.querySelectorAll(`[${name}="${CSS.escape(target.attributes![name])}"]`).length === 1);
+  const resolution = resolveTarget(doc, target);
+  const element = resolution.element;
+  if (!element) return { status: resolution.status, selector: target.selector, matches: resolution.matches, attachment: resolution.status, method: resolution.method };
+  const uniqueIdentity = resolution.status === "attached";
   const current = describeElement(element);
   const peers: { selector: string; text: string }[] = [];
   for (const name of ["data-content-id"]) {
@@ -87,8 +74,9 @@ function observeTarget(doc: Document, target: PinTarget) {
     }
   }
   return { status: uniqueIdentity ? "observed" : "identity-unconfirmed", target: current,
-    visible: Boolean(element.getClientRects().length) && doc.defaultView?.getComputedStyle(element).visibility !== "hidden",
-    ...(uniqueIdentity ? {} : { reason: "Only a structural or repeated identity is available. Confirm this target visually before resolving." }),
+    attachment: resolution.status, method: resolution.method,
+    visible: Boolean(visibleTargetRect(doc, element, locateTarget(doc, target, element) ?? { x: 0, y: 0, width: 0, height: 0 })),
+    ...(uniqueIdentity ? {} : { reason: "Only a structural or text match is available. Confirm this target visually before resolving." }),
     sameContentIdOnCurrentPage: peers,
   };
 }

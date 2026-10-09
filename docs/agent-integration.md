@@ -163,8 +163,8 @@ Zod validation and MCP Apps metadata remain intact. After updating the player, r
 Their persistent MCP snapshots are separate from the CLI installation. Installed-server
 stdio verification does not establish a successful native Cowork agent turn.
 
-MCP 0.4.8 ships with player 0.9.6 and includes richer pin evidence, connected-browser
-verification, and the terminal reuse menu. Refresh installed host packages or run setup again after updating. Restart older
+MCP 0.4.9 ships with player 0.9.7 and includes shared target resolution, attachment status,
+reattachment history, and proportional region anchors. Refresh installed host packages or run setup again after updating. Restart older
 running players and open a fresh host session to load the new tools.
 
 Protocol and renderer references: [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) and [json-render MCP integration](https://github.com/vercel-labs/json-render/blob/main/skills/mcp/SKILL.md).
