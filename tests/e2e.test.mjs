@@ -1149,3 +1149,61 @@ test("cmi5 and xAPI courses launch through the local LRS; progress and statement
     } finally { await page.close(); await player.close(); }
   }
 });
+
+test("an agent QA pass shows live in the tab: banner and Stop, dashed suggestion markers, triage into Copy, and Clear QA pins", async () => {
+  const zip = path.join(tempDir(), "multi.zip");
+  fs.writeFileSync(zip, multiScoZip());
+  const context = await browser.newContext({ viewport: { width: 1400, height: 820 }, permissions: ["clipboard-read", "clipboard-write"] });
+  const { player, page } = await open({ input: zip, registryDir: null }, context);
+  try {
+    await page.frameLocator("iframe.sp-frame").locator("h1", { hasText: "Module 1" }).waitFor();
+    await page.waitForFunction(async () => (await (await fetch("/api/browser/sessions")).json()).sessions.some((s) => s.ready));
+    const { revision } = await (await fetch(`${player.url}api/course`)).json();
+    const post = async (url, body) => {
+      const response = await fetch(`${player.url}${url}`, { method: "POST", headers: { "Content-Type": "application/json", "X-Scormplayer-Revision": revision }, body: JSON.stringify(body) });
+      const data = await response.json();
+      assert.ok(response.ok, JSON.stringify(data));
+      return data;
+    };
+    const { run } = await post("api/qa/runs", { agent: "Test agent" });
+    const banner = page.locator(".sp-qa-banner");
+    await banner.filter({ hasText: "Test agent is reviewing" }).waitFor();
+    const first = await post("api/qa/suggest", { runId: run.id, note: "Name what this module teaches.", selector: "h1", category: "copy", severity: "minor", evidence: "\"Module 1\"" });
+    assert.equal(first.outcome, "created");
+    await page.locator(".sp-marker.is-suggestion").waitFor();
+    await post("api/qa/navigate", { runId: run.id, next: true });
+    await page.frameLocator("iframe.sp-frame").locator("h1", { hasText: "Module 2" }).waitFor();
+    await post("api/qa/suggest", { runId: run.id, note: "Same vague heading.", selector: "h1", category: "copy", severity: "major", evidence: "\"Module 2\"" });
+
+    // Stop asks the agent to stop; End now finishes the pass from the tab.
+    await banner.getByRole("button", { name: "Stop" }).click();
+    assert.equal((await post("api/qa/page", { runId: run.id, status: "reviewed" })).stop, true);
+    await banner.getByRole("button", { name: /End now/ }).click();
+    await page.locator(".sp-qa-banner.is-done", { hasText: "2 suggestions to review" }).waitFor();
+    await page.locator(".sp-qa-banner.is-done").getByRole("button", { name: "Review" }).click();
+
+    const panel = page.locator("aside[aria-label=Pins]");
+    await panel.locator(".sp-suggestion").first().waitFor();
+    assert.equal(await panel.locator(".sp-suggestion").count(), 2);
+    assert.match(await panel.innerText(), /Module 1 ›[\s\S]*Name what this module teaches\./i);
+    await panel.getByLabel("Severity").selectOption("minor");
+    assert.equal(await panel.locator(".sp-suggestion").count(), 1);
+    await panel.locator(".sp-suggestion").getByRole("button", { name: "Accept" }).click();
+    await page.getByRole("status").filter({ hasText: "Accepted 1" }).waitFor();
+    await panel.locator("[role=tab]", { hasText: "Pins" }).click();
+    await panel.locator(".sp-pin", { hasText: "Name what this module teaches." }).locator(".sp-pin__ai").waitFor();
+    const brief = await (await fetch(`${player.url}api/brief`)).text();
+    assert.match(brief, /Name what this module teaches\./);
+    assert.doesNotMatch(brief, /Same vague heading/);
+
+    await panel.locator("[role=tab]", { hasText: "Suggestions" }).click();
+    await panel.getByLabel("Severity").selectOption("all");
+    await panel.getByRole("button", { name: "Clear QA pins" }).click();
+    await panel.getByRole("button", { name: /Clear 1\? Click again/ }).click();
+    await page.getByRole("status").filter({ hasText: "Cleared 1 QA suggestion" }).waitFor();
+    const pins = (await (await fetch(`${player.url}api/pins`)).json()).pins;
+    assert.deepEqual(pins.map((pin) => pin.status), ["open"]);
+    // The reviewer's own progress is back: module 1 completed in their attempt before the pass.
+    assert.equal((await (await fetch(`${player.url}api/scorm`)).json()).selectedSco, "item-1");
+  } finally { await context.close(); await player.close(); }
+});

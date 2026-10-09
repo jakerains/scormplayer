@@ -10,6 +10,9 @@
   --bad: #ff6b6b;
   --live: #f5b23d;
   --folder: #6aa8ff;
+  /* An agent's QA suggestions, set apart from the reviewer's own pins. */
+  --ai: #8b5cf6;
+  --ai-soft: rgba(139, 92, 246, 0.14);
   --surface: #ffffff;
   --surface-2: #f5f6f8;
   --ink: #16181d;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, copyText, type Course, type Pin, type PinPage, type XapiSummary } from "./api";
+import { api, copyText, type Course, type Pin, type PinPage, type QaStatus, type XapiSummary } from "./api";
 import { captureElement, captureRegion } from "./capture";
 import { connectReviewBrowser } from "./browser-bridge";
 import { Icon } from "./icons";
@@ -14,6 +14,7 @@ import { activeMedia, skipMedia, tourState, watchMedia } from "./media";
 import { DropHome, UploadStatus, ZipInput, useZipOpener } from "./DropHome";
 import { Inspector } from "./Inspector";
 import { Checks } from "./Checks";
+import { QaBanner, QaSuggestions } from "./QaPanel";
 import { captureViewport, pageSnapshot, waitFor } from "./qa-agent";
 import { scanAccessibility } from "./a11y";
 import { UnzipDialog, UnzipNotice, useUnzipNotice } from "./Unzip";
@@ -25,7 +26,7 @@ import { registerWebMcpTools, type PlayerActions } from "./webmcp";
 import type { ScormCall } from "./scorm-api";
 
 type Selection = { element: Element; target: PinTarget; elements?: Element[] };
-type Marker = { id: string; number: number; rect: Rect; status: string };
+type Marker = { id: string; number: number; rect: Rect; status: string; suggestion: boolean; ai: boolean };
 
 export function App() {
   const [course, setCourse] = useState<Course | null>(null);
@@ -39,6 +40,9 @@ export function App() {
   const [checksOpen, setChecksOpen] = useState(false);
   // The agent QA run in progress, when there is one (the course runs on a throwaway attempt).
   const [qaRunId, setQaRunId] = useState<string | null>(null);
+  const [qaStatus, setQaStatus] = useState<QaStatus | null>(null);
+  const [qaDone, setQaDone] = useState<number | null>(null);
+  const [panelTab, setPanelTab] = useState<"pins" | "suggestions">("pins");
   const navRequestRef = useRef<(request: NavRequest) => void>(() => {});
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const pendingPinRef = useRef<Pin | null>(null);
@@ -199,6 +203,18 @@ export function App() {
   }, [course, courseProgress]);
 
   const refreshPins = useCallback(() => api.pins().then(setPins).catch(() => {}), []);
+
+  // An agent's QA pass: its banner, and a notice with the suggestion count once it ends.
+  const qaWasActive = useRef<string | null>(null);
+  useEffect(() => {
+    if (!course) return;
+    return pollWhileVisible(() => api.qa().then((status) => {
+      setQaStatus(status);
+      const before = qaWasActive.current;
+      qaWasActive.current = status.active?.id ?? null;
+      if (before && !status.active && status.last?.id === before) { setQaDone(status.counts.suggested); void refreshPins(); }
+    }).catch(() => {}), 2000, 10_000);
+  }, [course?.revision, qaRunId, refreshPins]);
   useEffect(() => {
     return pollWhileVisible(refreshPins, 4000, 15_000);
   }, [refreshPins]);
@@ -496,7 +512,7 @@ export function App() {
         const raw = locateTarget(doc, pin.target, result.element);
         const rect = raw && visibleTargetRect(doc, result.element, raw);
         if (!rect) { states[pin.id] = `${label} · out of view`; continue; }
-        if (pin.status === "open") next.push({ id: pin.id, number: pin.number, rect, status: label });
+        if (pin.status === "open" || pin.status === "suggested") next.push({ id: pin.id, number: pin.number, rect, status: label, suggestion: pin.status === "suggested", ai: pin.origin?.kind === "agent" });
       }
       setAttachments((previous) => JSON.stringify(previous) === JSON.stringify(states) ? previous : states);
       setMarkers((previous) => (JSON.stringify(previous) === JSON.stringify(next) ? previous : next));
@@ -734,7 +750,10 @@ export function App() {
   }
 
   const openPins = pins.filter((pin) => pin.status === "open");
-  const listedPins = showResolved ? pins : openPins;
+  // Suggestions wait in their own tab until accepted.
+  const reviewPins = pins.filter((pin) => pin.status === "open" || pin.status === "resolved");
+  const listedPins = showResolved ? reviewPins : openPins;
+  const suggestedPins = pins.filter((pin) => pin.status === "suggested");
   const progress = courseProgress;
   const progressLabel = describeProgress(progress);
   const kindLabel = course ? describeKind(course, lastChangeAt, now) : "";
@@ -1029,6 +1048,18 @@ export function App() {
   return (
     <div className={`sp-app ${panelOpen || inspectorOpen || checksOpen ? "has-panel" : ""}`}>
       <div className="sp-main">
+        {qaStatus?.active ? (
+          <QaBanner qa={qaStatus} where={[sco?.title, nav ? `page ${nav.index + 1}/${nav.pages.length}` : null].filter(Boolean).join(" · ")}
+            onReview={() => { setPanelOpen(true); setPanelTab("suggestions"); setInspectorOpen(false); setChecksOpen(false); }}
+            onStop={() => void api.stopQa(qaStatus.active!.id).then(() => api.qa().then(setQaStatus), (error) => say(error.message))}
+            onEnd={() => void api.finishQa(qaStatus.active!.id, "Ended by the reviewer before the agent finished.").then(() => api.qa().then(setQaStatus), (error) => say(error.message))} />
+        ) : qaDone !== null ? (
+          <div className="sp-qa-banner is-done" role="status">
+            <span><strong>QA pass finished</strong> · {qaDone} suggestion{qaDone === 1 ? "" : "s"} to review</span>
+            <button type="button" onClick={() => { setQaDone(null); setPanelOpen(true); setPanelTab("suggestions"); setInspectorOpen(false); setChecksOpen(false); }}>Review</button>
+            <button type="button" onClick={() => setQaDone(null)} aria-label="Dismiss">×</button>
+          </div>
+        ) : null}
         {progressError && <div className="sp-save-error" role="alert"><span>Progress could not be saved: {progressError}</span><button type="button" onClick={() => void persistence?.flush()}>Retry</button></div>}
         <div className={`sp-stage ${pinMode && !passthrough ? "is-picking" : ""}`} ref={stageRef}>
           <div className={`sp-device sp-device--${viewport}`} ref={deviceRef} style={deviceStyle}>
@@ -1054,10 +1085,10 @@ export function App() {
               <button
                 key={marker.id}
                 type="button"
-                className={`sp-marker ${marker.status === "Possible match" ? "is-approximate" : ""} ${activePin === marker.id ? "is-active" : ""}`}
+                className={`sp-marker ${marker.status === "Possible match" ? "is-approximate" : ""} ${marker.suggestion ? "is-suggestion" : ""} ${marker.ai ? "is-ai" : ""} ${activePin === marker.id ? "is-active" : ""}`}
                 style={{ left: marker.rect.x + marker.rect.width - 11, top: marker.rect.y }}
-                onClick={() => { setPanelOpen(true); setActivePin(marker.id); }}
-                title={`${marker.status}: ${pins.find((pin) => pin.id === marker.id)?.note ?? ""}`}
+                onClick={() => { setPanelOpen(true); setPanelTab(marker.suggestion ? "suggestions" : "pins"); setInspectorOpen(false); setChecksOpen(false); setActivePin(marker.id); }}
+                title={`${marker.suggestion ? "QA suggestion · " : marker.ai ? "From a QA suggestion · " : ""}${marker.status}: ${pins.find((pin) => pin.id === marker.id)?.note ?? ""}`}
               >
                 {marker.number}
               </button>
@@ -1221,7 +1252,7 @@ export function App() {
               <Icon name="pin" /><span>{pinMode ? "Pinning" : "Pin"}</span>
             </button>
             <button type="button" className="sp-tab" aria-pressed={panelOpen} onClick={() => { setPanelOpen((value) => !value); setInspectorOpen(false); setChecksOpen(false); setMenuOpen(false); }} title="Saved pins">
-              <Icon name="list" /><span>Pins</span>{openPins.length ? <em>{openPins.length}</em> : null}
+              <Icon name="list" /><span>Pins</span>{openPins.length ? <em>{openPins.length}</em> : null}{suggestedPins.length ? <em className="is-suggested" title={`${suggestedPins.length} QA suggestions to review`}>{suggestedPins.length}</em> : null}
             </button>
             <button type="button" className="sp-tab" onClick={() => void copyPins()} disabled={!openPins.length} title="Copy all open pins as a hand-off for an agent">
               <Icon name="copy" /><span>Copy</span>
@@ -1243,6 +1274,9 @@ export function App() {
                   </button>
                   <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setPanelOpen(false); setInspectorOpen(false); setChecksOpen(true); }}>
                     <Icon name="check" size={16} /> Checks: package and accessibility…
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setPanelOpen(true); setPanelTab("suggestions"); setInspectorOpen(false); setChecksOpen(false); }}>
+                    <Icon name="list" size={16} /> QA suggestions{suggestedPins.length ? <em className="sp-menu__tag">{suggestedPins.length}</em> : null}
                   </button>
                   <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setSettingsOpen(true); }}>
                     <Icon name="edit" size={16} /> Launch settings…{launchSettings.strict ? <em className="sp-menu__tag">Strict</em> : null}
@@ -1324,10 +1358,26 @@ export function App() {
           <header>
             <div>
               <strong>Pins</strong>
-              <span>{openPins.length} open{pins.length - openPins.length ? ` · ${pins.length - openPins.length} resolved` : ""}</span>
+              <span>{openPins.length} open{reviewPins.length - openPins.length ? ` · ${reviewPins.length - openPins.length} resolved` : ""}{suggestedPins.length ? ` · ${suggestedPins.length} suggested` : ""}</span>
             </div>
             <button type="button" className="sp-icon-button" onClick={() => setPanelOpen(false)} aria-label="Close pins"><Icon name="close" /></button>
           </header>
+          <div className="sp-inspector__tools">
+            <div className="sp-segmented" role="tablist">
+              <button type="button" role="tab" aria-selected={panelTab === "pins"} onClick={() => setPanelTab("pins")}>Pins <em>{openPins.length}</em></button>
+              <button type="button" role="tab" aria-selected={panelTab === "suggestions"} onClick={() => setPanelTab("suggestions")}>Suggestions <em className={suggestedPins.length ? "is-bad" : ""}>{suggestedPins.length}</em></button>
+            </div>
+          </div>
+          {panelTab === "suggestions" ? (
+            <QaSuggestions pins={pins} qa={qaStatus} activePin={activePin} onOpen={(pin) => void goToPin(pin)}
+              onTriage={async (selected, action) => {
+                await api.triage(selected.map((pin) => pin.id), action);
+                await refreshPins();
+                say(action === "accept" ? `Accepted ${selected.length}: now in Pins and the hand-off` : action === "dismiss" ? "Dismissed; a later QA pass won't suggest it again" : "Restored");
+              }}
+              onClear={async () => { const { removed } = await api.clearQa(); await refreshPins(); say(`Cleared ${removed} QA suggestion${removed === 1 ? "" : "s"}`); }}
+              onCopyLog={() => { if (qaStatus?.logFile) void copyText(qaStatus.logFile).then(() => say("QA log path copied")); }} />
+          ) : <>
           <div className="sp-panel__tools">
             <button type="button" className="sp-button sp-button--primary" disabled={!openPins.length} onClick={() => void copyPins()}>
               <Icon name="copy" size={15} /> Copy {openPins.length || ""} for agent
@@ -1345,8 +1395,9 @@ export function App() {
               ))}
             </ol>
           ) : (
-            <p className="sp-empty">{pins.length ? "Every pin is resolved." : <>No pins yet. Press <kbd>P</kbd> or <strong>Pin</strong>, click something in the course, and write what should change.</>}</p>
+            <p className="sp-empty">{reviewPins.length ? "Every pin is resolved." : <>No pins yet. Press <kbd>P</kbd> or <strong>Pin</strong>, click something in the course, and write what should change.</>}</p>
           )}
+          </>}
         </aside>
       ) : null}
     </div>
@@ -1398,6 +1449,7 @@ function PinRow({ pin, active, attachment, onReattach, onOpen, onStatus, onDelet
         <span className="sp-pin__body">
           <span className="sp-pin__note">{pin.note}</span>
           <small>
+            {pin.origin?.kind === "agent" ? <em className="sp-pin__ai" title={`Accepted QA suggestion from ${pin.origin.agent} · ${pin.category} · ${pin.severity}`}>AI</em> : null}
             {[pin.page?.title, pin.target?.name].filter(Boolean).join(" · ")}
           </small>
           <small className="sp-pin__attachment" title="Target attachment describes the DOM element, not confidence in a source file.">{attachment}</small>
