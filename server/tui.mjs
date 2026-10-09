@@ -86,6 +86,11 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       }
     });
     events.on("pin", () => pollPins(entry));
+    events.on("qa", ({ type, run, logFile }) => {
+      if (type === "started") log("▶", `Agent QA pass started (${run.agent})`, entry);
+      else if (type === "stopping") log("■", "Agent QA pass asked to stop", entry);
+      else if (type === "finished" || type === "stopped") log("✓", `Agent QA pass ${type}: ${run.pages.length} pages logged, ${run.suggestions.length} suggestions · ${logFile}`, entry);
+    });
     events.on("unzipped", ({ folder, reused, movedPins }) => {
       log("◉", `${reused ? "Opened the folder it was unzipped to before" : "Unzipped"}: ${displayPath(folder)}${movedPins ? ` · ${movedPins} ${movedPins === 1 ? "pin" : "pins"} moved` : ""}`, entry);
     });
@@ -105,7 +110,10 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
       const old = before.get(pin.id);
       if (!old) {
         const where = pin.source?.[0] ? ` · ${pin.source[0].file}:${pin.source[0].line}` : "";
-        log("◆", `Pin ${pin.number} saved: ${oneLine(pin.note)}${where}`, entry);
+        if (pin.status === "suggested") log("◇", `QA suggestion ${pin.number} (${pin.severity} ${pin.category}): ${oneLine(pin.note)}`, entry);
+        else log("◆", `Pin ${pin.number} saved: ${oneLine(pin.note)}${where}`, entry);
+      } else if (old.status !== pin.status && (old.status === "suggested" || old.status === "dismissed")) {
+        log(pin.status === "open" ? "◆" : "−", `QA suggestion ${pin.number} ${pin.status === "open" ? "accepted" : pin.status === "dismissed" ? "dismissed" : "restored"}`, entry);
       } else if (old.status !== pin.status) {
         log(pin.status === "resolved" ? "✓" : "↺", `Pin ${pin.number} ${pin.status === "resolved" ? "resolved" : "reopened"}${pin.resolution ? `: ${oneLine(pin.resolution)}` : ""}`, entry);
       }
@@ -429,9 +437,10 @@ export function createDashboard({ version, entries, plain = false, pinsHint, onQ
   function pinCounts(pins) {
     const p = paint;
     const open = pins.filter((pin) => pin.status === "open").length;
-    const resolved = pins.length - open;
+    const resolved = pins.filter((pin) => pin.status === "resolved").length;
+    const suggested = pins.filter((pin) => pin.status === "suggested").length;
     if (!pins.length) return p.dim("none yet");
-    return `${open ? p.pin(`${open} open`) : p.dim("0 open")}${resolved ? p.dim(` · ${resolved} resolved`) : ""}`;
+    return `${open ? p.pin(`${open} open`) : p.dim("0 open")}${suggested ? p.amber(` · ${suggested} suggested`) : ""}${resolved ? p.dim(` · ${resolved} resolved`) : ""}`;
   }
 
   function toneDot(tone) {

@@ -4,6 +4,12 @@ import { randomUUID } from "node:crypto";
 import { validateTarget } from "./pin-target.mjs";
 import { withFileLock } from "./file-lock.mjs";
 
+/** What an agent's QA suggestion may be about, and how much it matters. */
+export const QA_CATEGORIES = ["copy", "content", "accessibility", "scorm", "layout", "interaction", "media"];
+export const QA_SEVERITIES = ["blocker", "major", "minor", "polish"];
+export const QA_CONFIDENCE = ["high", "medium", "low"];
+export const PIN_STATUSES = ["open", "resolved", "suggested", "dismissed"];
+
 /**
  * Pins live in one JSON file beside the course (or inside a live project's .scormplayer/),
  * with each pin's screenshot as a PNG in a sibling folder. Plain files, so a teammate or an
@@ -28,6 +34,30 @@ export function createPinStore(pinsFile, course) {
 
   const transaction = (fn) => withFileLock(pinsFile, fn);
 
+  /** The pin record for new input: a person's open pin, or an agent's suggestion with its (checked) QA fields. */
+  function build(data, input) {
+    const note = String(input?.note ?? "").trim();
+    if (!note) throw Object.assign(new Error("A pin needs a note."), { statusCode: 400 });
+    const now = new Date().toISOString();
+    return {
+      id: randomUUID(),
+      number: data.pins.reduce((max, item) => Math.max(max, item.number || 0), 0) + 1,
+      status: input.qa ? "suggested" : "open",
+      note,
+      page: clean(input.page),
+      target: validateTarget(input.target),
+      capture: clean(input.capture),
+      source: Array.isArray(input.source) ? input.source.slice(0, 100) : undefined,
+      sourceSearch: clean(input.sourceSearch),
+      ...(input.qa ?? {}),
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  const touch = (pin) => { pin.updatedAt = new Date(Math.max(Date.now(), Date.parse(pin.updatedAt) + 1)).toISOString(); };
+  const removeFrame = (pin) => { if (pin.frame) fs.rmSync(path.join(path.dirname(pinsFile), pin.frame), { force: true }); };
+
   function find(data, idOrNumber) {
     const key = String(idOrNumber);
     const pin = data.pins.find((item) => item.id === key || String(item.number) === key);
@@ -45,27 +75,77 @@ export function createPinStore(pinsFile, course) {
     },
 
     create(input) {
-      const note = String(input?.note ?? "").trim();
-      if (!note) throw Object.assign(new Error("A pin needs a note."), { statusCode: 400 });
       return transaction(() => {
         const data = read();
-        const now = new Date().toISOString();
-        const pin = {
-          id: randomUUID(),
-          number: data.pins.reduce((max, item) => Math.max(max, item.number || 0), 0) + 1,
-          status: "open",
-          note,
-          page: clean(input.page),
-          target: validateTarget(input.target),
-          capture: clean(input.capture),
-          source: Array.isArray(input.source) ? input.source.slice(0, 100) : undefined,
-          sourceSearch: clean(input.sourceSearch),
-          createdAt: now,
-          updatedAt: now,
-        };
+        const pin = build(data, { ...input, qa: undefined });
         data.pins.push(pin);
         write(data);
         return pin;
+      });
+    },
+
+    /**
+     * An agent's QA suggestion. The same problem (category and quoted evidence) already
+     * suggested or accepted is not pinned again: this page is added to that pin's `alsoOn`.
+     * One the reviewer dismissed before is refused, so a re-run doesn't bring it back.
+     *
+     * @returns {{ pin: object, outcome: "created" | "merged" | "duplicate" }}
+     */
+    suggest(input) {
+      const qa = qaFields(input?.qa ?? {});
+      return transaction(() => {
+        const data = read();
+        const key = dedupeKey(qa);
+        const same = data.pins.find((pin) => pin.origin?.kind === "agent" && dedupeKey(pin) === key && pin.status !== "resolved");
+        if (same?.status === "dismissed") {
+          throw Object.assign(new Error(`The reviewer dismissed this before (pin ${same.number}); don't suggest it again.`), { statusCode: 409, pin: same });
+        }
+        if (same) {
+          const page = pageRef(input.page);
+          if (samePage(same.page, page) || (same.alsoOn ?? []).some((other) => samePage(other, page))) return { pin: same, outcome: "duplicate" };
+          same.alsoOn = [...(same.alsoOn ?? []), page].slice(0, 50);
+          touch(same);
+          write(data);
+          return { pin: same, outcome: "merged" };
+        }
+        const pin = build(data, { ...input, qa });
+        data.pins.push(pin);
+        write(data);
+        return { pin, outcome: "created" };
+      });
+    },
+
+    /** Accept (it becomes an open pin), dismiss, or restore agent suggestions. */
+    triage(ids, action) {
+      const next = { accept: "open", dismiss: "dismissed", restore: "suggested" }[action];
+      if (!next) throw Object.assign(new Error("Action must be accept, dismiss or restore."), { statusCode: 400 });
+      if (!Array.isArray(ids) || !ids.length) throw Object.assign(new Error("Name the suggestions to triage."), { statusCode: 400 });
+      return transaction(() => {
+        const data = read();
+        const pins = ids.map((id) => find(data, id));
+        for (const pin of pins) {
+          if (pin.origin?.kind !== "agent") throw Object.assign(new Error(`Pin ${pin.number} isn't a QA suggestion.`), { statusCode: 400 });
+          if (!["suggested", "dismissed", "open"].includes(pin.status)) throw Object.assign(new Error(`Pin ${pin.number} is ${pin.status}.`), { statusCode: 409 });
+        }
+        for (const pin of pins) {
+          pin.status = next;
+          pin.triagedAt = new Date().toISOString();
+          touch(pin);
+        }
+        write(data);
+        return pins;
+      });
+    },
+
+    /** Delete QA suggestions not accepted (suggested and dismissed), from one run or all. */
+    clearQa({ runId = null } = {}) {
+      return transaction(() => {
+        const data = read();
+        const removed = data.pins.filter((pin) => pin.origin?.kind === "agent" && ["suggested", "dismissed"].includes(pin.status) && (!runId || pin.origin.runId === runId));
+        data.pins = data.pins.filter((pin) => !removed.includes(pin));
+        write(data);
+        removed.forEach(removeFrame);
+        return removed;
       });
     },
 
@@ -100,11 +180,12 @@ export function createPinStore(pinsFile, course) {
           pin.note = note;
         }
         if (changes.status !== undefined) {
-          if (!["open", "resolved"].includes(changes.status)) throw Object.assign(new Error("Status must be open or resolved."), { statusCode: 400 });
+          if (!PIN_STATUSES.includes(changes.status)) throw Object.assign(new Error(`Status must be ${PIN_STATUSES.join(", ")}.`), { statusCode: 400 });
+          if (["suggested", "dismissed"].includes(changes.status) && pin.origin?.kind !== "agent") throw Object.assign(new Error("Only QA suggestions can be suggested or dismissed."), { statusCode: 400 });
           pin.status = changes.status;
           if (changes.resolution) pin.resolution = String(changes.resolution).slice(0, 2000);
         }
-        pin.updatedAt = new Date(Math.max(Date.now(), Date.parse(pin.updatedAt) + 1)).toISOString();
+        touch(pin);
         write(data);
         return pin;
       });
@@ -116,7 +197,7 @@ export function createPinStore(pinsFile, course) {
         const pin = find(data, idOrNumber);
         data.pins = data.pins.filter((item) => item !== pin);
         write(data);
-        if (pin.frame) fs.rmSync(path.join(path.dirname(pinsFile), pin.frame), { force: true });
+        removeFrame(pin);
         return pin;
       });
     },
@@ -171,8 +252,15 @@ export function formatBrief(course, pins, pinsDir) {
   );
   for (const pin of pins) {
     const page = [pin.page?.title, pin.page?.location ? `SCORM location ${pin.page.location}` : null].filter(Boolean).join(" · ");
-    lines.push("", `## Pin ${pin.number}${page ? ` · ${page}` : ""}${pin.status === "resolved" ? " (resolved)" : ""}`, "", pin.note, "");
+    const state = { resolved: " (resolved)", suggested: " (QA suggestion, not accepted)", dismissed: " (QA suggestion, dismissed)" }[pin.status] ?? "";
+    lines.push("", `## Pin ${pin.number}${page ? ` · ${page}` : ""}${state}`, "", pin.note, "");
     const target = pin.target ?? {};
+    if (pin.origin?.kind === "agent") {
+      const accepted = pin.status === "open" || pin.status === "resolved" ? ", accepted by the reviewer" : "";
+      lines.push(`- Origin: agent QA suggestion${pin.origin.agent ? ` by ${pin.origin.agent}` : ""}${pin.origin.runId ? ` (run ${pin.origin.runId})` : ""}${accepted} · ${pin.category} · ${pin.severity}${pin.confidence ? ` · ${pin.confidence} confidence` : ""}`);
+      if (pin.evidence) lines.push(`- Evidence: ${truncate(pin.evidence, 400)}`);
+      if (pin.alsoOn?.length) lines.push(`- Also on: ${pin.alsoOn.map((other) => other.title || other.url).join("; ")}`);
+    }
     if (pin.capture) lines.push(`- Captured: ${JSON.stringify(pin.capture)} (session revision is not a content digest)`);
     if (pin.attachmentHistory?.length) lines.push(`- Reattached ${pin.attachmentHistory.length} time(s); original target and source evidence retained in attachmentHistory. Screenshot remains the original capture.`);
     lines.push("- Attachment: captured evidence only; use scormplayer_verify_pin for current target status.");
@@ -208,6 +296,39 @@ function describeKind(course) {
   const kind = { package: `${label} zip`, folder: `${label} folder`, live: "live source" }[course.kind] ?? course.kind;
   const version = course.scormVersion && course.scormVersion !== "both" ? `, SCORM ${course.scormVersion}` : "";
   return `${kind}${version}`;
+}
+
+/** The QA fields of an agent suggestion, checked. */
+function qaFields(qa) {
+  const fail = (message) => { throw Object.assign(new Error(message), { statusCode: 400 }); };
+  const category = String(qa.category ?? "");
+  const severity = String(qa.severity ?? "");
+  const evidence = String(qa.evidence ?? "").trim();
+  if (!QA_CATEGORIES.includes(category)) fail(`category must be one of ${QA_CATEGORIES.join(", ")}.`);
+  if (!QA_SEVERITIES.includes(severity)) fail(`severity must be one of ${QA_SEVERITIES.join(", ")}.`);
+  if (!evidence) fail("A QA suggestion needs evidence: the exact text, value or rule it is about.");
+  if (qa.confidence !== undefined && !QA_CONFIDENCE.includes(qa.confidence)) fail(`confidence must be one of ${QA_CONFIDENCE.join(", ")}.`);
+  return {
+    origin: { kind: "agent", agent: String(qa.agent ?? "agent").slice(0, 80), ...(qa.runId ? { runId: String(qa.runId).slice(0, 80) } : {}) },
+    category,
+    severity,
+    ...(qa.confidence ? { confidence: qa.confidence } : {}),
+    evidence: evidence.slice(0, 1000),
+  };
+}
+
+/** Category and normalised evidence: what makes two suggestions the same problem. */
+function dedupeKey(pin) {
+  return `${pin.category}|${String(pin.evidence ?? "").toLowerCase().replace(/[\s"“”'‘’.,;:!?…]+/g, " ").trim()}`;
+}
+
+/** Where a suggestion was seen, compactly, for `alsoOn`. */
+function pageRef(page = {}) {
+  return Object.fromEntries(Object.entries({ title: page.title, url: page.url, navIndex: page.navIndex, scoId: page.scoId, scoTitle: page.scoTitle }).filter(([, value]) => value !== undefined && value !== ""));
+}
+
+function samePage(a = {}, b = {}) {
+  return (a.url ?? "") === (b.url ?? "") && (a.title ?? "") === (b.title ?? "") && (a.scoId ?? "") === (b.scoId ?? "") && (a.navIndex ?? null) === (b.navIndex ?? null);
 }
 
 function truncate(value, max) {

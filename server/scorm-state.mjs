@@ -7,15 +7,20 @@ export function courseKey(course) {
   return `${course.sha256 ?? course.source}${course.package ? `:${course.package}` : ""}`;
 }
 
-/** Durable learner state is separate from disposable extracted packages and review snapshots. */
-export function createScormStore(cacheDir, course) {
-  const key = createHash("sha256").update(courseKey(course)).digest("hex");
+/**
+ * Durable learner state is separate from disposable extracted packages and review snapshots.
+ * `scope` keeps another learner's state apart (an agent's QA pass uses "qa", so the reviewer's
+ * own progress is untouched); `discard()` forgets it.
+ */
+export function createScormStore(cacheDir, course, { scope = "" } = {}) {
+  const key = createHash("sha256").update(`${courseKey(course)}${scope ? `#${scope}` : ""}`).digest("hex");
   const file = path.join(cacheDir, "progress", `${key}.json`);
   const ids = course.scos?.length > 1 ? course.scos.map((sco) => sco.id) : [""];
   const read = () => fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8"))
     : { saved: false, epoch: 0, selectedSco: ids[0], modules: {} };
   return {
     read,
+    discard() { fs.rmSync(file, { force: true }); },
     update(input) {
       return withFileLock(file, () => {
         if (!input || typeof input !== "object" || Array.isArray(input) || !Number.isInteger(input.epoch) || input.epoch < 0

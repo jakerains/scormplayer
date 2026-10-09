@@ -36,9 +36,9 @@ export function createJsonReporter({ player, stdout = process.stdout, onQuit }) 
     const before = new Map(known.map((pin) => [pin.id, pin]));
     for (const pin of next) {
       const old = before.get(pin.id);
-      const change = !old ? "created"
-        : old.status !== pin.status ? (pin.status === "resolved" ? "resolved" : "reopened")
-        : old.note !== pin.note ? "edited"
+      const change = !old ? (pin.status === "suggested" ? "suggested" : "created")
+        : old.status !== pin.status ? statusChange(old.status, pin.status)
+        : old.note !== pin.note || (old.alsoOn?.length ?? 0) !== (pin.alsoOn?.length ?? 0) ? "edited"
         : null;
       if (change) emit("pin", { change, pin: withScreenshot(pin, player.pins.pinsFile) });
       before.delete(pin.id);
@@ -53,6 +53,10 @@ export function createJsonReporter({ player, stdout = process.stdout, onQuit }) 
   events.on("source", ({ file }) => emit("source", { file }));
   events.on("progress", (progress) => emit("progress", { progress }));
   events.on("pin", pollPins);
+  events.on("qa", ({ type, run, runId, logFile }) => {
+    if (type === "suggested" || type === "page" || type === "logged") return;
+    emit("qa", { change: type, runId: run?.id ?? runId, ...(run ? { state: run.state } : {}), ...(logFile ? { logFile } : {}) });
+  });
   events.on("unzipped", ({ folder, pinsFile, reused, movedPins }) => emit("unzipped", { folder, pinsFile, reused, movedPins }));
   events.on("course", () => { known = list(player); emit("course", courseState(player)); });
   const timer = setInterval(pollPins, 1500);
@@ -105,7 +109,14 @@ function countPins(pins) {
   return {
     open: pins.filter((pin) => pin.status === "open").length,
     resolved: pins.filter((pin) => pin.status === "resolved").length,
+    suggested: pins.filter((pin) => pin.status === "suggested").length,
   };
+}
+
+/** What a status change means: an accepted or dismissed suggestion, or a resolved or reopened pin. */
+function statusChange(before, after) {
+  if (before === "suggested" || before === "dismissed") return after === "open" ? "accepted" : after === "dismissed" ? "dismissed" : "restored";
+  return after === "resolved" ? "resolved" : "reopened";
 }
 
 function withScreenshot(pin, pinsFile) {

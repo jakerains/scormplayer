@@ -253,11 +253,11 @@ test("agent mode: --json prints parseable results, errors and player events", as
   const report = run(["pins", zipPath]);
   assert.equal(report.ok, true);
   assert.equal(report.course.title, "Demo 1.2 course");
-  assert.deepEqual(report.counts, { open: 1, resolved: 0 });
+  assert.deepEqual(report.counts, { open: 1, resolved: 0, suggested: 0 });
   assert.equal(report.pins[0].note, "Check this");
   const resolved = run(["pins", zipPath, "--resolve", "1", "--note", "Fixed"]);
   assert.equal(resolved.resolved[0].resolution, "Fixed");
-  assert.deepEqual(resolved.counts, { open: 0, resolved: 1 });
+  assert.deepEqual(resolved.counts, { open: 0, resolved: 1, suggested: 0 });
   assert.equal(run(["pins", zipPath]).pins.length, 0);
   assert.equal(run(["pins", zipPath, "--all"]).pins.length, 1);
   assert.equal(typeof run(["cache"]).bytes, "number");
@@ -298,7 +298,7 @@ test("agent mode: --json prints parseable results, errors and player events", as
   assert.equal(pin.pin.note, "New one");
   child.kill("SIGTERM");
   // Windows ends a killed process outright, so it has no chance to report "stopped".
-  if (process.platform !== "win32") assert.deepEqual((await next("stopped")).counts, { open: 1, resolved: 1 });
+  if (process.platform !== "win32") assert.deepEqual((await next("stopped")).counts, { open: 1, resolved: 1, suggested: 0 });
 });
 
 test("unzip: a zip becomes an editable folder beside it, and its pins move along", async () => {

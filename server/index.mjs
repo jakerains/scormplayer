@@ -19,6 +19,8 @@ import { skillStatus } from "./skill.mjs";
 import { courseKey, createScormStore } from "./scorm-state.mjs";
 import { checkPackage } from "./package-check.mjs";
 import { createXapiRoutes, createXapiStore } from "./xapi.mjs";
+import { createQaStore, pinPlace } from "./qa.mjs";
+import { findConfig } from "./config.mjs";
 
 export { resolveCourse, UserError } from "./course.mjs";
 export { createPinStore } from "./pins.mjs";
@@ -130,7 +132,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     catch (error) { lease.update([current?.course.root, current?.target]); throw error; }
     const previous = current;
     // Pins kept somewhere chosen on purpose (--pins, a project config) stay there after unzipping.
-    current = { course, pins, scorm: createScormStore(cacheDir, course), xapi: isXapi(course) ? createXapiStore(cacheDir, course) : null, liveCourse, keepPinsFile: Boolean(options.keepPinsFile), target, options };
+    current = { course, pins, qa: createQaStore(course.pinsFile), qaScorm: null, scorm: createScormStore(cacheDir, course), xapi: isXapi(course) ? createXapiStore(cacheDir, course) : null, liveCourse, keepPinsFile: Boolean(options.keepPinsFile), target, options };
     progress = null;
     courseVersion += 1;
     browserBridge.close();
@@ -194,10 +196,13 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     // xAPI and cmi5 courses talk to a local LRS. It reads its own bodies (documents needn't be JSON).
     const xapiRoutes = createXapiRoutes(() => (current?.xapi ? { course: current.course, xapi: current.xapi } : null), (type, detail) => events.emit("xapi", { type, ...detail }));
     app.use("/xapi", xapiRoutes.router);
-    app.use(express.json({ limit: "1mb" }));
+    // A review tab's answers can carry a page screenshot for an agent's QA pass.
+    const json = express.json({ limit: "1mb" });
+    const largeJson = express.json({ limit: "8mb" });
+    app.use((req, res, next) => (/^\/api\/browser\/[^/]+\/answer\//.test(req.path) ? largeJson : json)(req, res, next));
     app.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
-    const scoped = /^\/api\/(browser(?:\/|$)|verify-pin$|reload$|pins(?:\/|$)|brief$|progress$|scorm$|open$|switch$|package$|unzip$)/;
+    const scoped = /^\/api\/(browser(?:\/|$)|verify-pin$|reload$|pins(?:\/|$)|brief$|progress$|scorm$|open$|switch$|package$|unzip$|qa(?:\/|$))/;
     function checkRevision(req) {
       const expected = req.get("x-scormplayer-revision");
       if (expected && expected !== revision()) throw Object.assign(new Error("The course changed in another tab. Reload before saving this note."), { statusCode: 409 });
@@ -305,10 +310,13 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
 
     app.get("/api/status", (_req, res) => res.json(current?.liveCourse?.status() ?? { lastChangeAt: null }));
 
-    app.get("/api/scorm", handle(async (_req, res) => res.json(requireCourse().scorm.read())));
+    // During an agent's QA pass the course runs on a throwaway attempt, so the reviewer's progress is untouched.
+    const progressStore = (opened) => (opened.qaScorm && opened.qa.active() ? opened.qaScorm : opened.scorm);
+    app.get("/api/scorm", handle(async (_req, res) => res.json(progressStore(requireCourse()).read())));
     app.put("/api/scorm", handle(async (req, res) => {
-      const { scorm, xapi } = requireCourse();
-      const state = scorm.update(req.body ?? {});
+      const opened = requireCourse();
+      const { xapi } = opened;
+      const state = progressStore(opened).update(req.body ?? {});
       // Resetting progress also starts a new xAPI registration.
       if (req.body?.reset === true) xapi?.reset();
       res.json(state);
@@ -382,9 +390,28 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       try { evidence = await search.find(course.root, input.target ?? {}); } catch { /* a note must survive optional enrichment failures */ }
       if (closing || before !== revision()) throw Object.assign(new Error("The course changed. Reload before saving this note."), { statusCode: 409 });
       checkRevision(req);
-      const pin = pins.create({ ...input, capture: { at: new Date().toISOString(), sessionRevision: before, ...(course.sha256 ? { packageSha256: course.sha256 } : {}) }, source: [], sourceSearch: undefined, ...evidence });
-      events.emit("pin", { type: "created", pin });
-      res.status(201).json(pin);
+      const record = { ...input, capture: { at: new Date().toISOString(), sessionRevision: before, ...(course.sha256 ? { packageSha256: course.sha256 } : {}) }, source: [], sourceSearch: undefined, ...evidence };
+      if (!req.body?.qa) {
+        const pin = pins.create(record);
+        events.emit("pin", { type: "created", pin });
+        return res.status(201).json(pin);
+      }
+      // An agent's QA suggestion: kept apart until the reviewer accepts it, merged when it repeats.
+      const { pin, outcome } = pins.suggest(record);
+      const runId = req.body.qa.runId;
+      let stop = false;
+      if (runId && current.qa.active()?.id === runId) ({ stop } = current.qa.noteSuggestion(runId, pin, outcome, pinPlace(pin.page)));
+      events.emit("pin", { type: outcome === "created" ? "suggested" : "edited", pin });
+      if (outcome === "created") events.emit("qa", { type: "suggested", runId, pin });
+      res.status(outcome === "created" ? 201 : 200).json({ ...pin, outcome, stop });
+    }));
+
+    // Triage of agent suggestions: accept (they become ordinary open pins), dismiss, or restore.
+    app.post("/api/pins/triage", handle(async (req, res) => {
+      const action = String(req.body?.action ?? "");
+      const changed = requireCourse().pins.triage(req.body?.ids, action);
+      for (const pin of changed) events.emit("pin", { type: action === "accept" ? "accepted" : action === "dismiss" ? "dismissed" : "edited", pin });
+      res.json({ ok: true, pins: changed });
     }));
 
     app.post("/api/pins/:id/reattach", handle(async (req, res) => {
@@ -422,6 +449,133 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       // Live-course screenshots live inside .scormplayer; this route serves only the
       // exact frame belonging to a saved pin, including when a parent is hidden.
       res.type("png").sendFile(file, { dotfiles: "allow" });
+    }));
+
+    // Agent QA pass. The agent drives the reviewer's open tab through the browser bridge; the
+    // server keeps the run, its log, and the suggestions.
+    const QA_TIMEOUT = 30_000;
+    const qaRun = (id) => {
+      const opened = requireCourse();
+      const run = opened.qa.active();
+      if (!run || (id && run.id !== id)) throw Object.assign(new Error(id ? `QA run ${id} isn't in progress.` : "No QA run is in progress. Start one with scormplayer_qa_start."), { statusCode: 409 });
+      return { opened, run };
+    };
+    const ask = async (action, payload, req, timeout = QA_TIMEOUT) => {
+      const answer = await browserBridge.request(action, payload, req.body?.sessionId, timeout);
+      checkRevision(req);
+      const observation = answer.observation ?? {};
+      if (observation.error) throw Object.assign(new Error(observation.error), { statusCode: observation.statusCode ?? 409 });
+      return observation;
+    };
+    const qaRubric = (course) => {
+      let config = null;
+      try { config = findConfig(course.source); } catch { /* an invalid config gives no rubric */ }
+      const qa = config?.data?.qa;
+      if (!qa || typeof qa !== "object") return null;
+      const rubric = { ...qa };
+      if (typeof qa.styleGuide === "string") {
+        try { rubric.styleGuideText = fs.readFileSync(path.resolve(config.root, qa.styleGuide), "utf8").slice(0, 20_000); }
+        catch { rubric.styleGuideText = null; }
+      }
+      return rubric;
+    };
+    const qaSummary = (opened, run) => ({
+      run,
+      logFile: opened.qa.logFile,
+      suggestions: opened.pins.list().filter((pin) => pin.origin?.kind === "agent" && (!run || pin.origin.runId === run.id)),
+    });
+
+    app.get("/api/qa", handle(async (_req, res) => {
+      const opened = requireCourse();
+      const active = opened.qa.active();
+      const runs = opened.qa.list();
+      const pins = opened.pins.list();
+      res.json({
+        active,
+        last: runs.at(-1) ?? null,
+        logFile: fs.existsSync(opened.qa.logFile) ? opened.qa.logFile : null,
+        counts: { suggested: pins.filter((pin) => pin.status === "suggested").length, dismissed: pins.filter((pin) => pin.status === "dismissed").length },
+      });
+    }));
+    app.get("/api/qa/runs/:id", handle(async (req, res) => res.json(qaSummary(requireCourse(), requireCourse().qa.get(req.params.id)))));
+
+    app.post("/api/qa/runs", handle(async (req, res) => {
+      const opened = requireCourse();
+      if (!browserBridge.list().length) throw Object.assign(new Error("No review tab is connected. Open the player (scormplayer_open_browser) and wait for the course to load, then start the QA pass."), { statusCode: 409 });
+      const rubric = qaRubric(opened.course);
+      const run = opened.qa.start({ agent: req.body?.agent, focus: req.body?.focus, modules: req.body?.modules, rubric, replace: req.body?.replace === true });
+      try {
+        // The tab saves the reviewer's progress first; then the course restarts on a fresh QA attempt.
+        await ask("qa-begin", { runId: run.id }, req);
+        opened.qaScorm = createScormStore(cacheDir, opened.course, { scope: "qa" });
+        opened.qaScorm.discard();
+        const position = await ask("qa-restart", { runId: run.id }, req);
+        events.emit("qa", { type: "started", run });
+        const pins = opened.pins.list();
+        res.status(201).json({
+          run,
+          rubric,
+          course: { title: opened.course.title, standard: opened.course.standard ?? "scorm", modules: (opened.course.scos ?? []).map((sco, index) => ({ index, title: sco.title })) },
+          position,
+          known: pins.filter((pin) => pin.status !== "resolved").map((pin) => ({ number: pin.number, status: pin.status, note: pin.note, page: pin.page?.title, ...(pin.origin ? { category: pin.category, evidence: pin.evidence } : {}) })),
+          logFile: opened.qa.logFile,
+        });
+      } catch (error) {
+        try { opened.qa.finish(run.id, { summary: `The run could not start: ${error.message}` }, { course: opened.course, pins: [] }); } catch { /* already ended */ }
+        throw error;
+      }
+    }));
+
+    app.post("/api/qa/snapshot", handle(async (req, res) => {
+      const { opened, run } = qaRun(req.body?.runId);
+      const snapshot = await ask("qa-snapshot", { screenshot: req.body?.screenshot === true, checks: req.body?.checks !== false }, req);
+      res.json({ ...snapshot, stop: opened.qa.get(run.id).state === "stopping" });
+    }));
+
+    app.post("/api/qa/navigate", handle(async (req, res) => {
+      const { opened, run } = qaRun(req.body?.runId);
+      const { module = null, page = null, next = false } = req.body ?? {};
+      const result = await ask("qa-navigate", { module, page, next: next === true }, req);
+      events.emit("qa", { type: "page", runId: run.id, position: result.position });
+      res.json({ ...result, stop: opened.qa.get(run.id).state === "stopping" });
+    }));
+
+    app.post("/api/qa/suggest", handle(async (req, res) => {
+      const { run } = qaRun(req.body?.runId);
+      const { note, selector, text, selectors, region, category, severity, confidence, evidence, agent } = req.body ?? {};
+      const result = await ask("qa-pin", { input: { note, selector, text, selectors, region }, qa: { runId: run.id, agent: agent ?? run.agent, category, severity, confidence, evidence } }, req);
+      res.json(result);
+    }));
+
+    app.post("/api/qa/page", handle(async (req, res) => {
+      const { opened, run } = qaRun(req.body?.runId);
+      const position = await ask("qa-position", {}, req, 6000);
+      const result = opened.qa.logPage(run.id, { ...position, status: req.body?.status, notes: req.body?.notes, checks: req.body?.checks });
+      events.emit("qa", { type: "logged", runId: run.id, status: req.body?.status, position });
+      res.json({ ok: true, position, pages: result.run.pages.length, stop: result.stop });
+    }));
+
+    app.post("/api/qa/runs/:id/stop", handle(async (req, res) => {
+      const run = requireCourse().qa.stop(req.params.id);
+      events.emit("qa", { type: "stopping", run });
+      res.json({ ok: true, run });
+    }));
+
+    app.post("/api/qa/runs/:id/finish", handle(async (req, res) => {
+      const opened = requireCourse();
+      const { run, logFile } = opened.qa.finish(req.params.id, { summary: req.body?.summary, checks: req.body?.checks }, { course: opened.course, pins: opened.pins.list() });
+      // Back to the reviewer's own progress; a closed tab picks it up when it next loads.
+      try { await ask("qa-end", { runId: run.id }, req); } catch { /* best effort */ }
+      opened.qaScorm?.discard();
+      opened.qaScorm = null;
+      events.emit("qa", { type: run.state, run, logFile });
+      res.json(qaSummary(opened, run));
+    }));
+
+    app.delete("/api/qa/pins", handle(async (req, res) => {
+      const removed = requireCourse().pins.clearQa({ runId: typeof req.query.runId === "string" && req.query.runId ? req.query.runId : null });
+      for (const pin of removed) events.emit("pin", { type: "deleted", pin });
+      res.json({ ok: true, removed: removed.length });
     }));
 
     app.get("/api/brief", handle(async (req, res) => {

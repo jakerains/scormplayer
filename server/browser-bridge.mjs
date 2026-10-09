@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 
+/** Page snapshots can carry a screenshot, so answers may be a few megabytes. */
+export const MAX_ANSWER = 6_000_000;
+
 const failure = (message, statusCode = 409) => Object.assign(new Error(message), { statusCode });
 
 /** The existing review tab supplies DOM observations; no separate headless course instance. */
@@ -33,7 +36,8 @@ export function createBrowserBridge(revision) {
       return [...sessions.values()].filter((s) => s.revision === revision() && s.state && Date.now() - s.seen < 15_000)
         .map((s) => ({ sessionId: s.id, ...s.state, lastSeenAt: new Date(s.seen).toISOString() }));
     },
-    request(action, payload, sessionId) {
+    /** Ask the review tab to do something; `timeout` allows longer work (navigating, scanning). */
+    request(action, payload, sessionId, timeout = 6000) {
       const available = this.list();
       if (!available.length) throw failure("No connected review browser. Open this player's URL and wait for the lesson to load.");
       if (!sessionId && available.length !== 1) throw failure("Several review tabs are connected. Call scormplayer_list_browser_sessions and choose a sessionId.");
@@ -42,7 +46,7 @@ export function createBrowserBridge(revision) {
       if (pending.size >= 16) throw failure("Too many browser requests. Try again shortly.", 429);
       const id = randomUUID();
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { pending.delete(id); reject(failure("The review tab did not respond. Bring it to the foreground and retry.", 504)); }, 6000);
+        const timer = setTimeout(() => { pending.delete(id); reject(failure("The review tab did not respond. Bring it to the foreground and retry.", 504)); }, timeout);
         pending.set(id, { sessionId: selected.sessionId, revision: revision(), resolve, reject, timer });
         sessions.get(selected.sessionId).res.write(`data: ${JSON.stringify({ type: "request", id, revision: revision(), action, ...payload })}\n\n`);
       });
@@ -50,7 +54,7 @@ export function createBrowserBridge(revision) {
     answer(sessionId, id, result) {
       const job = pending.get(id);
       if (!job || job.sessionId !== sessionId) throw failure("Browser request expired.");
-      if (!result || JSON.stringify(result).length > 100_000) throw failure("Invalid browser observation.", 400);
+      if (!result || JSON.stringify(result).length > MAX_ANSWER) throw failure("Invalid browser observation.", 400);
       clearTimeout(job.timer); pending.delete(id);
       if (job.revision !== revision()) job.reject(failure("The course changed during verification."));
       else job.resolve({ sessionId, revision: job.revision, receivedAt: new Date().toISOString(), observation: result });

@@ -15,6 +15,7 @@ import { checkForUpdate, fetchUpdate, hasTool, installMethod, isNewer, npmNeedsS
 import { downloadRelease } from "../server/releases.mjs";
 import { pickCourse, pickFromList, DROP_PAGE, SETUP_MENU } from "../server/tui.mjs";
 import { pinsReport, createJsonReporter, jsonError } from "../server/agent.mjs";
+import { createQaStore } from "../server/qa.mjs";
 import { managePlugins } from "../server/plugins.mjs";
 import { runSetup, runSetupMenu, shouldOfferSetup } from "../server/setup.mjs";
 
@@ -43,6 +44,8 @@ Usage
   scormplayer pins <course>       Print the open pins as a hand-off for a teammate or an agent
   scormplayer unzip <zip>         Unzip a course to a folder you can edit (beside the zip, or
                                   --to <folder>); its pins move with it
+  scormplayer qa <course>         Print the log of the last agent QA pass (who ran it, which pages
+                                  it covered, its suggestions); an agent runs the pass over MCP
   scormplayer check <course>      Check a package for what LMS uploads and launches trip on
                                   (missing or wrongly cased files, manifest errors, http://
                                   and root-relative links); exits 1 when it finds errors
@@ -81,6 +84,10 @@ Options
 pins options
   --all             Include resolved pins
   --resolve <n>     Mark pin <n> resolved (repeatable); --note "<text>" records what changed
+  --suggested       List an agent's QA suggestions waiting for triage instead of open pins
+  --accept <n>      Accept QA suggestion <n> into the hand-off (repeatable)
+  --dismiss <n>     Dismiss QA suggestion <n> (repeatable); a re-run won't suggest it again
+  --clear-qa        Delete QA suggestions that weren't accepted (accepted ones stay)
 
 skill commands (run through the open skills CLI: npx skills, 75+ agents)
   skill             Install it if no agent has it, update it if it's behind this version
@@ -103,6 +110,9 @@ For agents (--json)
   scormplayer pins <course> --resolve 2 --json  {ok, resolved[], counts}
   scormplayer unzip <zip> --json                {ok, folder, pinsFile, reused, movedPins}
   scormplayer check <course> --json             {ok, counts, files, bytes, findings[]: severity, code, message, file}
+  scormplayer qa <course> --json                {ok, run, logFile, runs}
+  scormplayer pins <course> --suggested --json  {ok, course, pinsFile, counts, pins[]}: suggestions to triage
+  scormplayer pins <course> --accept 4 --json   {ok, accepted[], counts}
   scormplayer <course> --json --no-open         One JSON event per line: ready (url, pid,
                                                 pinsFile), then pin, progress, source, browser,
                                                 course, log; stopped (with a reason) on exit.
@@ -144,6 +154,10 @@ async function main(argv) {
       all: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       resolve: { type: "string", multiple: true },
+      suggested: { type: "boolean", default: false },
+      accept: { type: "string", multiple: true },
+      dismiss: { type: "string", multiple: true },
+      "clear-qa": { type: "boolean", default: false },
       note: { type: "string" },
       to: { type: "string" },
       check: { type: "boolean", default: false },
@@ -173,7 +187,7 @@ async function main(argv) {
     if (!result.ok) process.exitCode = 1;
     return;
   }
-  const commands = ["mcp", "skill", "plugin", "cache", "update", "upgrade", "ps", "stop", "pins", "unzip", "check"];
+  const commands = ["mcp", "skill", "plugin", "cache", "update", "upgrade", "ps", "stop", "pins", "unzip", "check", "qa"];
   if (!commands.includes(positionals[0]) && (!positionals[0] || fs.existsSync(path.resolve(positionals[0]))) && shouldOfferSetup({ json, plain: values.plain })) {
     try { await runSetup(); }
     catch (error) { console.error(`Setup: ${error.message}\nYou can continue using the player and run scormplayer setup later.`); }
@@ -250,11 +264,41 @@ async function main(argv) {
     return;
   }
 
+  if (positionals[0] === "qa") {
+    const input = positionals[1];
+    if (!input) throw new UserError("Usage: scormplayer qa <course>");
+    const course = resolveCourse(input, { cacheDir, live: values.live, pkg: values.package, pinsFile: values.pins ?? configuredPinsFile(findConfig(input), path.resolve(input)) });
+    const qa = createQaStore(course.pinsFile);
+    const runs = qa.list();
+    const run = runs.at(-1) ?? null;
+    const logFile = fs.existsSync(qa.logFile) ? qa.logFile : null;
+    if (json) return void console.log(JSON.stringify({ ok: true, run, logFile, runs: runs.map(({ id, agent, state, startedAt, endedAt, suggestions }) => ({ id, agent, state, startedAt, endedAt, suggestions: suggestions.length })) }));
+    if (!run) return void console.log("No agent QA pass yet. Ask your AI app to \"QA this course\" while the player is open (scormplayer setup connects it).");
+    if (logFile && run.state !== "running" && run.state !== "stopping") return void process.stdout.write(fs.readFileSync(logFile, "utf8"));
+    console.log(`QA run ${run.id} by ${run.agent} is ${run.state}: ${run.pages.length} pages logged, ${run.suggestions.length} suggestions so far.`);
+    return;
+  }
+
   if (positionals[0] === "pins") {
     const input = positionals[1];
     if (!input) throw new UserError("Usage: scormplayer pins <course>");
     const course = resolveCourse(input, { cacheDir, live: values.live, pkg: values.package, pinsFile: values.pins ?? configuredPinsFile(findConfig(input), path.resolve(input)) });
     const store = createPinStore(course.pinsFile, course);
+    // QA suggestions: accept, dismiss or clear before (or instead of) listing.
+    const triaged = {};
+    for (const [action, ids] of [["accept", values.accept], ["dismiss", values.dismiss]]) {
+      if (!ids?.length) continue;
+      triaged[action === "accept" ? "accepted" : "dismissed"] = store.triage(ids, action);
+      if (!json) console.error(`${action === "accept" ? "Accepted" : "Dismissed"} ${ids.length === 1 ? "suggestion" : "suggestions"} ${ids.join(", ")}.`);
+    }
+    if (values["clear-qa"]) {
+      triaged.cleared = store.clearQa().length;
+      if (!json) console.error(`Cleared ${triaged.cleared} QA suggestion${triaged.cleared === 1 ? "" : "s"}.`);
+    }
+    if (Object.keys(triaged).length && !values.resolve?.length) {
+      if (json) console.log(JSON.stringify({ ok: true, ...triaged, counts: pinsReport(store, course).counts }));
+      return;
+    }
     const resolved = [];
     for (const id of values.resolve ?? []) {
       const pin = store.update(id, { status: "resolved", resolution: values.note });
@@ -265,7 +309,7 @@ async function main(argv) {
       if (json) console.log(JSON.stringify({ ok: true, resolved, counts: pinsReport(store, course).counts }));
       return;
     }
-    const status = values.all ? "all" : "open";
+    const status = values.all ? "all" : values.suggested ? "suggested" : "open";
     if (json) return void console.log(JSON.stringify(pinsReport(store, course, { status })));
     return void process.stdout.write(store.brief({ status }));
   }
@@ -275,7 +319,7 @@ async function main(argv) {
   const word = positionals[0];
   if (word && /^[a-z][a-z-]*$/i.test(word) && !fs.existsSync(path.resolve(word))) {
     throw new UserError(`"${word}" isn't a command in scormplayer ${VERSION}, or a course in this folder. `
-      + `The commands are pins, unzip, check, update, ps, stop, skill, mcp, plugin, setup and cache (scormplayer --help). `
+      + `The commands are pins, unzip, check, qa, update, ps, stop, skill, mcp, plugin, setup and cache (scormplayer --help). `
       + `If "${word}" is newer than this version, update first: scormplayer update`);
   }
 

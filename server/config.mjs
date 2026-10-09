@@ -11,7 +11,11 @@ import { spawn } from "node:child_process";
  *     "sync": [{                                         // keep generated files current while open
  *       "files": ["content/lessons/{name}/learner-content.json"],
  *       "run": "node scripts/sync.mjs --lesson {name}"
- *     }]
+ *     }],
+ *     "qa": {                                            // house rules for an agent's QA pass
+ *       "focus": ["copy", "accessibility"], "styleGuide": "docs/style.md", "maxPinsPerPage": 5,
+ *       "audience": "new hires", "readingLevel": "grade 8", "terms": { "avoid": [], "prefer": {} }
+ *     }
  *   }
  *
  * Paths are relative to the config file. Nothing here is required.
