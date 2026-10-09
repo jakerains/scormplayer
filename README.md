@@ -426,8 +426,40 @@ scormplayer pins ./course.zip --dismiss 5
 scormplayer pins ./course.zip --clear-qa       # delete suggestions you didn't accept
 ```
 
-House rules for the pass go in `scormplayer.config.json` (below): `qa.focus`, a `styleGuide`
-file, preferred and banned `terms`, `audience`, `readingLevel` and `maxPinsPerPage`.
+#### The QA standard
+
+A pass reviews against a **QA standard**: your house rules. These cover:
+- who the learners are, the reading level and the locale (US or UK spelling)
+- voice and heading case
+- brand terms to keep exactly, plus banned and preferred terms
+- the accessibility target
+- house rules in plain words ("every quiz question gives feedback for each answer")
+- what never to flag
+
+Ask your AI app to **"set up our QA standard"**. It can build one with you in three ways:
+- **Propose from the course:** it reads the course's text and reports what it already does (spelling, term variants and
+  casing, heading case, reading level, voice, vague link labels, missing alt text). It drafts a
+  standard and asks what to change. It can scan all of a project's lessons together.
+- **Interview you:** a few questions at a time, with the scan's answers as defaults.
+- **Learn from triage:** after a few passes, it proposes "don't flag" entries for suggestions you
+  keep dismissing, and rules for the ones you keep accepting.
+
+It always shows you the result before saving it. Then choose where it goes:
+
+- **This project:** the `qa` block of the project's `scormplayer.config.json` (created beside the
+  course if there isn't one).
+- **Shared:** saved by name in your scormplayer config folder (`~/.config/scormplayer/qa-standards/`
+  on Linux, `~/Library/Application Support/scormplayer/qa-standards/` on macOS,
+  `%APPDATA%\scormplayer\qa-standards\` on Windows), for every project that should follow it.
+  A project uses it with `"qa": { "extends": "acme-house-style" }` and overrides only what
+  differs; rules, terms and "don't flag" entries add up. `extends` can also be a path to a JSON
+  file in your team's repo. A shared standard named `default` applies to projects without their
+  own.
+
+```sh
+scormplayer qa ./course.zip --standard               # the standard a pass would use, and where it comes from
+scormplayer qa ./lesson-1 ./lesson-2 --scan          # read the courses and propose a standard
+```
 
 One agent can review while another fixes. Accepted suggestions are ordinary open pins, and
 `scormplayer <course> --json` reports each one as a `pin` event with `change: "accepted"`.
@@ -444,6 +476,8 @@ notices. Errors print `{"ok": false, "error": "…", "code": "…"}` and exit 1.
 | `scormplayer pins <course> --resolve 3 --note "…" --json` | `{ ok, resolved, counts }` |
 | `scormplayer unzip <zip> --json` | `{ ok, folder, pinsFile, reused, movedPins }` |
 | `scormplayer qa <course> --json` | `{ ok, run, logFile, runs }`: the last QA pass and the runs before it |
+| `scormplayer qa <course> --standard --json` | `{ ok, standard, sources, missing, projectTarget, shared }`: the QA standard a pass would use |
+| `scormplayer qa <course>... --scan --json` | `{ ok, findings, proposal }`: the courses' conventions and a drafted standard |
 | `scormplayer pins <course> --suggested --json` | `{ ok, course, pinsFile, counts, pins }` for QA suggestions waiting for triage; `--accept`/`--dismiss <n>` print `{ ok, accepted \| dismissed, counts }` |
 | `scormplayer check <course> --json` | `{ ok, counts, files, bytes, findings }`: each finding has `severity` (error, warning, info), `code`, `message`, and `file` or `examples` where they apply; exits 1 when there are errors |
 | `scormplayer <course> --json --no-open` | One event per line: `ready` (with `url`, `pid`, `pinsFile`, and `course.editable`, which is false for a zip), then `pin` (`change`: created, suggested, accepted, dismissed, resolved, reopened, edited or deleted), `qa` (an agent QA pass started, stopping, finished or stopped), `progress`, `source`, `browser`, `course`, `unzipped`, `log`, and `stopped` (with a `reason`) on exit. If the course is already open, `ready` has `reused: true` and the command exits |
@@ -469,11 +503,16 @@ course is open. `{name}` is the course's folder or zip name; paths are relative 
     { "files": ["content/{name}.json"], "run": "npm run build-content -- {name}" }
   ],
   "qa": {
-    "focus": ["copy", "accessibility"],
-    "styleGuide": "docs/style-guide.md",
-    "terms": { "avoid": ["click here"], "prefer": { "e-mail": "email" } },
+    "extends": "acme-house-style",
     "audience": "new warehouse staff",
-    "readingLevel": "grade 8",
+    "readingLevel": "grade 8 or lower",
+    "spelling": "UK",
+    "voice": "second-person",
+    "headingCase": "sentence",
+    "styleGuide": "docs/style-guide.md",
+    "terms": { "avoid": ["click here"], "prefer": { "e-mail": "email" }, "keep": ["Incident Portal"] },
+    "rules": [{ "id": "quiz-feedback", "rule": "Every quiz question gives feedback for each answer.", "category": "content", "severity": "major" }],
+    "ignore": ["Oxford commas"],
     "maxPinsPerPage": 5
   }
 }
@@ -481,8 +520,8 @@ course is open. `{name}` is the course's folder or zip name; paths are relative 
 
 With it, a bare `scormplayer` lists exactly those courses (from the project or a folder above
 it), pins stay out of the course folders, and generated files stay current while you review.
-Sync results appear in the dashboard's activity feed. The `qa` block is handed to an agent
-running a QA pass as its rubric.
+Sync results appear in the dashboard's activity feed. The `qa` block is the project's QA
+standard (see [Agent QA pass](#agent-qa-pass)); an agent can write it for you.
 
 ### Connect Codex, Claude Code and Cursor
 

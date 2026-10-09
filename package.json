@@ -44,7 +44,7 @@
   "scripts": {
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/server.test.mjs tests/quality.test.mjs tests/webmcp.test.mjs tests/scorm-api.test.mjs tests/qa.test.mjs tests/plugins.test.mjs tests/scorm-state.test.mjs tests/setup.test.mjs tests/update-notice.test.mjs tests/releases.test.mjs",
+    "test": "node --test tests/server.test.mjs tests/quality.test.mjs tests/webmcp.test.mjs tests/scorm-api.test.mjs tests/qa.test.mjs tests/qa-standard.test.mjs tests/plugins.test.mjs tests/scorm-state.test.mjs tests/setup.test.mjs tests/update-notice.test.mjs tests/releases.test.mjs",
     "check": "npm run typecheck && npm run build && npm test",
     "start": "node bin/scormplayer.mjs",
     "prepack": "npm run build && npm run build:plugins",

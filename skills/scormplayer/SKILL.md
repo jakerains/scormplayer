@@ -182,7 +182,10 @@ To QA a whole course on the reviewer's behalf, use the bundled `scormplayer-qa` 
 `scormplayer_get_review_guide` with `name: "qa"`) and the `scormplayer_qa_*` tools. You place
 **suggestions**; the reviewer accepts or dismisses them, and only accepted ones are open pins.
 Never accept or dismiss suggestions yourself unless the reviewer asks. `scormplayer pins <course>
---suggested --json` lists them; `scormplayer qa <course>` prints the last pass's log.
+--suggested --json` lists them; `scormplayer qa <course>` prints the last pass's log. The same guide
+covers building the team's QA standard with the reviewer (scan the course and propose, interview,
+or learn from triage), saved per project or shared across projects;
+`scormplayer qa <course> --standard` and `--scan` work without MCP.
 
 ## When a course doesn't play well
 

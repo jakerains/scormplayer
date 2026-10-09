@@ -1,6 +1,6 @@
 ---
 name: scormplayer-qa
-description: Run an agent QA pass on a SCORM, xAPI or cmi5 course open in SCORM Player. Walk every module and page in the reviewer's own browser tab, place suggested pins where something should change, and write a coverage log. Use when asked to "QA this course", "review the whole lesson", "find problems in the course", or "do a QA pass".
+description: Run an agent QA pass on a SCORM, xAPI or cmi5 course open in SCORM Player, and build the QA standard it reviews against. Walk every module and page in the reviewer's own browser tab, place suggested pins where something should change, and write a coverage log. Use when asked to "QA this course", "review the whole lesson", "find problems in the course", "do a QA pass", or to set up, propose, change or share "our QA standard", style rules or review checklist.
 ---
 
 # Agent QA pass with SCORM Player
@@ -21,8 +21,10 @@ You never edit the course, never accept your own suggestions, and never resolve 
    the course on a throwaway attempt (the reviewer's own progress is untouched) and returns:
    - `run.id`: pass it as `runId` to every QA call
    - `course.modules`, `position`, `pages`: where you are and what there is
-   - `rubric`: the project's house rules from `scormplayer.config.json` (`focus`, `styleGuideText`,
-     `terms`, `audience`, `readingLevel`, `maxPinsPerPage`). They override the defaults below.
+   - `rubric`: the QA standard for this course (see "The QA standard" below), with `sources`
+     saying where it came from. Its rules override the defaults below. `standardMissing: true`
+     means none is set up: before reviewing, offer once to build one (it takes a minute and makes
+     the pass match the team's standards), or continue with the defaults if the reviewer prefers.
    - `known`: pins that already exist. Don't suggest what is already pinned or was dismissed.
 
 ## The loop
@@ -56,6 +58,67 @@ findings, and anything you couldn't reach. It writes the log beside the pins fil
 suggestions for triage (as a checklist in hosts that show MCP Apps UI). Tell the reviewer how many
 suggestions you made and where the log is. Don't list them all in chat.
 
+## The QA standard
+
+A standard is the house rules a pass reviews against. It can differ per project or be shared:
+
+- **Project:** the `qa` block of the project's `scormplayer.config.json` (found by walking up from
+  the course; created beside the course when there is none).
+- **Shared:** a named standard in the user's standards folder, reused across projects. A project
+  uses one with `"extends": "<name>"` (or a path to a JSON file in the team's repo) and overrides
+  only what differs; rules, ignores and terms add up. A shared standard named `default` applies
+  to any project without its own.
+
+Fields: `audience`, `readingLevel`, `language`, `spelling` (US, UK, CA, AU), `voice`
+(second-person, third-person, first-person-plural, any), `headingCase` (sentence, title, any),
+`tone`, `accessibility` (for example "WCAG 2.2 AA"), `focus` (categories), `severityFloor`,
+`maxPinsPerPage`, `styleGuide` (a file), `terms` (`prefer`: variant → preferred form, `avoid`,
+`keep`: names to keep exactly as written), `rules` (each `{ id, rule, category, severity,
+example }`: a check in plain words) and `ignore` (what not to flag).
+
+`scormplayer_qa_standard` shows the current one, its sources, the shared standards available and
+where a project standard would be saved.
+
+### Building one with the reviewer
+
+When asked to set up or change the standard, or when a pass starts with none, pick the way that
+suits the reviewer, and say which you're doing:
+
+1. **Propose from the course.** `scormplayer_qa_standard_scan` reads the course text without the
+   browser and reports what it already does: language, US/UK spelling, term variants and casing,
+   heading case, reading level, voice, tone, vague link labels, missing alt text and captions. It
+   returns a drafted `proposal`. With `all: true` it scans every course the player lists, which
+   suits a standard shared across a project's lessons. Present the draft as a short plain list
+   (not JSON), call out the choices that were close or inconsistent ("headings are mostly Title
+   Case, 2 of 3"), and ask what to change.
+2. **Interview.** Ask a few questions at a time, offering the scan's answer as the default:
+   - who the learners are, and the reading level
+   - which locale and spelling; second person or not; heading case
+   - brand and product names to keep exactly; banned or preferred terms
+   - the accessibility target
+   - what matters most (focus) and what never to flag
+   - house rules in their own words. Turn each into a `rules` entry, for example "Every quiz
+     question gives feedback for each answer" (content, major).
+3. **Learn from triage.** After passes, the scan's `findings.triage` shows what the reviewer
+   accepted and dismissed by category, with examples. Propose `ignore` entries for what keeps
+   being dismissed, and rules for what keeps being accepted. Ask before saving.
+
+Then ask whether it's for **this project** or should be **shared** with other projects:
+
+- this project only: `scormplayer_qa_standard_save` with `target: "project"`
+- shared: `target: "shared"`, a short `name` (for example "acme-house-style") and `use: true`,
+  so this project extends it
+- shared with project differences: save the shared one, then save the project with
+  `{ extends: "<name>", ...overrides }` as `target: "project"`
+
+Before saving, show the final standard as a short list and the file it goes to. Never save
+without the reviewer's go-ahead. Never overwrite a shared standard other projects use without
+saying so.
+
+Without MCP, `scormplayer qa <course> --standard` prints the current standard and
+`scormplayer qa <course> [other courses] --scan --json` the scan and proposal. Then edit the `qa`
+block of `scormplayer.config.json` directly.
+
 ## What to look for
 
 | Category | Look for |
@@ -77,6 +140,10 @@ suggestions you made and where the log is. Don't list them all in chat.
 
 ## Rules
 
+- Apply the standard: its `rules` (with their category and severity), `terms`, `spelling`,
+  `voice`, `headingCase`, `readingLevel` and `styleGuideText`. Quote the rule a suggestion breaks
+  in its note (for example "House rule consistent-terms"). Skip what `ignore` lists, and anything
+  below `severityFloor`.
 - At most `rubric.maxPinsPerPage` (default 5) suggestions per page; keep the most important.
 - Every suggestion quotes its evidence. If you can't quote it, don't pin it.
 - The same problem on several pages is one suggestion: suggest it again on each page and let it

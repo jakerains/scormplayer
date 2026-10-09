@@ -14,6 +14,7 @@ test("an agent QA pass over stdio MCP drives the review tab, suggests pins and w
   const registry = path.join(dir, "registry");
   const zip = path.join(dir, "course.zip");
   fs.writeFileSync(zip, multiScoZip());
+  process.env.SCORMPLAYER_STANDARDS_DIR = path.join(dir, "standards");
   const player = await startPlayer({ input: zip, port: 0, registryDir: registry, cacheDir: path.join(dir, "cache") });
   const rpc = client(fileURLToPath(new URL("../dist/server.mjs", import.meta.url)), registry, dir);
   const browser = await chromium.launch();
@@ -35,6 +36,15 @@ test("an agent QA pass over stdio MCP drives the review tab, suggests pins and w
     assert.equal(refused.isError, true);
     assert.match(refused.content[0].text, /No review tab is connected/);
 
+    // Build the QA standard first: none yet, scan for a proposal, save it as a shared standard this project uses.
+    assert.equal((await call("scormplayer_qa_standard", scope)).structuredContent.missing, true);
+    const scan = await call("scormplayer_qa_standard_scan", scope);
+    assert.equal(scan.isError, undefined, scan.content?.[0]?.text);
+    assert.ok(scan.structuredContent.findings.headings.count >= 1);
+    const saved = await call("scormplayer_qa_standard_save", { ...scope, target: "shared", name: "test-house", use: true, standard: { ...scan.structuredContent.proposal, audience: "New staff", rules: [{ id: "name-the-topic", rule: "Headings name what the page teaches.", category: "copy", severity: "minor" }] } });
+    assert.equal(saved.isError, undefined, saved.content?.[0]?.text);
+    assert.equal(saved.structuredContent.effective.sources[0].name, "test-house");
+
     const page = await browser.newPage({ viewport: { width: 1300, height: 820 } });
     await page.goto(player.url);
     await page.frameLocator("iframe.sp-frame").locator("h1", { hasText: "Module 1" }).waitFor();
@@ -42,7 +52,10 @@ test("an agent QA pass over stdio MCP drives the review tab, suggests pins and w
 
     const started = await call("scormplayer_qa_start", { ...scope, agent: "Test agent" });
     assert.equal(started.isError, undefined, started.content?.[0]?.text);
-    const { run, course, position } = started.structuredContent;
+    const { run, course, position, rubric, standardMissing } = started.structuredContent;
+    assert.equal(standardMissing, false);
+    assert.equal(rubric.audience, "New staff");
+    assert.equal(rubric.rules[0].id, "name-the-topic");
     assert.deepEqual(course.modules.map((module) => module.title), ["Module 1", "Module 2", "Module 3"]);
     assert.deepEqual(position.module, { index: 0, of: 3, title: "Module 1" });
     const runScope = { ...scope, runId: run.id };
@@ -84,5 +97,5 @@ test("an agent QA pass over stdio MCP drives the review tab, suggests pins and w
     assert.match(handoff.structuredContent.markdown, /Origin: agent QA suggestion by Test agent/);
     const cleared = await call("scormplayer_clear_qa_pins", scope);
     assert.equal(cleared.structuredContent.removed, 0, "accepted suggestions stay");
-  } finally { await browser.close(); rpc.close(); await player.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally { delete process.env.SCORMPLAYER_STANDARDS_DIR; await browser.close(); rpc.close(); await player.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

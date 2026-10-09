@@ -32,6 +32,12 @@ the player's Pins → Suggestions tab, in the MCP Apps checklist that `qa_finish
 agents follow is the bundled `scormplayer-qa` skill (`scormplayer_get_review_guide` with
 `name: "qa"`). WebMCP's `scormplayer_add_pin` accepts the same suggestion fields.
 
+The pass reviews against the QA standard (`qa` in `scormplayer.config.json`, optionally extending
+a shared standard from the user's config folder; see `server/qa-standard.mjs`).
+`scormplayer_qa_standard` reads it with its sources. `scormplayer_qa_standard_scan` reads the
+course text and drafts one, learning from earlier triage. `scormplayer_qa_standard_save` writes it
+per project or shared, after the reviewer agrees.
+
 ## Normal MCP configuration
 
 The recommended setup is:

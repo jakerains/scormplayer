@@ -16,6 +16,7 @@ import { downloadRelease } from "../server/releases.mjs";
 import { pickCourse, pickFromList, DROP_PAGE, SETUP_MENU } from "../server/tui.mjs";
 import { pinsReport, createJsonReporter, jsonError } from "../server/agent.mjs";
 import { createQaStore } from "../server/qa.mjs";
+import { effectiveStandard, scanForStandard } from "../server/qa-standard.mjs";
 import { managePlugins } from "../server/plugins.mjs";
 import { runSetup, runSetupMenu, shouldOfferSetup } from "../server/setup.mjs";
 
@@ -46,6 +47,12 @@ Usage
                                   --to <folder>); its pins move with it
   scormplayer qa <course>         Print the log of the last agent QA pass (who ran it, which pages
                                   it covered, its suggestions); an agent runs the pass over MCP
+  scormplayer qa <course> --standard
+                                  Print the QA standard a pass would use (the project's, a shared
+                                  one it extends, or your default) and where it comes from
+  scormplayer qa <course>... --scan
+                                  Read the courses' text and propose a QA standard from their
+                                  conventions (spelling, terms, reading level, voice, triage)
   scormplayer check <course>      Check a package for what LMS uploads and launches trip on
                                   (missing or wrongly cased files, manifest errors, http://
                                   and root-relative links); exits 1 when it finds errors
@@ -111,6 +118,8 @@ For agents (--json)
   scormplayer unzip <zip> --json                {ok, folder, pinsFile, reused, movedPins}
   scormplayer check <course> --json             {ok, counts, files, bytes, findings[]: severity, code, message, file}
   scormplayer qa <course> --json                {ok, run, logFile, runs}
+  scormplayer qa <course> --standard --json     {ok, standard, sources, missing, projectTarget, shared}
+  scormplayer qa <course>... --scan --json      {ok, findings, proposal}
   scormplayer pins <course> --suggested --json  {ok, course, pinsFile, counts, pins[]}: suggestions to triage
   scormplayer pins <course> --accept 4 --json   {ok, accepted[], counts}
   scormplayer <course> --json --no-open         One JSON event per line: ready (url, pid,
@@ -158,6 +167,8 @@ async function main(argv) {
       accept: { type: "string", multiple: true },
       dismiss: { type: "string", multiple: true },
       "clear-qa": { type: "boolean", default: false },
+      standard: { type: "boolean", default: false },
+      scan: { type: "boolean", default: false },
       note: { type: "string" },
       to: { type: "string" },
       check: { type: "boolean", default: false },
@@ -268,6 +279,35 @@ async function main(argv) {
     const input = positionals[1];
     if (!input) throw new UserError("Usage: scormplayer qa <course>");
     const course = resolveCourse(input, { cacheDir, live: values.live, pkg: values.package, pinsFile: values.pins ?? configuredPinsFile(findConfig(input), path.resolve(input)) });
+    if (values.standard) {
+      const effective = effectiveStandard(course.source);
+      if (json) return void console.log(JSON.stringify({ ok: true, ...effective }));
+      if (effective.missing) {
+        console.log(`No QA standard for ${course.title}. Ask your AI app to set one up (it can scan the course or interview you),`);
+        console.log(`or add a "qa" block to ${effective.projectTarget}.`);
+      } else {
+        for (const source of effective.sources) console.log(`From ${source.kind === "shared" ? `shared standard "${source.name}"` : source.kind}: ${source.file}`);
+        const { styleGuideText, ...shown } = effective.standard;
+        console.log(JSON.stringify(shown, null, 2));
+      }
+      if (effective.shared.length) console.log(`Shared standards: ${effective.shared.map((item) => item.name).join(", ")}`);
+      return;
+    }
+    if (values.scan) {
+      const courses = [course, ...positionals.slice(2).map((other) => resolveCourse(other, { cacheDir, live: values.live }))];
+      const scan = scanForStandard(courses, { pins: createPinStore(course.pinsFile, course).list() });
+      if (json) return void console.log(JSON.stringify({ ok: true, ...scan }));
+      const f = scan.findings;
+      console.log(`${courses.length === 1 ? course.title : `${courses.length} courses`}: ${f.words.toLocaleString("en-US")} words`);
+      console.log(`Language ${f.language ?? "not set"} · spelling US ${f.spelling.US} / UK ${f.spelling.UK} · reading grade ${f.readability.grade ?? "?"} (${f.readability.wordsPerSentence} words a sentence)`);
+      console.log(`Headings ${f.headings.sentenceCase} sentence case / ${f.headings.titleCase} title case · voice ${f.voice.secondPerson === null ? "?" : `${Math.round(f.voice.secondPerson * 100)}% "you"`}`);
+      const mixed = f.variants.filter((item) => Object.keys(item.forms).length > 1);
+      if (mixed.length) console.log(`Mixed term variants: ${mixed.map((item) => Object.entries(item.forms).map(([form, n]) => `${form} ×${n}`).join(" / ")).join("; ")}`);
+      if (f.inconsistentCase.length) console.log(`Inconsistent casing: ${f.inconsistentCase.join(", ")}`);
+      console.log("\nProposed standard (edit, then save it as \"qa\" in scormplayer.config.json):");
+      console.log(JSON.stringify(scan.proposal, null, 2));
+      return;
+    }
     const qa = createQaStore(course.pinsFile);
     const runs = qa.list();
     const run = runs.at(-1) ?? null;

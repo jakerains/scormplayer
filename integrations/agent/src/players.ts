@@ -24,14 +24,14 @@ export async function connect(playerId: string, revision?: string) {
     browserBridgeVersion: identity.browserBridgeVersion,
     revision: current as string,
     get: (endpoint: string) => request(player.url, endpoint, current),
-    write: (endpoint: string, body: unknown, method?: "POST" | "PATCH" | "DELETE") => request(player.url, endpoint, current, body, method),
+    write: (endpoint: string, body: unknown, method?: "POST" | "PATCH" | "PUT" | "DELETE") => request(player.url, endpoint, current, body, method),
   };
 }
 
 /** QA calls drive the review tab (reloading, navigating, scanning), so they may take a while. */
 const timeoutFor = (endpoint: string) => (endpoint.startsWith("api/qa") ? 90_000 : 10_000);
 
-async function request(base: string, endpoint: string, revision?: string, body?: unknown, method?: "POST" | "PATCH" | "DELETE"): Promise<any> {
+async function request(base: string, endpoint: string, revision?: string, body?: unknown, method?: "POST" | "PATCH" | "PUT" | "DELETE"): Promise<any> {
   const verb = method ?? (endpoint === "api/active" ? "POST" : /^api\/pins\/[^/]+$/.test(endpoint) && endpoint !== "api/pins/triage" ? "PATCH" : "POST");
   const response = await fetch(new URL(endpoint, base), {
     redirect: "error",

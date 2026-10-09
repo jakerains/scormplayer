@@ -12,9 +12,9 @@ import { spawn } from "node:child_process";
  *       "files": ["content/lessons/{name}/learner-content.json"],
  *       "run": "node scripts/sync.mjs --lesson {name}"
  *     }],
- *     "qa": {                                            // house rules for an agent's QA pass
- *       "focus": ["copy", "accessibility"], "styleGuide": "docs/style.md", "maxPinsPerPage": 5,
- *       "audience": "new hires", "readingLevel": "grade 8", "terms": { "avoid": [], "prefer": {} }
+ *     "qa": {                                            // the QA standard (see qa-standard.mjs)
+ *       "extends": "acme-house-style", "audience": "new hires", "spelling": "UK",
+ *       "rules": [{ "rule": "Every quiz question gives feedback." }], "ignore": ["Oxford commas"]
  *     }
  *   }
  *

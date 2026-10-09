@@ -20,7 +20,7 @@ import { courseKey, createScormStore } from "./scorm-state.mjs";
 import { checkPackage } from "./package-check.mjs";
 import { createXapiRoutes, createXapiStore } from "./xapi.mjs";
 import { createQaStore, pinPlace } from "./qa.mjs";
-import { findConfig } from "./config.mjs";
+import { effectiveStandard, saveStandard, scanForStandard } from "./qa-standard.mjs";
 
 export { resolveCourse, UserError } from "./course.mjs";
 export { createPinStore } from "./pins.mjs";
@@ -467,17 +467,12 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       if (observation.error) throw Object.assign(new Error(observation.error), { statusCode: observation.statusCode ?? 409 });
       return observation;
     };
+    // The QA standard: the project's own, a shared one it extends, or the user's default.
     const qaRubric = (course) => {
-      let config = null;
-      try { config = findConfig(course.source); } catch { /* an invalid config gives no rubric */ }
-      const qa = config?.data?.qa;
-      if (!qa || typeof qa !== "object") return null;
-      const rubric = { ...qa };
-      if (typeof qa.styleGuide === "string") {
-        try { rubric.styleGuideText = fs.readFileSync(path.resolve(config.root, qa.styleGuide), "utf8").slice(0, 20_000); }
-        catch { rubric.styleGuideText = null; }
-      }
-      return rubric;
+      try {
+        const { standard, sources, missing } = effectiveStandard(course.source);
+        return missing ? null : { ...standard, sources };
+      } catch (error) { return { error: error.message }; }
     };
     const qaSummary = (opened, run) => ({
       run,
@@ -515,6 +510,8 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
         res.status(201).json({
           run,
           rubric,
+          // No standard yet: the QA guide offers to build one (scan, interview, or learn from triage).
+          standardMissing: !rubric,
           course: { title: opened.course.title, standard: opened.course.standard ?? "scorm", modules: (opened.course.scos ?? []).map((sco, index) => ({ index, title: sco.title })) },
           position: outline.position,
           pages: outline.pages,
@@ -561,6 +558,26 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       const pin = requireCourse().pins.list().find((item) => item.id === req.body?.id || String(item.number) === String(req.body?.id));
       if (!pin) throw Object.assign(new Error("Pin not found."), { statusCode: 404 });
       res.json(await ask("qa-open-pin", { id: pin.id }, req));
+    }));
+
+    // Building the QA standard: read it, scan courses to propose one, and save it.
+    app.get("/api/qa/standard", handle(async (_req, res) => res.json(effectiveStandard(requireCourse().course.source))));
+    app.post("/api/qa/standard/scan", handle(async (req, res) => {
+      const opened = requireCourse();
+      const courses = [opened.course];
+      if (req.body?.all === true) {
+        for (const listed of (courseList?.() ?? []).slice(0, 20)) {
+          if (listed.path === opened.course.source) continue;
+          try { courses.push(resolveCourse(listed.path, { cacheDir })); } catch { /* skip what doesn't open */ }
+        }
+      }
+      res.json(scanForStandard(courses, { pins: opened.pins.list() }));
+    }));
+    app.put("/api/qa/standard", handle(async (req, res) => {
+      const opened = requireCourse();
+      const saved = saveStandard(opened.course.source, { standard: req.body?.standard, target: req.body?.target, name: req.body?.name, use: req.body?.use === true });
+      events.emit("qa", { type: "standard", saved });
+      res.json({ ok: true, ...saved, effective: effectiveStandard(opened.course.source) });
     }));
 
     app.post("/api/qa/runs/:id/stop", handle(async (req, res) => {
