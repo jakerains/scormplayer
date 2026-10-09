@@ -12,6 +12,26 @@ states explicitly. Reload flushes learner progress and returns a request acknowl
 for readiness before verification. See [pin evidence](pin-evidence.md) for confidence semantics
 and optional course-authored content bindings. No proprietary browser API is required.
 
+## Agent QA pass
+
+An agent can review a whole course on the reviewer's behalf, in the reviewer's own player tab.
+The `scormplayer_qa_*` tools go through the same browser bridge:
+- `qa_start` switches the tab to a throwaway SCORM attempt.
+- `qa_snapshot` returns the page's text, images, controls, media, axe findings and SCORM issues,
+  each with a selector.
+- `qa_go` moves to the next page or module, or jumps to one.
+- `qa_suggest` places a suggested pin through the player's normal pin path, with category,
+  severity and quoted evidence.
+- `qa_log_page` records coverage.
+- `qa_finish` writes `<course>.qa-log.md` and restores the reviewer's progress.
+
+Suggestions are pins with `status: "suggested"` and an `origin`. They stay out of the hand-off
+until the reviewer accepts them; a dismissed one is refused if suggested again. Triage happens in
+the player's Pins → Suggestions tab, in the MCP Apps checklist that `qa_finish` and
+`qa_suggestions` render, or with `scormplayer pins --accept/--dismiss/--clear-qa`. The guide
+agents follow is the bundled `scormplayer-qa` skill (`scormplayer_get_review_guide` with
+`name: "qa"`). WebMCP's `scormplayer_add_pin` accepts the same suggestion fields.
+
 ## Normal MCP configuration
 
 The recommended setup is:

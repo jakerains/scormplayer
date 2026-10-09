@@ -3,6 +3,7 @@ import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from "@model
 import { ListToolsRequestSchema, type CallToolResult, type Tool, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import fs from "node:fs";
 import { pinReviewSpec } from "./src/review-spec.js";
+import { qaSuggestionsSpec } from "./src/qa-spec.js";
 import { z } from "zod";
 import { connect, players } from "./src/players.js";
 import { ensureSession, openLesson, closeSession } from "./src/session.js";
@@ -20,11 +21,17 @@ registerAppResource(server, "Pin checklist", reviewUri, { mimeType: RESOURCE_MIM
   uri: reviewUri, mimeType: RESOURCE_MIME_TYPE, text: reviewHtml,
   _meta: { ui: { csp: { connectDomains: [], resourceDomains: [], frameDomains: [] }, prefersBorder: true } },
 }] }));
-function tool<S extends z.ZodType>(config: { name: string; title?: string; description: string; inputSchema: S; outputSchema?: z.ZodType; annotations?: ToolAnnotations; view?: { name: string; description: string } }, handler: (input: z.infer<S>) => Promise<CallToolResult>) {
+// The QA suggestions checklist, read when a host asks for it.
+const qaUri = "ui://scormplayer/qa-suggestions.html";
+registerAppResource(server, "QA suggestions", qaUri, { mimeType: RESOURCE_MIME_TYPE }, async () => ({ contents: [{
+  uri: qaUri, mimeType: RESOURCE_MIME_TYPE, text: fs.readFileSync(new URL("./qa.html", import.meta.url), "utf8"),
+  _meta: { ui: { csp: { connectDomains: [], resourceDomains: [], frameDomains: [] }, prefersBorder: true } },
+}] }));
+function tool<S extends z.ZodType>(config: { name: string; title?: string; description: string; inputSchema: S; outputSchema?: z.ZodType; annotations?: ToolAnnotations; view?: { name: string; description: string; uri?: string } }, handler: (input: z.infer<S>) => Promise<CallToolResult>) {
   const { name, view, ...options } = config;
   const callback = (async (input: unknown) => handler(input as z.infer<S>)) as ToolCallback<S>;
   const registered = view
-    ? registerAppTool<z.ZodType, S>(server, name, { ...options, _meta: { ui: { resourceUri: reviewUri } } }, callback)
+    ? registerAppTool<z.ZodType, S>(server, name, { ...options, _meta: { ui: { resourceUri: view.uri ?? reviewUri } } }, callback)
     : server.registerTool<z.ZodType, S>(name, options, callback);
   toolSchemas.set(name, { registered, input: options.inputSchema, output: options.outputSchema });
   return registered;
@@ -215,14 +222,16 @@ async function suggestions(input: z.infer<typeof scope> & { runId?: string }) {
   const list = pins.filter((item: any) => item.origin?.kind === "agent" && (!runId || item.origin.runId === runId))
     .map((item: any) => ({ id: item.id, number: item.number, status: item.status, note: item.note, category: item.category, severity: item.severity, confidence: item.confidence, evidence: item.evidence,
       where: { module: item.page?.scoTitle ?? null, page: item.page?.title ?? null, pageIndex: item.page?.navIndex ?? null }, target: item.target?.name ?? item.target?.selector ?? null, alsoOn: item.alsoOn ?? [], hasScreenshot: Boolean(item.frame) }));
-  return { playerId: input.playerId, revision: input.revision, title: course.title, run, logFile: status.logFile, suggestions: list };
+  const data = { playerId: input.playerId, revision: input.revision, title: course.title, run, logFile: status.logFile, suggestions: list };
+  return { ...data, spec: qaSuggestionsSpec(data) };
 }
+const qaView = { name: "qa", description: "Triage an agent's QA suggestions", uri: qaUri };
 
 export const qaFinish = tool({
   name: "scormplayer_qa_finish", title: "Finish the QA pass",
   description: "End the QA pass: writes the log (coverage, suggestions by severity, your summary) beside the pins file, returns the reviewer's progress to their own attempt, and shows the suggestions for triage. Give a short summary of what you covered and anything you couldn't reach.",
   inputSchema: runScope.extend({ summary: z.string().trim().min(1).max(8000) }),
-  annotations: qaWrite,
+  annotations: qaWrite, view: qaView,
 }, async ({ playerId, revision, runId, summary }) => safe(async () => {
   await (await connectBrowser(playerId, revision)).write(`api/qa/runs/${encodeURIComponent(runId)}/finish`, { summary });
   return suggestions({ playerId, revision, runId });
@@ -232,8 +241,15 @@ export const qaSuggestions = tool({
   name: "scormplayer_qa_suggestions", title: "QA suggestions",
   description: "List an agent QA pass's suggestions with where each one is (module, page, target), its category, severity and evidence: the last run by default, or a given runId. The reviewer accepts or dismisses them; accepted ones join the hand-off.",
   inputSchema: scope.extend({ runId: z.string().min(1).optional() }),
-  annotations: readOnly,
+  annotations: readOnly, view: qaView,
 }, async (input) => safe(() => suggestions(input)));
+
+export const showPin = tool({
+  name: "scormplayer_show_pin", title: "Show a pin in the player",
+  description: "Show a pin or QA suggestion in the reviewer's open player tab: its module and page, scrolled to and highlighted, with the pins panel open on it. Changes only what the tab shows.",
+  inputSchema: scope.extend({ id: z.string().min(1), sessionId: z.string().min(1).optional() }),
+  annotations: qaWrite,
+}, async ({ playerId, revision, ...input }) => safe(async () => (await connectBrowser(playerId, revision)).write("api/open-pin", input)));
 
 export const triageSuggestions = tool({
   name: "scormplayer_triage_suggestions", title: "Accept or dismiss suggestions",

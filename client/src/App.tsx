@@ -1032,6 +1032,17 @@ export function App() {
       await qaSettled();
       return { reached: true, ...qaOutline() };
     }
+    if (action === "qa-open-pin") {
+      const pin = (await freshPins()).find((item) => item.id === request.id);
+      if (!pin) throw new Error("Pin not found.");
+      setPanelOpen(true);
+      setPanelTab(pin.status === "suggested" || pin.status === "dismissed" ? "suggestions" : "pins");
+      setInspectorOpen(false);
+      setChecksOpen(false);
+      await goToPin(pin);
+      await qaSettled();
+      return { ok: true, position: qaPosition() };
+    }
     if (action === "qa-pin") {
       const input = Object.fromEntries(Object.entries(request.input ?? {}).filter(([, value]) => value !== undefined && value !== null));
       return await actionsRef.current!.addPin({ ...(input as { note: string }), suggestion: request.qa }) as object;

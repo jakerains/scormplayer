@@ -178,6 +178,12 @@ settings** sets the learner, mode and credit, and turns on strict mode, which fa
 as a strict LMS would. `scormplayer check <course> --json` reports package problems an LMS upload
 would trip on (exit 1 on errors); **More → Checks** also scans the page's accessibility.
 
+To QA a whole course on the reviewer's behalf, use the bundled `scormplayer-qa` guide (MCP:
+`scormplayer_get_review_guide` with `name: "qa"`) and the `scormplayer_qa_*` tools. You place
+**suggestions**; the reviewer accepts or dismisses them, and only accepted ones are open pins.
+Never accept or dismiss suggestions yourself unless the reviewer asks. `scormplayer pins <course>
+--suggested --json` lists them; `scormplayer qa <course>` prints the last pass's log.
+
 ## When a course doesn't play well
 
 Reviewers may ask you to get a course working in scormplayer. Diagnose first, then propose the

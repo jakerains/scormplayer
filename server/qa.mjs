@@ -174,9 +174,11 @@ export function formatQaLog(course, run, pins = []) {
   const own = pins.filter((pin) => pin.origin?.kind === "agent" && pin.origin.runId === run.id);
   const counts = { reviewed: 0, skipped: 0, unreachable: 0 };
   for (const page of run.pages) counts[page.status] = (counts[page.status] ?? 0) + 1;
-  const where = (page) => [page.module?.title ?? (page.module?.index !== undefined ? `Module ${page.module.index + 1}` : null),
-    page.page?.title ?? (page.page?.index !== undefined ? `Page ${page.page.index + 1}` : null)].filter(Boolean).join(" › ") || "Course";
-  const pinWhere = (pin) => [pin.page?.scoTitle, pin.page?.title].filter(Boolean).join(" › ") || pin.page?.url || "";
+  // A module without a page list reports its own title as the page's: say it once.
+  const join = (parts) => [...new Set(parts.filter(Boolean))].join(" › ");
+  const where = (page) => join([page.module?.title ?? (page.module?.index !== undefined ? `Module ${page.module.index + 1}` : null),
+    page.page?.title ?? (page.page?.index !== undefined ? `Page ${page.page.index + 1}` : null)]) || "Course";
+  const pinWhere = (pin) => join([pin.page?.scoTitle, pin.page?.title]) || pin.page?.url || "";
   const lines = [
     `# QA log: ${course?.title ?? "course"}`,
     "",

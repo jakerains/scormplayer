@@ -202,7 +202,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     app.use((req, res, next) => (/^\/api\/browser\/[^/]+\/answer\//.test(req.path) ? largeJson : json)(req, res, next));
     app.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
-    const scoped = /^\/api\/(browser(?:\/|$)|verify-pin$|reload$|pins(?:\/|$)|brief$|progress$|scorm$|open$|switch$|package$|unzip$|qa(?:\/|$))/;
+    const scoped = /^\/api\/(browser(?:\/|$)|verify-pin$|reload$|pins(?:\/|$)|brief$|progress$|scorm$|open$|switch$|package$|unzip$|open-pin$|qa(?:\/|$))/;
     function checkRevision(req) {
       const expected = req.get("x-scormplayer-revision");
       if (expected && expected !== revision()) throw Object.assign(new Error("The course changed in another tab. Reload before saving this note."), { statusCode: 409 });
@@ -554,6 +554,13 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       const result = opened.qa.logPage(run.id, { ...position, status: req.body?.status, notes: req.body?.notes, checks: req.body?.checks });
       events.emit("qa", { type: "logged", runId: run.id, status: req.body?.status, position });
       res.json({ ok: true, position, pages: result.run.pages.length, stop: result.stop });
+    }));
+
+    // Show a pin in the review tab: its module and page, scrolled to and highlighted.
+    app.post("/api/open-pin", handle(async (req, res) => {
+      const pin = requireCourse().pins.list().find((item) => item.id === req.body?.id || String(item.number) === String(req.body?.id));
+      if (!pin) throw Object.assign(new Error("Pin not found."), { statusCode: 404 });
+      res.json(await ask("qa-open-pin", { id: pin.id }, req));
     }));
 
     app.post("/api/qa/runs/:id/stop", handle(async (req, res) => {

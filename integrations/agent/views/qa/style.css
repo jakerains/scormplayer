@@ -1,0 +1,26 @@
+@import "../review/style.css";
+
+/* QA suggestions: the pin checklist's card, with severity chips and evidence. */
+main { max-height: 600px; }
+.filters { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.filters select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; }
+.pin-list { max-height: 330px; }
+.group + .group { margin-top: 10px; }
+.group h2 { margin: 0 0 6px; color: var(--ink-muted); font-size: 11px; font-weight: 650; letter-spacing: .02em; }
+.pin-note { -webkit-line-clamp: 3; }
+.chip { padding: 1px 6px; border-radius: 5px; background: var(--surface-2); color: var(--ink-muted); font-style: normal; font-weight: 600; font-size: 10.5px; }
+.chip.blocker { background: #fde8e8; color: #b42318; }
+.chip.major { background: #fdf0d8; color: #8a5300; }
+.evidence { display: block; margin-top: 4px; color: var(--ink-muted); font-size: 11.5px; font-style: italic; overflow-wrap: anywhere; }
+.row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0 0 41px; }
+.row-actions button { padding: 4px 9px; font-size: 11.5px; }
+.pin-row.selected { background: #f3eefe; border-color: #c9b6f7; }
+input[type="checkbox"] { accent-color: #7c3aed; }
+.request-controls .buttons { display: flex; gap: 6px; }
+.request-controls.secondary { margin-top: 8px; }
+button.primary { background: #7c3aed; border-color: #7c3aed; }
+button.primary:hover:not(:disabled) { background: #6d28d9; border-color: #6d28d9; }
+button.danger { color: #b42318; border-color: #b42318; }
+.log { margin: 8px 0 0; font-size: 11px; color: var(--ink-muted); overflow-wrap: anywhere; }
+.log code { font-size: 11px; }
+:focus-visible { outline-color: #7c3aed; }

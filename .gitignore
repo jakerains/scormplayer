@@ -2,6 +2,8 @@ node_modules/
 dist/
 *.pins.json
 *.pins-frames/
+*.qa.json
+*.qa-log.md
 .scormplayer/
 .DS_Store
 artifacts/agent-plugins/

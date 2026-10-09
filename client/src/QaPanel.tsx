@@ -36,8 +36,9 @@ export function QaSuggestions({ pins, qa, activePin, onOpen, onTriage, onClear, 
   const groups = useMemo(() => {
     const out = new Map<string, { module: string; page: string; pins: Pin[] }>();
     for (const pin of [...shown].sort((a, b) => a.number - b.number)) {
-      const module = pin.page?.scoTitle ?? "";
       const page = pin.page?.title || pin.page?.url || "Page";
+      // A module without a page list shows its own title as the page's: say it once.
+      const module = pin.page?.scoTitle && pin.page.scoTitle !== page ? pin.page.scoTitle : "";
       const key = `${module}|${pin.page?.navIndex ?? ""}|${page}`;
       if (!out.has(key)) out.set(key, { module, page, pins: [] });
       out.get(key)!.pins.push(pin);
@@ -105,7 +106,7 @@ export function QaSuggestions({ pins, qa, activePin, onOpen, onTriage, onClear, 
                           {pin.confidence === "low" ? <em>low confidence</em> : null}
                         </span>
                         <span className="sp-pin__note">{pin.note}</span>
-                        {pin.evidence ? <q className="sp-suggestion__evidence">{pin.evidence}</q> : null}
+                        {pin.evidence ? <span className="sp-suggestion__evidence">Evidence: {pin.evidence}</span> : null}
                         <small>{[pin.target?.name, pin.alsoOn?.length ? `also on ${pin.alsoOn.map((page) => page.title || page.url).join(", ")}` : null].filter(Boolean).join(" · ")}</small>
                       </span>
                       {pin.frame ? <img src={`/api/pins/${pin.id}/frame?v=${encodeURIComponent(pin.updatedAt)}`} alt="" /> : null}

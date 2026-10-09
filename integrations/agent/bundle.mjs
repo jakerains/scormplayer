@@ -6,6 +6,8 @@ import { buildSkillCatalog } from "./skill-catalog.mjs";
 fs.rmSync("dist", { recursive: true, force: true });
 await build({ entryPoints: ["views/review/main.tsx"], bundle: true, platform: "browser", format: "iife", target: "es2022", outfile: "dist/review.js", minify: true, jsx: "automatic", define: { "process.env.NODE_ENV": '"production"' } });
 fs.writeFileSync("dist/review.html", buildAppHtml({ title: "SCORM pin checklist", js: fs.readFileSync("dist/review.js", "utf8"), css: fs.readFileSync("dist/review.css", "utf8") }));
+await build({ entryPoints: ["views/qa/main.tsx"], bundle: true, platform: "browser", format: "iife", target: "es2022", outfile: "dist/qa.js", minify: true, jsx: "automatic", define: { "process.env.NODE_ENV": '"production"' } });
+fs.writeFileSync("dist/qa.html", buildAppHtml({ title: "SCORM QA suggestions", js: fs.readFileSync("dist/qa.js", "utf8"), css: fs.readFileSync("dist/qa.css", "utf8") }));
 fs.cpSync("../../dist/client", "dist/player-client", { recursive: true });
 fs.cpSync("assets", "dist/assets", { recursive: true });
 const version = JSON.parse(fs.readFileSync("package.json", "utf8")).version;

@@ -1185,7 +1185,7 @@ test("an agent QA pass shows live in the tab: banner and Stop, dashed suggestion
     const panel = page.locator("aside[aria-label=Pins]");
     await panel.locator(".sp-suggestion").first().waitFor();
     assert.equal(await panel.locator(".sp-suggestion").count(), 2);
-    assert.match(await panel.innerText(), /Module 1 ›[\s\S]*Name what this module teaches\./i);
+    assert.match(await panel.innerText(), /Module 1\n[\s\S]*Name what this module teaches\./i);
     await panel.getByLabel("Severity").selectOption("minor");
     assert.equal(await panel.locator(".sp-suggestion").count(), 1);
     await panel.locator(".sp-suggestion").getByRole("button", { name: "Accept" }).click();

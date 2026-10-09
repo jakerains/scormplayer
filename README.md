@@ -122,6 +122,10 @@ macOS and Linux are the primary platforms. The CLI also supports Windows.
   mastery score, thresholds and launch data, total time that adds up across sessions, and
   SCORM 2004 navigation requests between modules. Every departure from the spec shows up in the
   inspector; **strict mode** fails those calls with the spec's error codes, as a strict LMS would.
+- **Agent QA pass.** Ask your AI app to "QA this course": it walks every module and page in
+  your own player tab while you watch. It places **suggested** pins where it thinks something
+  should change, and writes a coverage log. You accept or dismiss each suggestion; only
+  accepted ones join the hand-off. **Clear QA pins** removes the rest.
 - **Checks before you upload.** `scormplayer check <course>` (or **More → Checks**) finds what
   LMS uploads and launches trip on: a manifest not at the zip's root, missing or wrongly cased
   files, `http://` and root-relative links. The **Accessibility** tab scans the page on screen
@@ -384,6 +388,50 @@ scormplayer pins ./course.zip --resolve 3 --note "Shortened the heading"
 An agent can read the hand-off, make the changes, and resolve each pin with the last command.
 The player picks up the change within a few seconds.
 
+### Agent QA pass
+
+With SCORM Player connected to your AI app (`scormplayer setup`) and the course open in the
+player, ask the app to **"QA this course"**. The agent:
+
+1. Starts a run. The course restarts in your tab on a throwaway attempt, so your own progress
+   is untouched (it's back when the run ends).
+2. Goes through every module and page in your tab while you watch. On each page it reads the
+   text, images, controls and media, the accessibility findings, and the SCORM issues the course
+   produced.
+3. Places a **suggestion** wherever it thinks something should change: copy, content,
+   accessibility, SCORM, layout, interaction or media, each with a severity and the exact text
+   it is about. The same problem on several pages becomes one suggestion listing each page.
+4. Logs every page as reviewed, skipped or unreachable (a page it couldn't get to, such as one
+   locked behind an activity, is recorded, never guessed), then writes `<course>.qa-log.md`
+   beside the pins file.
+
+While it runs, a violet banner shows where it is and how many suggestions it has made. **Stop**
+asks it to wrap up, and **End now** finishes the run from the player. Suggestions appear as
+dashed violet markers.
+
+Triage them in **Pins → Suggestions**: they're grouped by module and page, with filters by
+severity and category. **Accept** turns a suggestion into an ordinary pin: it joins **Copy** and
+keeps a small AI badge. **Dismiss** keeps a later pass from suggesting it again. **Accept all
+shown** and **Clear QA pins** work on many at once; Clear removes everything not accepted.
+
+In AI apps that show MCP Apps UI, the end of a pass shows the same list in the chat: Accept,
+Dismiss, **Show in player** (jumps your tab to the suggestion) and **Send accepted to agent**.
+From the terminal:
+
+```sh
+scormplayer qa ./course.zip                    # the last pass's log
+scormplayer pins ./course.zip --suggested      # suggestions waiting for you
+scormplayer pins ./course.zip --accept 4 --accept 7
+scormplayer pins ./course.zip --dismiss 5
+scormplayer pins ./course.zip --clear-qa       # delete suggestions you didn't accept
+```
+
+House rules for the pass go in `scormplayer.config.json` (below): `qa.focus`, a `styleGuide`
+file, preferred and banned `terms`, `audience`, `readingLevel` and `maxPinsPerPage`.
+
+One agent can review while another fixes. Accepted suggestions are ordinary open pins, and
+`scormplayer <course> --json` reports each one as a `pin` event with `change: "accepted"`.
+
 ### Agent mode (`--json`)
 
 Every command has two outputs: the one above for people, and `--json` for agents and scripts.
@@ -395,8 +443,10 @@ notices. Errors print `{"ok": false, "error": "…", "code": "…"}` and exit 1.
 | `scormplayer pins <course> --json` | `{ ok, course, pinsFile, counts, pins }`; each pin includes its screenshot's full path |
 | `scormplayer pins <course> --resolve 3 --note "…" --json` | `{ ok, resolved, counts }` |
 | `scormplayer unzip <zip> --json` | `{ ok, folder, pinsFile, reused, movedPins }` |
+| `scormplayer qa <course> --json` | `{ ok, run, logFile, runs }`: the last QA pass and the runs before it |
+| `scormplayer pins <course> --suggested --json` | `{ ok, course, pinsFile, counts, pins }` for QA suggestions waiting for triage; `--accept`/`--dismiss <n>` print `{ ok, accepted \| dismissed, counts }` |
 | `scormplayer check <course> --json` | `{ ok, counts, files, bytes, findings }`: each finding has `severity` (error, warning, info), `code`, `message`, and `file` or `examples` where they apply; exits 1 when there are errors |
-| `scormplayer <course> --json --no-open` | One event per line: `ready` (with `url`, `pid`, `pinsFile`, and `course.editable`, which is false for a zip), then `pin`, `progress`, `source`, `browser`, `course`, `unzipped`, `log`, and `stopped` (with a `reason`) on exit. If the course is already open, `ready` has `reused: true` and the command exits |
+| `scormplayer <course> --json --no-open` | One event per line: `ready` (with `url`, `pid`, `pinsFile`, and `course.editable`, which is false for a zip), then `pin` (`change`: created, suggested, accepted, dismissed, resolved, reopened, edited or deleted), `qa` (an agent QA pass started, stopping, finished or stopped), `progress`, `source`, `browser`, `course`, `unzipped`, `log`, and `stopped` (with a `reason`) on exit. If the course is already open, `ready` has `reused: true` and the command exits |
 | `scormplayer update --check --json` | `{ ok, current, latest, updateAvailable, method }` |
 | `scormplayer ps --json` | `{ ok, players }`: each with `port`, `pid`, `url`, `title`, `mode`, `idleSeconds` |
 | `scormplayer stop <port> --json` | `{ ok, stopped, failed }` |
@@ -417,13 +467,22 @@ course is open. `{name}` is the course's folder or zip name; paths are relative 
   "pins": ".local/pins/{name}.pins.json",
   "sync": [
     { "files": ["content/{name}.json"], "run": "npm run build-content -- {name}" }
-  ]
+  ],
+  "qa": {
+    "focus": ["copy", "accessibility"],
+    "styleGuide": "docs/style-guide.md",
+    "terms": { "avoid": ["click here"], "prefer": { "e-mail": "email" } },
+    "audience": "new warehouse staff",
+    "readingLevel": "grade 8",
+    "maxPinsPerPage": 5
+  }
 }
 ```
 
 With it, a bare `scormplayer` lists exactly those courses (from the project or a folder above
 it), pins stay out of the course folders, and generated files stay current while you review.
-Sync results appear in the dashboard's activity feed.
+Sync results appear in the dashboard's activity feed. The `qa` block is handed to an agent
+running a QA pass as its rubric.
 
 ### Connect Codex, Claude Code and Cursor
 
