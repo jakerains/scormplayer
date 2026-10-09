@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CONFIG_FILE, configuredCourses, findConfig } from "./config.mjs";
-import { findManifests } from "./course.mjs";
+import { descriptorIn, findManifests } from "./course.mjs";
 
 const VITE_CONFIGS = ["vite.config.ts", "vite.config.mts", "vite.config.js", "vite.config.mjs", "vite.config.cjs"];
 const SKIP = new Set(["node_modules", "dist-scorm", ".git", ".cache", "coverage", "__MACOSX"]);
@@ -27,7 +27,7 @@ export function findCourses(cwd = process.cwd()) {
 export function isCourseFolder(dir) {
   const course = describe(dir);
   if (!course) return false;
-  if (course.kind !== "folder" || fs.existsSync(path.join(dir, "imsmanifest.xml"))) return true;
+  if (course.kind !== "folder" || descriptorIn(dir)) return true;
   // A wrapper with one manifest can also hold other course ZIPs or live projects.
   // Keep the picker in that case instead of silently opening only the manifest.
   return scan(dir, 2).map(describe).filter(Boolean).length <= 1;
@@ -80,7 +80,7 @@ function describe(target) {
   return null;
 }
 
-/** Look for imsmanifest.xml in the zip's central directory (the end of the file) without unpacking. */
+/** Look for a course descriptor (imsmanifest.xml, cmi5.xml, tincan.xml) in the zip's central directory (the end of the file) without unpacking. */
 function zipHasManifest(file) {
   try {
     const size = fs.statSync(file).size;
@@ -89,7 +89,7 @@ function zipHasManifest(file) {
     const fd = fs.openSync(file, "r");
     fs.readSync(fd, buffer, 0, length, size - length);
     fs.closeSync(fd);
-    return /imsmanifest\.xml/i.test(buffer.toString("latin1"));
+    return /imsmanifest\.xml|cmi5\.xml|tincan\.xml/i.test(buffer.toString("latin1"));
   } catch {
     return false;
   }
@@ -97,7 +97,10 @@ function zipHasManifest(file) {
 
 function manifestTitle(file) {
   const xml = fs.readFileSync(file, "utf8");
-  const organization = /<organization\b[\s\S]*?<title>([^<]+)<\/title>/i.exec(xml);
+  const organization = /<organization\b[\s\S]*?<title>([^<]+)<\/title>/i.exec(xml)
+    // cmi5: the course title's first langstring; xAPI: the first activity name.
+    ?? /<course\b[\s\S]*?<title>\s*<langstring[^>]*>([^<]+)<\/langstring>/i.exec(xml)
+    ?? /<activity\b[\s\S]*?<name[^>]*>([^<]+)<\/name>/i.exec(xml);
   return organization?.[1]?.trim() || null;
 }
 

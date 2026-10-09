@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { chromium, firefox, webkit } from "playwright";
 import { startPlayer } from "../server/index.mjs";
-import { multiScoZip, scorm12Zip, scorm2004Zip } from "./fixtures.mjs";
+import { MANIFEST_12, cmi5Zip, multiScoZip, scorm12Zip, scorm2004Zip, tincanZip } from "./fixtures.mjs";
 
 let browser;
 before(async () => {
@@ -1037,4 +1037,115 @@ test("structural recovery is a possible match and repeated text stays ambiguous"
     assert.equal(await page.locator(".sp-marker").count(), 0);
     assert.equal(player.pins.list()[0].id, pin.id);
   } finally { await page.close(); await player.close(); }
+});
+
+/** A SCORM 1.2 folder with a mastery score that greets the learner and sends one invalid status. */
+function masteryCourse() {
+  const dir = path.join(tempDir(), "mastery");
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, "imsmanifest.xml"), `<?xml version="1.0"?><manifest identifier="mastery" xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_rootv1p2"><metadata><schema>ADL SCORM</schema><schemaversion>1.2</schemaversion></metadata><organizations default="o"><organization identifier="o"><title>Mastery course</title><item identifier="i" identifierref="r"><title>Quiz</title><adlcp:masteryscore>80</adlcp:masteryscore><adlcp:datafromlms>level=2</adlcp:datafromlms></item></organization></organizations><resources><resource identifier="r" type="webcontent" adlcp:scormtype="sco" href="index.html"><file href="index.html"/></resource></resources></manifest>`);
+  fs.writeFileSync(path.join(dir, "index.html"), `<!doctype html><title>Quiz</title><h1 id="hello"></h1><script>
+const api = parent.API;
+api.LMSInitialize("");
+document.getElementById("hello").textContent = "Hello " + api.LMSGetValue("cmi.core.student_name") + " (" + api.LMSGetValue("cmi.launch_data") + ")";
+document.body.dataset.invalid = api.LMSSetValue("cmi.core.lesson_status", "done") + ":" + api.LMSGetLastError();
+api.LMSSetValue("cmi.core.score.raw", "72");
+api.LMSSetValue("cmi.core.lesson_status", "completed");
+api.LMSCommit("");
+</script>`);
+  return dir;
+}
+
+test("launch settings, manifest mastery score and strict mode reach the course; the inspector lists spec issues", async () => {
+  const context = await browser.newContext({ viewport: { width: 1400, height: 820 } });
+  const { player, page } = await open({ input: masteryCourse(), registryDir: null }, context);
+  try {
+    const frame = page.frameLocator("iframe.sp-frame");
+    await frame.locator("#hello", { hasText: "Hello Reviewer, Player (level=2)" }).waitFor();
+    assert.equal(await frame.locator("body").getAttribute("data-invalid"), "true:0");
+    // The LMS applies the manifest's mastery score: 72 is below 80.
+    await page.waitForFunction(() => document.querySelector(".sp-progress")?.textContent?.includes("Failed"));
+
+    await page.getByTitle("More", { exact: true }).click();
+    await page.getByRole("menuitem", { name: /Launch settings/ }).click();
+    const dialog = page.getByRole("dialog", { name: "Launch settings" });
+    assert.match(await dialog.innerText(), /Mastery score\s*80/);
+    await dialog.getByLabel("Learner name").fill("Doe, Jane");
+    await dialog.getByLabel(/Strict mode/).check();
+    await dialog.getByRole("button", { name: "Save and restart" }).click();
+    await frame.locator("#hello", { hasText: "Hello Doe, Jane" }).waitFor();
+    assert.equal(await frame.locator("body").getAttribute("data-invalid"), "false:405");
+
+    await page.keyboard.press("i");
+    const inspector = page.locator(".sp-inspector");
+    await inspector.locator("[role=tab]", { hasText: "Issues" }).click();
+    assert.match(await inspector.locator(".sp-issues").innerText(), /"done" isn't one of[\s\S]*rejected/);
+    assert.match(await inspector.innerText(), /Strict mode/);
+  } finally { await context.close(); await player.close(); }
+});
+
+test("a SCORM 2004 navigation request opens the module it names after Terminate", async () => {
+  const zip = path.join(tempDir(), "multi.zip");
+  fs.writeFileSync(zip, multiScoZip());
+  const { player, page } = await open({ input: zip, registryDir: null });
+  try {
+    await page.frameLocator("iframe.sp-frame").locator("h1", { hasText: "Module 1" }).waitFor();
+    const valid = await page.evaluate(() => [window.API_1484_11.GetValue("adl.nav.request_valid.continue"), window.API_1484_11.GetValue("adl.nav.request_valid.previous")]);
+    assert.deepEqual(valid, ["true", "false"]);
+    await page.evaluate(() => { window.API_1484_11.SetValue("adl.nav.request", "{target=item-3}choice"); window.API_1484_11.Terminate(""); });
+    await page.waitForFunction(() => document.querySelector(".sp-scos .sp-nav__page")?.textContent?.includes("Module 3"));
+    await page.frameLocator("iframe.sp-frame").locator("h1", { hasText: "Module 3" }).waitFor();
+  } finally { await page.close(); await player.close(); }
+});
+
+test("checks list package problems, and the accessibility scan turns a finding into a pin", async () => {
+  const dir = path.join(tempDir(), "checks");
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, "imsmanifest.xml"), MANIFEST_12("Checks"));
+  fs.writeFileSync(path.join(dir, "index.html"), `<!doctype html><html><title>Checks</title><body><h1>Checks</h1><img src="photo.png" width="40" height="40"><script src="http://cdn.example.net/lib.js"></script><a href="/root/page.html">Next</a></body></html>`);
+  fs.writeFileSync(path.join(dir, "photo.png"), Buffer.alloc(10));
+  const { player, page } = await open({ input: dir, registryDir: null });
+  try {
+    await page.frameLocator("iframe.sp-frame").locator("h1").waitFor();
+    await page.getByTitle("More", { exact: true }).click();
+    await page.getByRole("menuitem", { name: /Checks/ }).click();
+    const panel = page.locator(".sp-checks");
+    await panel.locator(".sp-issues", { hasText: "over http://" }).waitFor();
+    assert.match(await panel.innerText(), /from the server's root/);
+
+    await panel.locator("[role=tab]", { hasText: "Accessibility" }).click();
+    await panel.getByRole("button", { name: "Scan this page" }).click();
+    const finding = panel.getByRole("button", { name: /Images must have alternative text/ });
+    await finding.waitFor({ timeout: 20000 });
+    await finding.click();
+    await panel.locator(".sp-a11y__nodes").getByRole("button", { name: "Pin" }).first().click();
+    const note = page.locator(".sp-composer textarea");
+    await note.waitFor();
+    assert.match(await note.inputValue(), /^Accessibility \(critical\): Images must have alternative text/);
+  } finally { await page.close(); await player.close(); }
+});
+
+test("cmi5 and xAPI courses launch through the local LRS; progress and statements show in the player", async () => {
+  for (const [name, make, expected] of [["course.zip", cmi5Zip, "Passed · 90%"], ["tincan.zip", tincanZip, "Passed · 75%"]]) {
+    const zip = path.join(tempDir(), name);
+    fs.writeFileSync(zip, make());
+    const { player, page } = await open({ input: zip, registryDir: null });
+    try {
+      await page.waitForFunction((text) => document.querySelector(".sp-progress")?.textContent?.includes(text), expected, { timeout: 15000 });
+      await page.keyboard.press("i");
+      const inspector = page.locator(".sp-inspector");
+      await inspector.locator(".sp-statements").waitFor();
+      const text = await inspector.innerText();
+      if (name === "course.zip") {
+        assert.match(text, /cmi5/);
+        assert.match(text, /satisfied[\s\S]*terminated|terminated[\s\S]*satisfied/);
+        assert.match(text, /launched/);
+        assert.match(await page.frameLocator("iframe.sp-frame").locator("#status").innerText(), /done Normal 0\.8/);
+        await inspector.locator("[role=tab]", { hasText: "Issues" }).click();
+        assert.match(await inspector.innerText(), /No spec issues so far/);
+      } else {
+        assert.match(text, /xAPI[\s\S]*completed/);
+      }
+    } finally { await page.close(); await player.close(); }
+  }
 });

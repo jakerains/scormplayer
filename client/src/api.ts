@@ -1,5 +1,6 @@
 import type { PinTarget } from "./picker";
 import type { ScormState, ScormWrite } from "./scorm-state";
+import type { ScoRuntime } from "./scorm-api";
 
 export type CourseResponse = Course | { empty: true; revision: string };
 
@@ -7,6 +8,8 @@ export type Course = {
   revision: string;
   title: string;
   kind: "package" | "folder" | "live";
+  /** SCORM, or an xAPI (Tin Can) or cmi5 package played through the local LRS. */
+  standard?: "scorm" | "xapi" | "cmi5";
   scormVersion: "1.2" | "2004" | "both" | null;
   source: string;
   launchUrl: string;
@@ -22,7 +25,22 @@ export type Course = {
   package?: string;
   packages?: { name: string; title: string }[];
   /** Packages with several SCOs. */
-  scos?: { id: string; title: string; launchUrl: string }[];
+  scos?: { id: string; title: string; launchUrl: string; runtime?: ScoRuntime }[];
+  /** What the manifest hands a single-SCO course at launch. */
+  runtime?: ScoRuntime;
+};
+
+export type CheckFinding = { severity: "error" | "warning" | "info"; code: string; message: string; file?: string; examples?: string[] };
+export type CheckReport = { ok: boolean; counts: { error: number; warning: number; info: number }; files: number; bytes: number; findings: CheckFinding[] };
+
+export type XapiStatement = { id: string; actor?: { name?: string }; verb: { id: string; display?: Record<string, string> }; object?: { id?: string; definition?: { name?: Record<string, string> } }; result?: { score?: { scaled?: number; raw?: number }; success?: boolean; completion?: boolean; duration?: string; response?: string }; timestamp?: string; stored?: string };
+export type XapiSummary = {
+  standard: "xapi" | "cmi5";
+  registration: string;
+  modules: Record<string, { completion: string; success: string; score: string; satisfied: boolean }>;
+  statements: XapiStatement[];
+  count: number;
+  issues: { at: number; severity: "error" | "warning"; message: string; count: number }[];
 };
 
 export type PinPage = { url: string; title: string; location?: string; navId?: string; navIndex?: number; scoId?: string; scoTitle?: string };
@@ -95,6 +113,8 @@ export const api = {
   skill: () => request<{ state: "missing" | "current" | "outdated" | "newer" | "unknown"; version: string | null; installedVersion: string | null }>("/api/skill"),
   openPackage: (name: string) => request<{ ok: true; title: string }>("/api/package", json("POST", { name })),
   unzip: (folder: string) => request<{ ok: true; folder: string; pinsFile: string; reused: boolean; movedPins: number }>("/api/unzip", json("POST", { folder })),
+  check: () => request<CheckReport>("/api/check"),
+  xapi: () => request<XapiSummary>("/api/xapi"),
   brief: (status: "open" | "all" = "open") => request<string>(`/api/brief?status=${status}`),
   reportProgress: (progress: { completion: string; success: string; score: string; location: string; progressMeasure: string }) =>
     fetch("/api/progress", { ...json("POST", progress), headers: { "Content-Type": "application/json", ...courseHeaders() } }).catch(() => {}),

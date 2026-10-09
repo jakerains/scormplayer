@@ -17,6 +17,8 @@ import { defaultUnzipFolder, existingUnzip, unzipCourse } from "./unzip.mjs";
 import { defaultRegistryDir, registerPlayer } from "./registry.mjs";
 import { skillStatus } from "./skill.mjs";
 import { courseKey, createScormStore } from "./scorm-state.mjs";
+import { checkPackage } from "./package-check.mjs";
+import { createXapiRoutes, createXapiStore } from "./xapi.mjs";
 
 export { resolveCourse, UserError } from "./course.mjs";
 export { createPinStore } from "./pins.mjs";
@@ -24,6 +26,7 @@ export { createDashboard, openBrowser, copyToClipboard } from "./tui.mjs";
 export { cacheEntries, clearCache, pruneCache } from "./cache.mjs";
 export { checkForUpdate } from "./update.mjs";
 export { defaultUnzipFolder, unzipCourse } from "./unzip.mjs";
+export { checkPackage, formatCheck } from "./package-check.mjs";
 export { defaultRegistryDir, listPlayers, findPlayer, stopPlayer } from "./registry.mjs";
 
 /** Players use one of 20 ports from 4620 up, so a machine never fills with them unnoticed. */
@@ -127,7 +130,7 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     catch (error) { lease.update([current?.course.root, current?.target]); throw error; }
     const previous = current;
     // Pins kept somewhere chosen on purpose (--pins, a project config) stay there after unzipping.
-    current = { course, pins, scorm: createScormStore(cacheDir, course), liveCourse, keepPinsFile: Boolean(options.keepPinsFile), target, options };
+    current = { course, pins, scorm: createScormStore(cacheDir, course), xapi: isXapi(course) ? createXapiStore(cacheDir, course) : null, liveCourse, keepPinsFile: Boolean(options.keepPinsFile), target, options };
     progress = null;
     courseVersion += 1;
     browserBridge.close();
@@ -188,6 +191,9 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       }
       next();
     });
+    // xAPI and cmi5 courses talk to a local LRS. It reads its own bodies (documents needn't be JSON).
+    const xapiRoutes = createXapiRoutes(() => (current?.xapi ? { course: current.course, xapi: current.xapi } : null), (type, detail) => events.emit("xapi", { type, ...detail }));
+    app.use("/xapi", xapiRoutes.router);
     app.use(express.json({ limit: "1mb" }));
     app.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
@@ -214,7 +220,9 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
         kind: course.kind,
         scormVersion: course.scormVersion,
         source: course.displayName ?? course.source,
-        launchUrl: course.kind === "live" ? LIVE_BASE : `/course/${encodePath(course.launch)}`,
+        // SCORM, or an xAPI or cmi5 package launched through the local LRS.
+        standard: course.standard ?? "scorm",
+        launchUrl: course.kind === "live" ? LIVE_BASE : isXapi(course) ? xapiLaunchUrl(course.scos[0]) : `/course/${encodePath(course.launch)}`,
         // Each package keeps its own durable SCORM progress.
         courseKey: courseKey(course),
         ...(course.packages ? { package: course.package, packages: course.packages } : {}),
@@ -225,7 +233,9 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
         editable: course.kind !== "package",
         ...(course.kind === "package" ? { unzip: { folder: defaultUnzipFolder(course), existing: existingUnzip(course) } } : {}),
         // Packages with several SCOs: each one, in manifest order, to switch between.
-        ...(course.scos?.length > 1 ? { scos: course.scos.map((sco) => ({ id: sco.id, title: sco.title, launchUrl: `/course/${encodePath(sco.launch)}` })) } : {}),
+        ...(course.scos?.length > 1 ? { scos: course.scos.map((sco) => ({ id: sco.id, title: sco.title, launchUrl: isXapi(course) ? xapiLaunchUrl(sco) : `/course/${encodePath(sco.launch)}`, runtime: sco.runtime ?? {} })) } : {}),
+        // What the manifest tells the LMS to hand the course at launch (mastery score, thresholds, launch data).
+        runtime: course.scos?.[0]?.runtime ?? {},
       });
     });
 
@@ -290,10 +300,29 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
       res.json({ state: status.state, version: status.version, installedVersion: status.installed.map((copy) => copy.version).find(Boolean) ?? null });
     });
 
+    // Package checks: what an LMS upload or launch is likely to trip on, read from the files.
+    app.get("/api/check", handle(async (_req, res) => res.json(checkPackage(requireCourse().course))));
+
     app.get("/api/status", (_req, res) => res.json(current?.liveCourse?.status() ?? { lastChangeAt: null }));
 
     app.get("/api/scorm", handle(async (_req, res) => res.json(requireCourse().scorm.read())));
-    app.put("/api/scorm", handle(async (req, res) => res.json(requireCourse().scorm.update(req.body ?? {}))));
+    app.put("/api/scorm", handle(async (req, res) => {
+      const { scorm, xapi } = requireCourse();
+      const state = scorm.update(req.body ?? {});
+      // Resetting progress also starts a new xAPI registration.
+      if (req.body?.reset === true) xapi?.reset();
+      res.json(state);
+    }));
+
+    // The frame opens this to launch an xAPI or cmi5 module; it redirects to the course with its launch parameters.
+    app.get("/api/xapi/launch", (req, res) => {
+      if (!current?.xapi) return res.status(404).type("text").send("No xAPI or cmi5 course is open.");
+      xapiRoutes.launch(req, res);
+    });
+    app.get("/api/xapi", handle(async (_req, res) => {
+      if (!requireCourse().xapi) throw Object.assign(new Error("This course doesn't use xAPI."), { statusCode: 404 });
+      res.json(xapiRoutes.summary());
+    }));
 
     // The player page reports the course's SCORM status so the terminal can show it.
     app.post("/api/progress", (req, res) => {
@@ -487,6 +516,14 @@ export async function startPlayer({ input = null, cacheDir, host = "127.0.0.1", 
     if (httpServer.listening) await new Promise((resolve) => httpServer.close(resolve));
     throw error;
   }
+}
+
+function isXapi(course) {
+  return course.standard === "xapi" || course.standard === "cmi5";
+}
+
+function xapiLaunchUrl(sco) {
+  return `/api/xapi/launch?au=${encodeURIComponent(sco.id)}`;
 }
 
 function safeZipName(value) {

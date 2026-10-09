@@ -91,6 +91,7 @@ function describeCourse(course) {
     title: course.title,
     kind: course.kind,
     scormVersion: course.scormVersion ?? null,
+    standard: course.standard ?? "scorm",
     source: course.displayName ?? course.source,
     // A zip plays from a copy in the cache: unzip it (scormplayer unzip) before editing.
     editable: course.kind !== "package",

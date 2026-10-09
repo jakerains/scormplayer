@@ -200,11 +200,12 @@ export function formatBrief(course, pins, pinsDir) {
 }
 
 function describe(course) {
-  return { title: course.title, source: course.source, kind: course.kind, scormVersion: course.scormVersion, ...(course.sha256 ? { sha256: course.sha256 } : {}) };
+  return { title: course.title, source: course.source, kind: course.kind, scormVersion: course.scormVersion, standard: course.standard ?? "scorm", ...(course.sha256 ? { sha256: course.sha256 } : {}) };
 }
 
 function describeKind(course) {
-  const kind = { package: "SCORM zip", folder: "SCORM folder", live: "live source" }[course.kind] ?? course.kind;
+  const label = standardLabel(course);
+  const kind = { package: `${label} zip`, folder: `${label} folder`, live: "live source" }[course.kind] ?? course.kind;
   const version = course.scormVersion && course.scormVersion !== "both" ? `, SCORM ${course.scormVersion}` : "";
   return `${kind}${version}`;
 }
@@ -224,4 +225,9 @@ function clean(value) {
 
 function quoteArg(value) {
   return /^[\w./~:-]+$/.test(value) ? value : JSON.stringify(value);
+}
+
+/** "SCORM", "xAPI" or "cmi5": what the course is packaged as. */
+export function standardLabel(course) {
+  return { xapi: "xAPI", cmi5: "cmi5" }[course.standard] ?? "SCORM";
 }

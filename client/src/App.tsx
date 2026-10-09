@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, copyText, type Course, type Pin, type PinPage } from "./api";
+import { api, copyText, type Course, type Pin, type PinPage, type XapiSummary } from "./api";
 import { captureElement, captureRegion } from "./capture";
 import { connectReviewBrowser } from "./browser-bridge";
 import { Icon } from "./icons";
 import { chooseTarget, describeElement, describeGroup, describeRegion, describeTextSelection, locateTarget, resolveTarget, visibleTargetRect, type TargetResolution, visibleText, elementFor, widenTarget, type PinTarget, type Rect } from "./picker";
-import { installScormApis, progressOf, type ScormData } from "./scorm-api";
+import { installScormApis, progressOf, type NavRequest, type ScormData, type ScormIssue } from "./scorm-api";
+import { LaunchSettingsDialog, loadLaunchSettings, saveLaunchSettings } from "./LaunchSettings";
 import { createNavigator, type NavState } from "./nav";
 import { checkpointReview, clearCourseReview, reviewLaunchUrl, reviewScope } from "./review-view";
 import { ScormPersistence } from "./scorm-state";
@@ -12,6 +13,7 @@ import { skipForReview } from "./review-navigation";
 import { activeMedia, skipMedia, tourState, watchMedia } from "./media";
 import { DropHome, UploadStatus, ZipInput, useZipOpener } from "./DropHome";
 import { Inspector } from "./Inspector";
+import { Checks } from "./Checks";
 import { UnzipDialog, UnzipNotice, useUnzipNotice } from "./Unzip";
 import { ClosedScreen, StillThereCard, useStillThere } from "./StillThere";
 import { SkillCard, useAgentSkill } from "./SkillOffer";
@@ -29,6 +31,11 @@ export function App() {
   const [scoIndex, setScoIndex] = useState(0);
   const [scosOpen, setScosOpen] = useState(false);
   const [calls, setCalls] = useState<ScormCall[]>([]);
+  const [issues, setIssues] = useState<ScormIssue[]>([]);
+  const [launchSettings, setLaunchSettings] = useState(loadLaunchSettings);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [checksOpen, setChecksOpen] = useState(false);
+  const navRequestRef = useRef<(request: NavRequest) => void>(() => {});
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const pendingPinRef = useRef<Pin | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -137,7 +144,24 @@ export function App() {
   const sco = course?.scos?.[scoIndex] ?? null;
   const launchUrl = sco?.launchUrl ?? course?.launchUrl ?? "";
   const viewScope = course?.kind === "live" ? reviewScope(course.courseKey, sco?.id ?? "", launchUrl) : "";
-  const frameUrl = useMemo(() => viewScope ? reviewLaunchUrl(viewScope, launchUrl) : launchUrl, [viewScope, launchUrl, frameKey]);
+  const xapiCourse = course?.standard === "xapi" || course?.standard === "cmi5";
+  const frameUrl = useMemo(() => {
+    if (viewScope) return reviewLaunchUrl(viewScope, launchUrl);
+    // xAPI and cmi5 launches carry the learner from Launch settings, as an LMS would.
+    if (xapiCourse) return `${launchUrl}&${new URLSearchParams({ learnerName: launchSettings.learnerName, learnerId: launchSettings.learnerId, mode: launchSettings.mode })}`;
+    return launchUrl;
+  }, [viewScope, launchUrl, frameKey, xapiCourse, launchSettings]);
+  // xAPI and cmi5: what the local LRS has recorded, refreshed while the page is visible.
+  const [xapi, setXapi] = useState<XapiSummary | null>(null);
+  useEffect(() => {
+    if (!xapiCourse) { setXapi(null); return; }
+    return pollWhileVisible(() => api.xapi().then(setXapi).catch(() => {}), 2000, 10_000);
+  }, [xapiCourse, frameKey]);
+  const courseProgress = useMemo(() => {
+    if (!xapiCourse) return progressOf(scormData);
+    const module = xapi?.modules[sco?.id ?? course?.scos?.[0]?.id ?? Object.keys(xapi?.modules ?? {})[0] ?? ""];
+    return { completion: module?.completion ?? "", success: module?.success ?? "", score: module?.score ?? "", location: "", progressMeasure: "" };
+  }, [xapiCourse, xapi, scormData, sco, course]);
   useEffect(() => {
     const save = () => checkpointReview(frameRef.current, false, true);
     window.addEventListener("beforeunload", save);
@@ -149,21 +173,26 @@ export function App() {
     persistence.select(id);
     const installed = installScormApis(window, `scormplayer:${course.courseKey}${sco ? `:${sco.id}` : ""}`, {
       initialData: persistence.state.modules[id] ?? {}, commit: () => { void persistence.flush(); },
+      settings: launchSettings,
+      runtime: sco?.runtime ?? course.runtime ?? {},
+      navigation: { ids: course.scos?.map((item) => item.id) ?? [id], index: scoIndex },
+      onNavRequest: (request) => navRequestRef.current(request),
     });
     setScorm(installed);
     const unsubscribe = installed.subscribe((data) => { setScormData(data); persistence.update(id, data); });
     const unsubscribeCalls = installed.subscribeCalls(setCalls);
+    const unsubscribeIssues = installed.subscribeIssues(setIssues);
     document.title = `${course.title} · scormplayer`;
     try { if (course.scos) localStorage.setItem(`scormplayer:sco:${course.courseKey}`, String(scoIndex)); } catch { /* storage blocked */ }
-    return () => { unsubscribe(); unsubscribeCalls(); installed.uninstall(); };
-  }, [course, scoIndex, persistence, frameKey]);
+    return () => { unsubscribe(); unsubscribeCalls(); unsubscribeIssues(); installed.uninstall(); };
+  }, [course, scoIndex, persistence, frameKey, launchSettings]);
 
   // Tell the terminal how the course is doing (completion, success, score, location).
   useEffect(() => {
     if (!course) return;
-    const timer = window.setTimeout(() => void api.reportProgress(progressOf(scormData)), 400);
+    const timer = window.setTimeout(() => void api.reportProgress(courseProgress), 400);
     return () => window.clearTimeout(timer);
-  }, [course, scormData]);
+  }, [course, courseProgress]);
 
   const refreshPins = useCallback(() => api.pins().then(setPins).catch(() => {}), []);
   useEffect(() => {
@@ -184,7 +213,7 @@ export function App() {
 
   const currentPage = useCallback((): PinPage => {
     const doc = frameDoc();
-    const location = progressOf(scormData).location || undefined;
+    const location = courseProgress.location || undefined;
     if (!doc) return { url: "", title: "", location };
     const heading = Array.from(doc.querySelectorAll("h1, h2"))
       .find((element) => (element as HTMLElement).offsetParent !== null && visibleText(element));
@@ -196,7 +225,7 @@ export function App() {
       ...(navPage ? { navId: navPage.id, navIndex: nav!.index } : {}),
       ...(sco ? { scoId: sco.id, scoTitle: sco.title } : {}),
     };
-  }, [scormData, nav, sco]);
+  }, [courseProgress, nav, sco]);
 
   const browserContext = useRef(() => ({ doc: frameDoc(), page: currentPage(), busy: navBusy || reloadPending.current, reload: async () => { await persistence?.flush(); reloadCourse(); } }));
   browserContext.current = () => ({ doc: frameDoc(), page: currentPage(), busy: navBusy || reloadPending.current, reload: async () => { await persistence?.flush(); reloadCourse(); } });
@@ -401,7 +430,7 @@ export function App() {
         skipAhead();
       } else if (event.key.toLowerCase() === "i") {
         event.preventDefault();
-        setInspectorOpen((open) => { if (!open) setPanelOpen(false); return !open; });
+        setInspectorOpen((open) => { if (!open) { setPanelOpen(false); setChecksOpen(false); } return !open; });
       }
     };
     const onKeyUp = (event: KeyboardEvent) => { if (event.code === "Space") setPassthrough(false); };
@@ -593,6 +622,26 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [frameLoads]);
 
+  // A SCORM 2004 course asked the LMS to go somewhere when it ended its session.
+  navRequestRef.current = ({ request, index }) => {
+    if (index !== null) {
+      say(`The course asked for ${request}: opening module ${index + 1}`);
+      switchSco(index);
+    } else if (/^(exit|exitAll|suspendAll|abandon|abandonAll)$/.test(request)) {
+      say(`The course asked the LMS to ${request}; an LMS would close it now`);
+    } else {
+      say(`The course asked for ${request}, but there is no module to go to`);
+    }
+  };
+
+  function applyLaunchSettings(next: typeof launchSettings) {
+    saveLaunchSettings(next);
+    setSettingsOpen(false);
+    setLaunchSettings(next);
+    reloadCourse();
+    say(next.strict ? "Restarted in strict mode" : "Restarted with the new launch settings");
+  }
+
   function switchSco(index: number) {
     if (!course?.scos || index === scoIndex || index < 0 || index >= course.scos.length) return;
     checkpointReview(frameRef.current, false, true);
@@ -681,7 +730,7 @@ export function App() {
 
   const openPins = pins.filter((pin) => pin.status === "open");
   const listedPins = showResolved ? pins : openPins;
-  const progress = progressOf(scormData);
+  const progress = courseProgress;
   const progressLabel = describeProgress(progress);
   const kindLabel = course ? describeKind(course, lastChangeAt, now) : "";
 
@@ -744,12 +793,12 @@ export function App() {
     reopenPin: async (number) => { const pin = await findPin(number); const updated = await api.updatePin(pin.id, { status: "open" }); await freshPins(); return updated; },
     openPin: async (number) => { const pin = await findPin(number); await goToPin(pin); return `Navigation to pin ${number} requested. Check the page and target to confirm arrival.`; },
     status: async () => ({
-      course: course ? { title: course.title, scormVersion: course.scormVersion, kind: course.kind, source: course.source, editable: course.editable, revision: course.revision, pinsFile: course.pinsFile, ...(course.unzip ? { unzipTo: course.unzip.existing ?? course.unzip.folder } : {}) } : null,
+      course: course ? { title: course.title, scormVersion: course.scormVersion, standard: course.standard ?? "scorm", kind: course.kind, source: course.source, editable: course.editable, revision: course.revision, pinsFile: course.pinsFile, ...(course.unzip ? { unzipTo: course.unzip.existing ?? course.unzip.folder } : {}) } : null,
       module: sco ? { number: scoIndex + 1, of: course?.scos?.length, title: sco.title } : null,
       page: nav ? { number: nav.index + 1, of: nav.pages.length, title: nav.pages[nav.index]?.title, pages: nav.pages.map((item) => item.title) } : null,
       tour,
       narrationPlaying: mediaPlaying,
-      scorm: progressOf(scormData),
+      scorm: courseProgress,
       screen: viewport,
       viewport: { width: frameRef.current?.clientWidth, height: frameRef.current?.clientHeight },
       readiness: { frameLoaded: Boolean(frameDoc()?.body), navigationAvailable: Boolean(nav), navigationBusy: navBusy },
@@ -855,7 +904,7 @@ export function App() {
   if (loadError) return <div className="sp-fatal"><strong>scormplayer could not load the course.</strong><p>{loadError}</p></div>;
 
   return (
-    <div className={`sp-app ${panelOpen || inspectorOpen ? "has-panel" : ""}`}>
+    <div className={`sp-app ${panelOpen || inspectorOpen || checksOpen ? "has-panel" : ""}`}>
       <div className="sp-main">
         {progressError && <div className="sp-save-error" role="alert"><span>Progress could not be saved: {progressError}</span><button type="button" onClick={() => void persistence?.flush()}>Retry</button></div>}
         <div className={`sp-stage ${pinMode && !passthrough ? "is-picking" : ""}`} ref={stageRef}>
@@ -949,6 +998,9 @@ export function App() {
 
           {course && unzipNotice.show && !pinMode ? <UnzipNotice course={course} onUnzip={() => setUnzipOpen(true)} onDismiss={unzipNotice.dismiss} /> : null}
           {course && unzipOpen ? <UnzipDialog course={course} onClose={() => setUnzipOpen(false)} /> : null}
+          {course && settingsOpen ? (
+            <LaunchSettingsDialog settings={launchSettings} runtime={sco?.runtime ?? course.runtime ?? {}} onSave={applyLaunchSettings} onClose={() => setSettingsOpen(false)} />
+          ) : null}
           {switcherOpen ? <CourseSwitcher onClose={() => setSwitcherOpen(false)} /> : null}
           {presence.state === "asking" ? <StillThereCard closesAt={presence.closesAt} onStay={stillHere} /> : null}
           {toast ? <div className="sp-toast" role="status">{toast}</div> : null}
@@ -1045,7 +1097,7 @@ export function App() {
             <button type="button" className="sp-tab" aria-pressed={pinMode} onClick={() => { if (reattaching) closeComposer(); setPinMode((value) => !value); setMenuOpen(false); }} title="Pin mode (P)">
               <Icon name="pin" /><span>{pinMode ? "Pinning" : "Pin"}</span>
             </button>
-            <button type="button" className="sp-tab" aria-pressed={panelOpen} onClick={() => { setPanelOpen((value) => !value); setInspectorOpen(false); setMenuOpen(false); }} title="Saved pins">
+            <button type="button" className="sp-tab" aria-pressed={panelOpen} onClick={() => { setPanelOpen((value) => !value); setInspectorOpen(false); setChecksOpen(false); setMenuOpen(false); }} title="Saved pins">
               <Icon name="list" /><span>Pins</span>{openPins.length ? <em>{openPins.length}</em> : null}
             </button>
             <button type="button" className="sp-tab" onClick={() => void copyPins()} disabled={!openPins.length} title="Copy all open pins as a hand-off for an agent">
@@ -1063,8 +1115,14 @@ export function App() {
                       <Icon name="arrowUp" size={16} /> scormplayer {update.latest} is available
                     </button>
                   ) : null}
-                  <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setPanelOpen(false); setInspectorOpen(true); }}>
-                    <Icon name="code" size={16} /> SCORM inspector <kbd>I</kbd>
+                  <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setPanelOpen(false); setChecksOpen(false); setInspectorOpen(true); }}>
+                    <Icon name="code" size={16} /> {xapiCourse ? (course?.standard === "cmi5" ? "cmi5" : "xAPI") : "SCORM"} inspector <kbd>I</kbd>
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setPanelOpen(false); setInspectorOpen(false); setChecksOpen(true); }}>
+                    <Icon name="check" size={16} /> Checks: package and accessibility…
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setSettingsOpen(true); }}>
+                    <Icon name="edit" size={16} /> Launch settings…{launchSettings.strict ? <em className="sp-menu__tag">Strict</em> : null}
                   </button>
                   {course?.packages ? (
                     <>
@@ -1116,8 +1174,26 @@ export function App() {
       </div>
 
       {inspectorOpen ? (
-        <Inspector data={scormData} calls={calls} onClear={() => scorm?.clearCalls()} onClose={() => setInspectorOpen(false)}
+        <Inspector data={scormData} calls={calls} issues={issues} strict={launchSettings.strict} xapi={xapi} progress={courseProgress} onSettings={() => setSettingsOpen(true)}
+          onClear={() => scorm?.clearCalls()} onClose={() => setInspectorOpen(false)}
           onCopy={(text) => void copyText(text).then(() => say("SCORM data and calls copied"), () => say("Couldn't reach the clipboard"))} />
+      ) : null}
+
+      {checksOpen ? (
+        <Checks frame={() => frameRef.current} onClose={() => setChecksOpen(false)}
+          onCopy={(text) => void copyText(text).then(() => say("Checks copied"), () => say("Couldn't reach the clipboard"))}
+          onShow={(element) => {
+            element.scrollIntoView({ block: "center" });
+            const box = element.getBoundingClientRect();
+            setHover({ x: box.x, y: box.y, width: box.width, height: box.height });
+            window.setTimeout(() => setHover(null), 2000);
+          }}
+          onPin={(element, note) => {
+            if (reattaching) closeComposer();
+            element.scrollIntoView({ block: "center" });
+            openComposer(element, describeElement(element));
+            setDraft(note);
+          }} />
       ) : null}
 
       {panelOpen ? (
@@ -1281,7 +1357,8 @@ function describeProgress(progress: ReturnType<typeof progressOf>) {
 }
 
 function describeKind(course: Course, lastChangeAt: string | null, now: number) {
-  const version = course.scormVersion && course.scormVersion !== "both" ? `SCORM ${course.scormVersion}` : "SCORM";
+  const version = course.standard === "xapi" ? "xAPI" : course.standard === "cmi5" ? "cmi5"
+    : course.scormVersion && course.scormVersion !== "both" ? `SCORM ${course.scormVersion}` : "SCORM";
   if (course.kind === "live") {
     if (!lastChangeAt) return `Live source · ${version} · watching for edits`;
     const seconds = Math.max(0, Math.round((now - Date.parse(lastChangeAt)) / 1000));

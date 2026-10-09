@@ -4,13 +4,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseManifestXml, resolveCourse, UserError } from "../server/course.mjs";
 import { createPinStore } from "../server/pins.mjs";
 import { findSourceText, findSourceEvidence } from "../server/source-match.mjs";
 import { startPlayer } from "../server/index.mjs";
-import { MANIFEST_12, MANIFEST_2004, bundleZip, multiScoZip, scorm12Zip, scorm2004Zip, traversalZip } from "./fixtures.mjs";
+import { MANIFEST_12, MANIFEST_2004, bundleZip, cmi5Zip, multiScoZip, scorm12Zip, scorm2004Zip, tincanZip, traversalZip } from "./fixtures.mjs";
 
 test("dropped ZIPs with the same name keep separate pins through reupload and cache cleanup", async () => {
   const dir = tempDir();
@@ -1169,5 +1169,139 @@ test("HTTP pin capture stamps server provenance and reattachment rejects stale c
     assert.equal((await post(`api/pins/${pin.id}/reattach`, changes)).status, 200);
     assert.equal((await post(`api/pins/${pin.id}/reattach`, changes)).status, 409);
     assert.equal(player.pins.list()[0].attachmentHistory.length, 1);
+  } finally { await player.close(); }
+});
+
+test("manifest runtime values reach /api/course for each SCO", async () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, "imsmanifest.xml"), `<?xml version="1.0"?><manifest identifier="m" xmlns="http://www.imsglobal.org/xsd/imscp_v1p1" xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_v1p3" xmlns:imsss="http://www.imsglobal.org/xsd/imsss"><metadata><schemaversion>2004 4th Edition</schemaversion></metadata><organizations default="o"><organization identifier="o"><title>T</title>
+<item identifier="a" identifierref="r1"><title>A</title><adlcp:completionThreshold completedByMeasure="true" minProgressMeasure="0.8"/><adlcp:dataFromLMS>abc</adlcp:dataFromLMS><imsss:sequencing><imsss:objectives><imsss:primaryObjective objectiveID="p" satisfiedByMeasure="true"><imsss:minNormalizedMeasure>0.7</imsss:minNormalizedMeasure></imsss:primaryObjective></imsss:objectives></imsss:sequencing></item>
+<item identifier="b" identifierref="r2"><title>B</title><adlcp:completionThreshold completedByMeasure="false" minProgressMeasure="0.5"/></item>
+</organization></organizations><resources><resource identifier="r1" href="a.html" adlcp:scormType="sco"/><resource identifier="r2" href="b.html" adlcp:scormType="sco"/></resources></manifest>`);
+  fs.writeFileSync(path.join(dir, "a.html"), "<h1>A</h1>");
+  fs.writeFileSync(path.join(dir, "b.html"), "<h1>B</h1>");
+  const player = await startPlayer({ input: dir, cacheDir: path.join(dir, "cache"), port: 0, registryDir: null });
+  try {
+    const course = await (await fetch(`${player.url}api/course`)).json();
+    assert.equal(course.standard, "scorm");
+    assert.deepEqual(course.scos.map((sco) => sco.runtime), [{ dataFromLms: "abc", completionThreshold: "0.8", scaledPassingScore: "0.7" }, {}]);
+    assert.deepEqual(course.runtime, course.scos[0].runtime);
+  } finally { await player.close(); }
+});
+
+test("package checks: CLI and HTTP report what an LMS upload would trip on", async () => {
+  const dir = tempDir();
+  const course = path.join(dir, "course");
+  fs.mkdirSync(path.join(course, "Img"), { recursive: true });
+  fs.writeFileSync(path.join(course, "imsmanifest.xml"), `<?xml version="1.0"?><manifest identifier="m" xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_rootv1p2"><metadata><schemaversion>1.2</schemaversion></metadata><organizations default="o"><organization identifier="o"><title>Checked</title><item identifier="i" identifierref="r"><title>x</title></item><item identifier="i2" identifierref="nope"><title>y</title></item></organization></organizations><resources><resource identifier="r" href="index.html" adlcp:scormtype="sco"><file href="index.html"/><file href="img/a.png"/><file href="gone.js"/></resource></resources></manifest>`);
+  fs.writeFileSync(path.join(course, "index.html"), `<img src="http://cdn.example.net/a.png"><script src="/scripts/x.js"></script><img src="Img/A.png"><a href="https://www.w3.org/x">w</a><img src="missing.png">`);
+  fs.writeFileSync(path.join(course, "Img", "a.png"), "");
+  const run = (...args) => spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: path.join(dir, "cache"), LOCALAPPDATA: path.join(dir, "cache") } });
+  const text = run("check", course);
+  assert.equal(text.status, 1);
+  assert.match(text.stdout, /✖ Resource r lists a file that is img\/a\.png, but the file is named Img\/a\.png/);
+  assert.match(text.stdout, /✖ Resource r lists a file that is gone\.js, which isn't in the package/);
+  assert.match(text.stdout, /✖ Item "y" refers to resource "nope"/);
+  assert.match(text.stdout, /✖ index\.html links to Img\/A\.png → Img\/a\.png/);
+  assert.match(text.stdout, /▲ index\.html loads http:\/\/cdn\.example\.net\/a\.png over http:\/\//);
+  assert.match(text.stdout, /▲ index\.html refers to \/scripts\/x\.js from the server's root/);
+  assert.match(text.stdout, /▲ index\.html links to missing\.png/);
+  assert.doesNotMatch(text.stdout, /w3\.org/);
+  const json = JSON.parse(run("check", course, "--json").stdout);
+  assert.equal(json.ok, false);
+  assert.ok(json.findings.some((finding) => finding.code === "case-mismatch" && finding.file === "Img/a.png"));
+
+  const zip = path.join(dir, "wrapped.zip");
+  fs.writeFileSync(zip, scorm12Zip({ wrapper: "inner" }));
+  const wrapped = JSON.parse(run("check", zip, "--json").stdout);
+  assert.deepEqual(wrapped.findings.filter((finding) => finding.severity === "error").map((finding) => finding.code), ["manifest-not-at-root"]);
+
+  const clean = path.join(dir, "clean.zip");
+  fs.writeFileSync(clean, scorm12Zip());
+  const result = run("check", clean);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const player = await startPlayer({ input: clean, cacheDir: path.join(dir, "cache"), port: 0, registryDir: null });
+  try {
+    const report = await (await fetch(`${player.url}api/check`)).json();
+    assert.deepEqual(report.counts, { error: 0, warning: 0, info: 0 });
+  } finally { await player.close(); }
+});
+
+test("cmi5 and xAPI packages resolve, list their AUs and are found by the course finder", async () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, "cmi5.zip"), cmi5Zip());
+  fs.writeFileSync(path.join(dir, "tincan.zip"), tincanZip());
+  const cmi5 = resolveCourse(path.join(dir, "cmi5.zip"), { cacheDir: path.join(dir, "cache") });
+  assert.equal(cmi5.standard, "cmi5");
+  assert.equal(cmi5.title, "Demo cmi5 course");
+  assert.deepEqual(cmi5.scos.map((sco) => [sco.id, sco.title, sco.launch, sco.cmi5.moveOn]), [
+    ["https://example.com/courses/demo/au1", "Lesson one", "au1/index.html", "CompletedAndPassed"],
+    ["https://example.com/courses/demo/au2", "Lesson two", "au2/index.html", "NotApplicable"],
+  ]);
+  assert.equal(cmi5.scos[0].cmi5.masteryScore, 0.8);
+  const tincan = resolveCourse(path.join(dir, "tincan.zip"), { cacheDir: path.join(dir, "cache") });
+  assert.deepEqual([tincan.standard, tincan.title, tincan.launch], ["xapi", "Demo xAPI course", "index_lms.html"]);
+  const { findCourses } = await import("../server/finder.mjs");
+  assert.deepEqual(findCourses(dir).map((course) => path.basename(course.path)).sort(), ["cmi5.zip", "tincan.zip"]);
+});
+
+test("the local LRS: cmi5 launch data, fetch once, statement validation, cmi5 rules, satisfied and reset", async () => {
+  const dir = tempDir();
+  const zip = path.join(dir, "cmi5.zip");
+  fs.writeFileSync(zip, cmi5Zip());
+  const player = await startPlayer({ input: zip, cacheDir: path.join(dir, "cache"), port: 0, registryDir: null });
+  try {
+    const course = await (await fetch(`${player.url}api/course`)).json();
+    assert.equal(course.standard, "cmi5");
+    const launch = await fetch(`${player.url}${course.scos[0].launchUrl.slice(1)}&learnerName=Jo&learnerId=jo1&mode=normal`, { redirect: "manual" });
+    assert.equal(launch.status, 302);
+    const target = new URL(launch.headers.get("location"), player.url);
+    assert.equal(target.pathname, "/course/au1/index.html");
+    const q = target.searchParams;
+    const actor = JSON.parse(q.get("actor"));
+    assert.deepEqual(actor.account, { homePage: "https://github.com/jakerains/scormplayer", name: "jo1" });
+    const token = await (await fetch(q.get("fetch"), { method: "POST" })).json();
+    assert.ok(token["auth-token"]);
+    assert.equal((await (await fetch(q.get("fetch"), { method: "POST" })).json())["error-code"], "1");
+    const endpoint = q.get("endpoint");
+    const headers = { "Content-Type": "application/json", "X-Experience-API-Version": "1.0.3" };
+    const state = new URLSearchParams({ activityId: q.get("activityId"), agent: JSON.stringify(actor), registration: q.get("registration"), stateId: "LMS.LaunchData" });
+    const launchData = await (await fetch(`${endpoint}activities/state?${state}`)).json();
+    assert.equal(launchData.moveOn, "CompletedAndPassed");
+    assert.equal(launchData.masteryScore, 0.8);
+    const sessionId = launchData.contextTemplate.extensions["https://w3id.org/xapi/cmi5/context/extensions/sessionid"];
+
+    // An LRS rejects malformed statements; cmi5 rule breaks are recorded as issues.
+    const bad = await fetch(`${endpoint}statements`, { method: "POST", headers, body: JSON.stringify({ actor, verb: { id: "completed" }, object: { id: q.get("activityId") } }) });
+    assert.equal(bad.status, 400);
+    const context = { registration: q.get("registration"), extensions: { "https://w3id.org/xapi/cmi5/context/extensions/sessionid": sessionId } };
+    const send = (verb, extra = {}) => fetch(`${endpoint}statements`, { method: "POST", headers, body: JSON.stringify({ actor, verb: { id: `http://adlnet.gov/expapi/verbs/${verb}` }, object: { id: q.get("activityId") }, context, ...extra }) });
+    assert.equal((await send("passed", { result: { score: { scaled: 0.5 } } })).status, 200);
+    const cmi5Context = { ...context, contextActivities: { category: [{ id: "https://w3id.org/xapi/cmi5/context/categories/cmi5" }] } };
+    await fetch(`${endpoint}statements`, { method: "POST", headers, body: JSON.stringify({ actor, verb: { id: "http://adlnet.gov/expapi/verbs/completed" }, object: { id: q.get("activityId") }, context: cmi5Context, result: { duration: "PT1M" } }) });
+
+    // Documents: PUT replaces, POST merges JSON, GET lists ids.
+    const docParams = new URLSearchParams({ activityId: q.get("activityId"), agent: JSON.stringify(actor), stateId: "bookmark" });
+    assert.equal((await fetch(`${endpoint}activities/state?${docParams}`, { method: "PUT", headers, body: JSON.stringify({ page: 1 }) })).status, 204);
+    assert.equal((await fetch(`${endpoint}activities/state?${docParams}`, { method: "POST", headers, body: JSON.stringify({ seen: true }) })).status, 204);
+    assert.deepEqual(await (await fetch(`${endpoint}activities/state?${docParams}`)).json(), { page: 1, seen: true });
+
+    const summary = await (await fetch(`${player.url}api/xapi`)).json();
+    const messages = summary.issues.map((issue) => issue.message).join("\n");
+    assert.match(messages, /rejected a statement: verb\.id must be an IRI/);
+    assert.match(messages, /"passed" before "initialized"/);
+    assert.match(messages, /lacks the cmi5 category/);
+    assert.match(messages, /passed with 0\.5, below its mastery score 0\.8/);
+    assert.match(messages, /fetch URL more than once/);
+    assert.deepEqual(summary.modules[q.get("activityId")], { completion: "completed", success: "passed", score: "50%", satisfied: true });
+    assert.deepEqual(summary.statements.map((statement) => statement.verb.id.split("/").pop()), ["satisfied", "satisfied", "completed", "passed", "launched"]);
+
+    // Reset progress starts a new registration.
+    const scorm = await (await fetch(`${player.url}api/scorm`)).json();
+    const revision = course.revision;
+    await fetch(`${player.url}api/scorm`, { method: "PUT", headers: { "Content-Type": "application/json", "X-Scormplayer-Revision": revision }, body: JSON.stringify({ epoch: scorm.epoch, selectedSco: scorm.selectedSco, reset: true }) });
+    const after = await (await fetch(`${player.url}api/xapi`)).json();
+    assert.notEqual(after.registration, summary.registration);
+    assert.equal(after.count, 0);
   } finally { await player.close(); }
 });

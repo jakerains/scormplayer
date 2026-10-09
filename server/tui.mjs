@@ -553,7 +553,8 @@ export function progressLabel(progress) {
 }
 
 export function kindLine(course) {
-  const kind = { package: "SCORM zip (read-only)", folder: "SCORM folder", live: "Live source · hot reload" }[course.kind] ?? course.kind;
+  const label = { xapi: "xAPI", cmi5: "cmi5" }[course.standard] ?? "SCORM";
+  const kind = { package: `${label} zip (read-only)`, folder: `${label} folder`, live: "Live source · hot reload" }[course.kind] ?? course.kind;
   return `${kind}${course.scormVersion && course.scormVersion !== "both" ? ` · SCORM ${course.scormVersion}` : ""}`;
 }
 

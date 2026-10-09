@@ -5,7 +5,7 @@ import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
-import { startPlayer, resolveCourse, createPinStore, createDashboard, openBrowser, unzipCourse, UserError, PORT_RANGE } from "../server/index.mjs";
+import { startPlayer, resolveCourse, createPinStore, createDashboard, openBrowser, unzipCourse, checkPackage, formatCheck, UserError, PORT_RANGE } from "../server/index.mjs";
 import { listPlayers, findPlayer, stopPlayer, askPlayer, unregisteredPlayers, isAlive } from "../server/registry.mjs";
 import { SKILL_FILE, SKILL_REPO, runSkills, skillsArgs, skillInstalledAnywhere, skillScopes, installSkill, skillStatus, updateSkills } from "../server/skill.mjs";
 import { findConfig, configuredPinsFile, startSync } from "../server/config.mjs";
@@ -39,10 +39,13 @@ Install MCP and skills into your AI apps
 Usage
   scormplayer                     Pick a course found in this folder (or open this folder);
                                   with none, open the player to drop or choose a SCORM zip
-  scormplayer <course>            Open a SCORM .zip, a SCORM folder, or a Vite project
+  scormplayer <course>            Open a SCORM, xAPI or cmi5 .zip or folder, or a Vite project
   scormplayer pins <course>       Print the open pins as a hand-off for a teammate or an agent
   scormplayer unzip <zip>         Unzip a course to a folder you can edit (beside the zip, or
                                   --to <folder>); its pins move with it
+  scormplayer check <course>      Check a package for what LMS uploads and launches trip on
+                                  (missing or wrongly cased files, manifest errors, http://
+                                  and root-relative links); exits 1 when it finds errors
   scormplayer setup               Install MCP and optional skills (commands above)
   scormplayer skill               Install the agent skill, or update it if it's out of date
   scormplayer mcp                 Run the MCP server for an AI app; use setup to install it
@@ -99,6 +102,7 @@ For agents (--json)
   scormplayer pins <course> --json              {ok, course, pinsFile, counts, pins[]}
   scormplayer pins <course> --resolve 2 --json  {ok, resolved[], counts}
   scormplayer unzip <zip> --json                {ok, folder, pinsFile, reused, movedPins}
+  scormplayer check <course> --json             {ok, counts, files, bytes, findings[]: severity, code, message, file}
   scormplayer <course> --json --no-open         One JSON event per line: ready (url, pid,
                                                 pinsFile), then pin, progress, source, browser,
                                                 course, log; stopped (with a reason) on exit.
@@ -169,7 +173,7 @@ async function main(argv) {
     if (!result.ok) process.exitCode = 1;
     return;
   }
-  const commands = ["mcp", "skill", "plugin", "cache", "update", "upgrade", "ps", "stop", "pins", "unzip"];
+  const commands = ["mcp", "skill", "plugin", "cache", "update", "upgrade", "ps", "stop", "pins", "unzip", "check"];
   if (!commands.includes(positionals[0]) && (!positionals[0] || fs.existsSync(path.resolve(positionals[0]))) && shouldOfferSetup({ json, plain: values.plain })) {
     try { await runSetup(); }
     catch (error) { console.error(`Setup: ${error.message}\nYou can continue using the player and run scormplayer setup later.`); }
@@ -235,6 +239,17 @@ async function main(argv) {
     return;
   }
 
+  if (positionals[0] === "check") {
+    const input = positionals[1];
+    if (!input) throw new UserError("Usage: scormplayer check <course>");
+    const course = resolveCourse(input, { cacheDir, live: values.live, pkg: values.package });
+    const report = checkPackage(course);
+    if (json) console.log(JSON.stringify({ ...report, course: { title: course.title, source: course.source } }));
+    else process.stdout.write(formatCheck(report, `${course.title} (${course.package ? `${course.package} in ` : ""}${quote(input)})`));
+    if (!report.ok) process.exitCode = 1;
+    return;
+  }
+
   if (positionals[0] === "pins") {
     const input = positionals[1];
     if (!input) throw new UserError("Usage: scormplayer pins <course>");
@@ -260,7 +275,7 @@ async function main(argv) {
   const word = positionals[0];
   if (word && /^[a-z][a-z-]*$/i.test(word) && !fs.existsSync(path.resolve(word))) {
     throw new UserError(`"${word}" isn't a command in scormplayer ${VERSION}, or a course in this folder. `
-      + `The commands are pins, unzip, update, ps, stop, skill, mcp, plugin, setup and cache (scormplayer --help). `
+      + `The commands are pins, unzip, check, update, ps, stop, skill, mcp, plugin, setup and cache (scormplayer --help). `
       + `If "${word}" is newer than this version, update first: scormplayer update`);
   }
 

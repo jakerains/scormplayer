@@ -1,6 +1,6 @@
 ---
 name: scormplayer
-description: Work with scormplayer, a local SCORM player whose reviewers leave pinned notes on a course. Use when someone asks you to act on pins, review notes or feedback on a SCORM course or lesson, mentions scormplayer or a *.pins.json file, pastes a "# Pinned notes:" hand-off, or wants to open, preview or review a SCORM zip, SCORM folder or Vite-built course.
+description: Work with scormplayer, a local SCORM player whose reviewers leave pinned notes on a course. Use when someone asks you to act on pins, review notes or feedback on a SCORM course or lesson, mentions scormplayer or a *.pins.json file, pastes a "# Pinned notes:" hand-off, or wants to open, preview, check or review a SCORM, xAPI or cmi5 package, SCORM folder or Vite-built course.
 metadata:
   version: "0.9.7"
 ---
@@ -172,7 +172,11 @@ If you can drive a browser and it supports WebMCP, the player page offers tools
 `scormplayer_unzip`, and more). Use
 them rather than clicking: they move pages, skip narration, and pin or resolve notes exactly as
 the buttons do. **More → SCORM inspector** (or `I`) shows the SCORM data and every API call when a
-course won't complete, score or resume.
+course won't complete, score or resume; its **Issues** tab lists calls that break the SCORM spec
+(and, for xAPI and cmi5 courses, rejected statements and cmi5 rule breaks). **More → Launch
+settings** sets the learner, mode and credit, and turns on strict mode, which fails those calls
+as a strict LMS would. `scormplayer check <course> --json` reports package problems an LMS upload
+would trip on (exit 1 on errors); **More → Checks** also scans the page's accessibility.
 
 ## When a course doesn't play well
 
@@ -182,8 +186,9 @@ experience in an LMS; review-only code must do nothing unless a review host is p
 
 1. **Run it and read the message:** `scormplayer <course> --json --no-open`. The `error` field
    (or the `ready` line, if it opens) tells you what scormplayer found.
-   - *No imsmanifest.xml*: scormplayer looks at the root and up to three folders down. A manifest
-     deeper than that, or a zip that isn't a SCORM package, won't open.
+   - *No imsmanifest.xml*: scormplayer looks at the root and up to three folders down for
+     `imsmanifest.xml` (SCORM), `cmi5.xml` (cmi5) or `tincan.xml` (xAPI). One deeper than that,
+     or a zip that is none of these, won't open.
    - *Several courses in one zip or folder* (several imsmanifest.xml files): it opens the first
      and lists the rest (`course.packages` in `--json` output). Open another with
      `--package <folder or part of its title>`; each one keeps its own pins file.
@@ -217,10 +222,14 @@ experience in an LMS; review-only code must do nothing unless a review host is p
    `new Audio()` playback. Sound made with the Web Audio API (`AudioContext`) can't be skipped;
    playing narration through an audio element fixes that. Tour controls follow driver.js's
    `.driver-popover` buttons; a step that requires a learner action can't be skipped.
-6. **It never completes or never resumes**: open the SCORM inspector (`I`) and check the calls.
-   Common causes: no `Initialize`/`LMSInitialize`, values set but never committed, the wrong
-   element for the SCORM version (`cmi.core.lesson_status` is 1.2, `cmi.completion_status` is
-   2004), or `cmi.exit` not set to `suspend` before leaving, so the course doesn't resume.
+6. **It never completes or never resumes**: open the SCORM inspector (`I`) and check the calls
+   and the **Issues** tab. Common causes: no `Initialize`/`LMSInitialize`, values set but never
+   committed, the wrong element for the SCORM version (`cmi.core.lesson_status` is 1.2,
+   `cmi.completion_status` is 2004), or `cmi.exit` not set to `suspend` before leaving, so the
+   course doesn't resume. `LMS` rows in the calls show status the LMS decided from the manifest
+   (mastery score, completion threshold, passing score), which overrides what the course set.
+   Run `scormplayer check <course>` before blaming the LMS: missing or wrongly cased files and a
+   manifest that isn't at the zip's root are the usual upload failures.
 7. **Live mode won't start**: install the project's dependencies (the player uses the project's
    own Vite, version 5 or newer) and make sure the folder has `index.html` and a `vite.config.*`.
 

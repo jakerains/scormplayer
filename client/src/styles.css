@@ -373,3 +373,43 @@ kbd {
 
 .sp-marker.is-approximate { border-style: dashed; }
 .sp-pin__attachment { color: var(--muted); font-weight: 600; }
+
+/* Launch settings: who the learner is and how strictly the LMS follows the spec. */
+.sp-launch { width: min(560px, 100%); }
+.sp-launch__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.sp-dialog select {
+  width: 100%; height: 36px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--surface-2); color: var(--ink); font: 13px var(--font);
+}
+.sp-dialog .sp-launch__check { display: flex; gap: 10px; align-items: flex-start; margin: 16px 0 0; font-weight: 400; color: var(--ink-muted); line-height: 1.45; cursor: pointer; }
+.sp-dialog .sp-launch__check input { width: auto; height: auto; margin-top: 3px; }
+.sp-launch__check strong { display: block; color: var(--ink); font-weight: 650; }
+.sp-launch__manifest { margin: 16px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; }
+.sp-launch__manifest dt { margin-bottom: 4px; font-weight: 650; }
+.sp-launch__manifest dd { display: flex; justify-content: space-between; gap: 12px; margin: 2px 0 0; color: var(--ink-muted); }
+.sp-launch__manifest code { font: 12px var(--mono); color: var(--ink); overflow-wrap: anywhere; text-align: right; }
+.sp-launch__spacer { flex: 1; }
+@media (max-width: 520px) { .sp-launch__grid { grid-template-columns: 1fr; } }
+
+/* Spec issues in the inspector. */
+.sp-issues { margin: 0; padding: 0; list-style: none; font-size: 12.5px; line-height: 1.45; }
+.sp-issues li { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+.sp-issues__badge { align-self: start; padding: 1px 6px; border-radius: 5px; font: 600 11px var(--mono); background: rgba(255, 107, 107, 0.14); color: var(--bad); }
+.sp-issues li.is-warning .sp-issues__badge { background: rgba(245, 166, 35, 0.16); color: #b26b00; }
+.sp-issues__meta { grid-column: 2; color: var(--ink-muted); font: 11.5px var(--mono); }
+.sp-inspector__mode { margin: 0 18px 10px; padding: 7px 10px; border-radius: 8px; background: var(--surface-2); color: var(--ink-muted); font-size: 12px; }
+.sp-inspector__mode button { margin-left: 4px; padding: 0; border: 0; background: none; color: var(--pin); font: inherit; font-weight: 600; cursor: pointer; }
+.sp-segmented em.is-bad { color: var(--bad); font-weight: 650; }
+.sp-menu__tag { margin-left: auto; padding: 1px 6px; border-radius: 5px; background: var(--surface-2); color: var(--ink-muted); font-size: 11px; font-style: normal; font-weight: 650; }
+.sp-checks { width: 460px; }
+.sp-issues li.is-info .sp-issues__badge { background: var(--surface-2); color: var(--ink-muted); }
+.sp-a11y__toggle { padding: 0; border: 0; background: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.sp-a11y__toggle em { margin-left: 4px; color: var(--ink-muted); font-style: normal; font-variant-numeric: tabular-nums; }
+.sp-issues__meta a { color: var(--ink-muted); }
+.sp-a11y__nodes { grid-column: 1 / -1; margin: 6px 0 0; padding: 0; list-style: none; }
+.sp-a11y__nodes li { display: grid; grid-template-columns: 1fr; gap: 3px; padding: 6px 0 6px 10px; border: 0; border-left: 2px solid var(--line); }
+.sp-a11y__nodes code { font: 11.5px var(--mono); color: var(--ink-muted); overflow-wrap: anywhere; }
+.sp-a11y__nodes span { white-space: pre-line; font-size: 12px; }
+.sp-a11y__actions { display: flex; gap: 6px; }
+.sp-a11y__actions button { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--ink); font-size: 12px; cursor: pointer; }
+.sp-a11y__actions button:disabled { opacity: 0.45; cursor: default; }

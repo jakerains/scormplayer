@@ -98,3 +98,59 @@ if(api){api.Initialize("");api.SetValue("cmi.location","module-${n}");api.SetVal
   }
   return zip.toBuffer();
 }
+
+/**
+ * A cmi5 course with two AUs. The first AU does what an AU must: it fetches its token, reads
+ * LMS.LaunchData, sends initialized, passed (with a score) and completed, then terminated.
+ */
+export function cmi5Zip({ title = "Demo cmi5 course" } = {}) {
+  const zip = new AdmZip();
+  zip.addFile("cmi5.xml", Buffer.from(`<?xml version="1.0" encoding="utf-8"?>
+<courseStructure xmlns="https://w3id.org/xapi/profiles/cmi5/v1/CourseStructure.xsd">
+  <course id="https://example.com/courses/demo"><title><langstring lang="en-US">${title}</langstring></title><description><langstring lang="en-US">Demo</langstring></description></course>
+  <au id="https://example.com/courses/demo/au1" moveOn="CompletedAndPassed" masteryScore="0.8"><title><langstring lang="en-US">Lesson one</langstring></title><description><langstring lang="en-US">One</langstring></description><url>au1/index.html</url></au>
+  <block id="https://example.com/courses/demo/b"><title><langstring lang="en-US">Block</langstring></title><description><langstring lang="en-US">B</langstring></description>
+    <au id="https://example.com/courses/demo/au2"><title><langstring lang="en-US">Lesson two</langstring></title><description><langstring lang="en-US">Two</langstring></description><url>au2/index.html</url></au>
+  </block>
+</courseStructure>`));
+  zip.addFile("au1/index.html", Buffer.from(`<!doctype html><title>Lesson one</title><h1>Lesson one</h1><p id="status">starting</p>
+<script>
+(async () => {
+  const q = new URLSearchParams(location.search);
+  const endpoint = q.get("endpoint"), actor = JSON.parse(q.get("actor")), registration = q.get("registration"), activityId = q.get("activityId");
+  const token = (await (await fetch(q.get("fetch"), { method: "POST" })).json())["auth-token"];
+  const headers = { "Content-Type": "application/json", "X-Experience-API-Version": "1.0.3", Authorization: "Basic " + token };
+  const state = new URLSearchParams({ activityId, agent: JSON.stringify(actor), registration, stateId: "LMS.LaunchData" });
+  const launchData = await (await fetch(endpoint + "activities/state?" + state, { headers })).json();
+  const context = { ...launchData.contextTemplate, registration, contextActivities: { ...launchData.contextTemplate.contextActivities, category: [{ id: "https://w3id.org/xapi/cmi5/context/categories/cmi5" }] } };
+  const send = (verb, result) => fetch(endpoint + "statements", { method: "POST", headers, body: JSON.stringify({ actor, verb: { id: verb, display: { "en-US": verb.split("/").pop() } }, object: { id: activityId }, context, ...(result ? { result } : {}) }) });
+  await send("http://adlnet.gov/expapi/verbs/initialized");
+  await send("http://adlnet.gov/expapi/verbs/passed", { score: { scaled: 0.9 }, success: true, duration: "PT1M" });
+  await send("http://adlnet.gov/expapi/verbs/completed", { completion: true, duration: "PT1M" });
+  await send("http://adlnet.gov/expapi/verbs/terminated", { duration: "PT2M" });
+  document.getElementById("status").textContent = "done " + launchData.launchMode + " " + launchData.masteryScore;
+})();
+</script>`));
+  zip.addFile("au2/index.html", Buffer.from(`<!doctype html><title>Lesson two</title><h1>Lesson two</h1>`));
+  return zip.toBuffer();
+}
+
+/** An xAPI (Tin Can) package that reads its launch parameters and reports completion. */
+export function tincanZip({ title = "Demo xAPI course" } = {}) {
+  const zip = new AdmZip();
+  zip.addFile("tincan.xml", Buffer.from(`<?xml version="1.0" encoding="utf-8"?>
+<tincan xmlns="http://projecttincan.com/tincan.xsd"><activities>
+  <activity id="https://example.com/xapi/demo" type="http://adlnet.gov/expapi/activities/course"><name>${title}</name><description lang="en-US">Demo</description><launch lang="en-us">index_lms.html</launch></activity>
+</activities></tincan>`));
+  zip.addFile("index_lms.html", Buffer.from(`<!doctype html><title>${title}</title><h1>xAPI lesson</h1><p id="status">starting</p>
+<script>
+(async () => {
+  const q = new URLSearchParams(location.search);
+  const headers = { "Content-Type": "application/json", "X-Experience-API-Version": "1.0.3", Authorization: q.get("auth") };
+  const actor = JSON.parse(q.get("actor"));
+  await fetch(q.get("endpoint") + "statements", { method: "POST", headers, body: JSON.stringify({ actor, verb: { id: "http://adlnet.gov/expapi/verbs/completed", display: { "en-US": "completed" } }, object: { id: q.get("activity_id") }, result: { completion: true, success: true, score: { scaled: 0.75 } }, context: { registration: q.get("registration") } }) });
+  document.getElementById("status").textContent = "sent";
+})();
+</script>`));
+  return zip.toBuffer();
+}

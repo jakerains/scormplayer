@@ -116,6 +116,16 @@ macOS and Linux are the primary platforms. The CLI also supports Windows.
 - **Plays SCORM 1.2 and SCORM 2004** zips or unzipped folders. Progress is saved in your
   local player cache, so a reload or a restart on another port picks up where you left off.
   Existing browser progress migrates when you reopen that course on its original port.
+- **Plays xAPI (Tin Can) and cmi5 packages** too, through a small local LRS that records their
+  statements. cmi5 courses get a real cmi5 launch (fetch token, `LMS.LaunchData`, `satisfied`).
+- **Acts like an LMS.** The course gets the learner, mode and credit you choose, the manifest's
+  mastery score, thresholds and launch data, total time that adds up across sessions, and
+  SCORM 2004 navigation requests between modules. Every departure from the spec shows up in the
+  inspector; **strict mode** fails those calls with the spec's error codes, as a strict LMS would.
+- **Checks before you upload.** `scormplayer check <course>` (or **More → Checks**) finds what
+  LMS uploads and launches trip on: a manifest not at the zip's root, missing or wrongly cased
+  files, `http://` and root-relative links. The **Accessibility** tab scans the page on screen
+  with axe-core and turns a finding into a pin.
 - **Pins.** Press <kbd>P</kbd>, click anything in the course (or drag across text), and write
   what should change. Each pin saves the element, its text, the page, a screenshot of the
   element and, when it can find it, the file and line the text came from.
@@ -125,8 +135,9 @@ macOS and Linux are the primary platforms. The CLI also supports Windows.
   player as you save. Pins keep working.
 - **Agent-ready.** `scormplayer skill install` (or `npx skills add jakerains/scormplayer`)
   teaches your coding agents how to work through your pins.
-- **Leaves your course alone.** Nothing is injected into or written inside the course. Pins
-  live in a JSON file next to it.
+- **Leaves your course alone.** Nothing is written inside the course, and nothing is injected
+  into it except the accessibility checker, when you ask for a scan. Pins live in a JSON file
+  next to it.
 
 ## The terminal dashboard
 
@@ -166,6 +177,8 @@ belong to, open it with `scormplayer ./course.zip --pins ./course.pins.json`.
 scormplayer                        # pick from the courses found here: type to filter, ↑↓, enter
 scormplayer ./course.zip           # a SCORM zip
 scormplayer ./course-folder        # an unzipped SCORM package (imsmanifest.xml inside)
+scormplayer ./cmi5-course.zip      # a cmi5 (cmi5.xml) or xAPI (tincan.xml) package
+scormplayer check ./course.zip     # check a package before an LMS sees it
 scormplayer ./my-vite-course       # a Vite project: live source with hot reload
 scormplayer ./course.zip --port 5000 --no-open
 scormplayer ./course.zip --plain   # log lines instead of the dashboard
@@ -186,6 +199,8 @@ In the player:
 | See, edit, resolve or delete pins | **Pins** |
 | Check tablet or phone layouts | The screen-size switch in the bar (tablet 1024×768, phone 390×844) |
 | See what the course tells the LMS | **More → SCORM inspector**, or <kbd>I</kbd> |
+| Choose the learner, mode and credit, or turn on strict mode | **More → Launch settings** |
+| Check the package and the page's accessibility | **More → Checks** |
 | Move between modules (multi-SCO packages) | The **Module** switcher in the bar |
 | Copy open pins for an agent | **Copy** |
 | Move between pages | ‹ › in the bar, the page menu, or <kbd>[</kbd> <kbd>]</kbd> |
@@ -216,6 +231,78 @@ waited. While a tour is open the bar also shows its step and Back/Next.
 (completion, success, score, location, suspend data, interactions) and every API call it makes,
 newest first, with a filter, a *writes only* switch and **Copy JSON**. It's the quickest way to
 see why a course doesn't complete, score or resume.
+
+The **Calls** list also shows what the LMS itself decided (`LMS` rows): status from the
+manifest's mastery score or thresholds, and session time added to the total. The **Issues** tab
+lists every call that breaks the SCORM spec, with its error code: elements the course can't
+write (read-only) or read (write-only), values of the wrong type or out of range, SCORM 2004
+elements sent to the 1.2 API (and the other way round), arrays filled out of order, calls before
+`Initialize` or after `Terminate`, `suspend_data` longer than an LMS must keep, a session that
+ended without `cmi.exit = "suspend"` and so wouldn't resume in most LMSs.
+
+### Launch settings and strict mode
+
+**More → Launch settings** sets what the course is told at launch, as an LMS would: the learner's
+name and ID, the mode (normal, browse, review) and credit. It also shows what the manifest hands
+the course: `adlcp:masteryscore` and `datafromlms` (1.2), the completion threshold,
+`minNormalizedMeasure` passing score, time limits and `dataFromLMS` (2004).
+
+The player then acts on them as an LMS does. In SCORM 1.2 a score at or above the mastery score
+passes and below it fails. In SCORM 2004 the completion threshold and passing score decide
+`completion_status` and `success_status`. `session_time` is added to `total_time` when the
+session ends, and `cmi.entry` is `resume` only after `cmi.exit = "suspend"`.
+
+By default the API is forgiving: a call that breaks the spec still works, and the inspector
+lists it. Turn on **strict mode** to fail those calls with the spec's error codes. A SCORM 2004
+course that didn't suspend then starts a new attempt with its data cleared. Strict mode is a
+closer rehearsal for a strict LMS. It isn't LMS conformance certification.
+
+### SCORM 2004 navigation between modules
+
+A SCORM 2004 module can ask to go to another when it ends: it sets `adl.nav.request` to
+`continue`, `previous` or `{target=ID}choice` and calls `Terminate`. The player opens that
+module, and answers `adl.nav.request_valid.*` from the package's modules.
+
+### Checks: package and accessibility
+
+`scormplayer check <course>` reads a package without running it and reports what an LMS upload
+or launch is likely to trip on. It exits 1 when it finds errors, so it fits in CI
+(`--json` prints `{ ok, counts, files, bytes, findings }`):
+
+- the manifest isn't at the root of the zip (most LMSs reject the upload)
+- files the manifest or a page refers to that are missing, or differ only in letter case (fine on
+  Windows and macOS, broken on Linux-hosted LMSs)
+- items pointing at missing resources, duplicate identifiers, invalid mastery scores, resources
+  without a `scormType`, a missing `schemaversion`
+- `http://` content (blocked on https LMSs), links that start at the server root (`/…`, broken
+  when the LMS serves the package from a subfolder), and `localhost` URLs
+- cmi5 and xAPI structure: AU ids, URLs, `moveOn` and `masteryScore` values
+- notes: other sites the course loads from, files the manifest doesn't list, very large files,
+  awkward file names
+
+**More → Checks** shows the same report in the player. Its **Accessibility** tab runs
+[axe-core](https://github.com/dequelabs/axe-core) on the page on screen (its WCAG A/AA rules and
+best practices). Each finding lists the elements involved: **Show** scrolls to one, **Pin** opens a
+pin on it with the finding as its note. Automated checks find about half of accessibility
+problems, so test with a keyboard and a screen reader too.
+
+### xAPI (Tin Can) and cmi5
+
+A package with `tincan.xml` (xAPI) or `cmi5.xml` (cmi5) instead of `imsmanifest.xml` plays
+through a local Learning Record Store at `/xapi/` on the player's own address. The launch
+passes the endpoint, actor and registration as such courses expect, using the learner from
+Launch settings. cmi5 launches also get a one-time fetch URL for the auth token and
+`LMS.LaunchData` (launch mode, moveOn, mastery score, launch parameters). The player sends the
+`launched` statement before the AU starts, and `satisfied` once the AU, and then the course,
+meets its moveOn.
+
+Each AU is a module in the **Module** switcher. The bottom bar shows completion, success and
+score from the statements. The inspector's **Statements** tab lists them; its **Issues** tab lists
+statements the LRS rejected (missing actor or verb IRI, bad scores or durations) and cmi5 rule
+breaks: statements before `initialized` or after `terminated`, a missing registration, session
+id or cmi5 category, `passed` below the mastery score, or results sent in browse or review mode.
+**Reset progress** starts a new registration. The LRS accepts any credentials and is meant for
+local review only.
 
 ### Zips and folders holding several courses
 
@@ -308,6 +395,7 @@ notices. Errors print `{"ok": false, "error": "…", "code": "…"}` and exit 1.
 | `scormplayer pins <course> --json` | `{ ok, course, pinsFile, counts, pins }`; each pin includes its screenshot's full path |
 | `scormplayer pins <course> --resolve 3 --note "…" --json` | `{ ok, resolved, counts }` |
 | `scormplayer unzip <zip> --json` | `{ ok, folder, pinsFile, reused, movedPins }` |
+| `scormplayer check <course> --json` | `{ ok, counts, files, bytes, findings }`: each finding has `severity` (error, warning, info), `code`, `message`, and `file` or `examples` where they apply; exits 1 when there are errors |
 | `scormplayer <course> --json --no-open` | One event per line: `ready` (with `url`, `pid`, `pinsFile`, and `course.editable`, which is false for a zip), then `pin`, `progress`, `source`, `browser`, `course`, `unzipped`, `log`, and `stopped` (with a `reason`) on exit. If the course is already open, `ready` has `reused: true` and the command exits |
 | `scormplayer update --check --json` | `{ ok, current, latest, updateAvailable, method }` |
 | `scormplayer ps --json` | `{ ok, players }`: each with `port`, `pid`, `url`, `title`, `mode`, `idleSeconds` |
@@ -423,9 +511,11 @@ anything to a course for pins to work.
 
 `scormplayer` runs a small local server (127.0.0.1 by default) that serves the course and the
 player page from the same origin. The player installs `window.API` (SCORM 1.2) and
-`window.API_1484_11` (SCORM 2004) for the course to find, as an LMS would. The API is forgiving:
-it records what the course sends rather than enforcing the full specification. It's a review
-tool, not a conformance test.
+`window.API_1484_11` (SCORM 2004) for the course to find, as an LMS would. It follows the SCORM
+data model and an LMS's launch and end-of-session behaviour. By default it is forgiving: it
+records spec departures as issues but lets the calls succeed; strict mode fails them. xAPI and
+cmi5 courses talk to a local LRS served under `/xapi/`. It's a review tool, not LMS conformance
+certification.
 
 ### Use it from your own scripts
 
