@@ -21,7 +21,7 @@ The [first next step](#next-steps) is to check these.
 
    Add an **Edit mode** next to Pin mode. Editing works only in live (Vite source) mode. Packaged ZIPs stay review-only, because a ZIP has no source to edit.
 2. **Yes, it can be built.** One condition: only edits that can be traced back to a specific spot in the source are applied directly. Everything else goes to an agent, using the existing pin hand-off. Every comparable product has ended up with this split (see [market](#what-other-editors-do)).
-3. **"No extra code in the lesson" is achievable.** SCORM Player never runs `vite build`. It only runs the course's Vite in dev middleware (`server/live.mjs`). Anything the editor injects through a dev-only plugin therefore can't reach the packaged SCORM ZIP; the existing `scormplayer-live-base` plugin already relies on this. A save writes the same code change a person would make by hand.
+3. **"No extra code in the lesson" is achievable.** The editor's plugin would be passed only to the in-process dev `createServer` call in `server/live.mjs`; the existing `scormplayer-live-base` plugin already works this way. Any build is separate: a `sync` rule in `scormplayer.config.json` runs in its own process (`server/config.mjs`), and the project's packaging uses the project's own Vite config. Neither can see the editor's plugin, so it can't reach the packaged SCORM ZIP. A save writes the same code change a person would make by hand.
 
 ## The two models, and why to use both
 
@@ -65,7 +65,11 @@ Do this ourselves rather than read React internals:
 - React 19 removed `_debugSource` and the element-level `__source` [F] ([react#28265](https://github.com/facebook/react/pull/28265)).
 - That change broke LocatorJS, react-dev-inspector and similar tools [F] ([react#32574](https://github.com/facebook/react/issues/32574)).
 
-**Avoid Onlook's approach.** Onlook writes `data-oid` attributes into the `.tsx` files themselves. Its parser fixtures show this, and its AI prompt forbids removing them [F] ([fixture](https://github.com/onlook-dev/onlook/blob/main/packages/parser/test/data/ids/adds-ids-to-jsx/expected.tsx), [prompt](https://github.com/onlook-dev/onlook/blob/main/packages/ai/src/prompt/constants/system.ts)). That breaks the "no extra code" rule.
+**Avoid Onlook's apparent approach.** Onlook appears to write `data-oid` attributes into the `.tsx` files themselves [I]: its parser fixtures show ids added to JSX, and its AI prompt forbids removing them ([fixture](https://github.com/onlook-dev/onlook/blob/main/packages/parser/test/data/ids/adds-ids-to-jsx/expected.tsx), [prompt](https://github.com/onlook-dev/onlook/blob/main/packages/ai/src/prompt/constants/system.ts)). We could not verify whether it strips them at build. Either way, ids in the source would break the "no extra code" rule.
+
+**Plugin order is the main spike risk [I].** Vite runs plugins from the project's config file before plugins passed inline, and `@vitejs/plugin-react` itself uses `enforce: "pre"`. So an injected tagging plugin may see compiled `jsxDEV(...)` calls instead of JSX, depending on the course's Vite and plugin-react versions. There are two ways around this:
+- move our plugin to the front of the list in `configResolved`;
+- wrap `react/jsx-dev-runtime` and read its `source` argument, which is what lovable-tagger does (see [visual targeting research](visual-targeting-platforms.md)).
 
 **Guard [I].** Add a test that builds a fixture course and fails if `data-sp-` appears anywhere in the output.
 
@@ -101,7 +105,7 @@ driver.js 1.9.0 can't place a popover at an arbitrary x/y [F] ([config](https://
 - `popoverClass` and `onPopoverRender` are available per step.
 
 What this means for the editor [I]:
-- **Moving the card.** While the user drags, the card moves freely. On drop it **snaps** to the nearest of the 12 side/align placements, or to "centered" (no element), and saves those plain values. If we kept free x/y, the saved lesson and the preview would disagree.
+- **Moving the card.** While the user drags, the card moves freely. On drop it **snaps** to the nearest of the 12 side/align placements, or to "centered" (no element), and saves those plain values. If we kept free x/y, the saved lesson and the preview would disagree. driver.js also flips a side that doesn't fit, so the snap should prefer placements that fit at the current screen size, and check them at tablet size too.
 - **Free positioning, if wanted.** It would need a small, explicit offset feature in the course's own tour wrapper. For example, `data.offset` could be applied in `onPopoverRender`. That is course code, so it is a product decision, not something the editor should add silently.
 - **Changing the highlight box.**
   - To highlight a different element, re-pick it with the existing picker and save it as `step.element`. Prefer a stable `[data-tour-id="…"]` selector; point-and-click tour builders (Userpilot, Appcues, Usetiful) warn about fragile generated selectors [F] ([Userpilot](https://docs.userpilot.com/article/173-detecting-and-displaying-the-right-element)).
@@ -137,13 +141,14 @@ Estimates assume one experienced developer working with an agent.
 
 | Phase | Scope | Rough size |
 | --- | --- | --- |
-| P0 | Check one real course repo (list below); build a spike of the tagging plugin and the build-output check | 2–3 days |
+| P0 | Check one real course repo (list below); build a spike of the tagging plugin (including plugin order) and the build-output check | 2–3 days |
 | P1 | Edit mode, inline text editing (JSON + JSX), pending changes/diff/undo, file-hash check, hot-reload loop, agent fallback | 2–3 weeks |
 | P2 | Tour step editor: step list, snap-to-placement drag, re-pick the highlighted element, course tour registration | 1–2 weeks |
 | P3 | Properties panel: className/Tailwind, inline style, literal props, side-by-side reorder | 2–3 weeks |
 | P4 | Component palette, registry, drag-insert with imports | 3–4 weeks |
 
 Risks:
+- The tagging plugin may run after JSX is already compiled (see plugin order above).
 - Formatting drift when writing code back.
 - Some edits trigger a full reload instead of Fast Refresh, losing state unless the course has a snapshot adapter.
 - Files changing on disk while an edit is pending.
@@ -159,7 +164,7 @@ Risks:
    - Are shared components an npm package or workspace source?
    - Is there a tour wrapper we can extend?
 2. **P0 spike** in this repo:
-   - dev-only tagging plugin in `server/live.mjs`;
+   - dev-only tagging plugin in `server/live.mjs`, proven to see JSX on the course's Vite/plugin-react versions;
    - a fixture course with a driver.js tour;
    - the "no `data-sp-` in build output" test.
 3. **Decide:** snap-only tour placement, or a course-side offset option.
